@@ -1,0 +1,301 @@
+import { NextRequest, NextResponse } from 'next/server'
+import axios from 'axios'
+import { supabaseAdmin } from '@/lib/supabase-admin'
+import { signPath } from '@/lib/storage'
+import { getRemoteImageSizeAsSeedream } from '@/lib/server-utils'
+import { normalizeSizeOrDefault } from '@/lib/utils'
+import type { Job } from '@/types/jobs'
+
+const MAX_CONCURRENCY = Number(process.env.DISPATCH_MAX_CONCURRENCY || 3)
+const ACTIVE_WINDOW_MS = Number(process.env.DISPATCH_ACTIVE_WINDOW_MS || 10 * 60 * 1000) // 10 minutes
+const STALE_MAX_MS = Number(process.env.DISPATCH_STALE_MAX_MS || 60 * 60 * 1000) // 60 minutes
+
+export async function POST(req: NextRequest) {
+  const supabase = supabaseAdmin
+  
+  // Dispatcher may be called from server internally; allow unauthenticated but DO NOT expose job data.
+  // If you require auth, swap to service key in a private cron route. We'll allow anon here but restrict inputs.
+
+  try {
+    console.log('[Dispatch] start', { timestamp: new Date().toISOString() })
+
+    // Clean up clearly stuck jobs to avoid capacity deadlock
+    try {
+      // Fail any 'running' without provider id after 2 minutes
+      const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString()
+      await supabase.from('jobs')
+        .update({ status: 'failed', error: 'timeout: no provider request id', updated_at: new Date().toISOString() })
+        .is('provider_request_id', null)
+        .eq('status', 'running')
+        .lt('updated_at', twoMinAgo)
+
+      // Fail very stale submitted/running jobs after STALE_MAX_MS (provider likely dead)
+      const staleCutoff = new Date(Date.now() - STALE_MAX_MS).toISOString()
+      await supabase.from('jobs')
+        .update({ status: 'failed', error: 'stale: auto-cleanup', updated_at: new Date().toISOString() })
+        .in('status', ['submitted', 'running'])
+        .lt('updated_at', staleCutoff)
+    } catch {}
+
+    // Count active running jobs within the active window (submitted|running and recently updated)
+    const activeCutoff = new Date(Date.now() - ACTIVE_WINDOW_MS).toISOString()
+    const { count: running } = await supabase.from('jobs')
+      .select('*', { head: true, count: 'exact' })
+      .in('status', ['submitted', 'running'])
+      .gt('updated_at', activeCutoff)
+
+    const slots = Math.max(0, MAX_CONCURRENCY - (running ?? 0))
+    console.log('[Dispatch] capacity check', { running, slots, maxConcurrency: MAX_CONCURRENCY, activeWindowSec: Math.floor(ACTIVE_WINDOW_MS/1000) })
+    
+    if (slots <= 0) {
+      console.log('[Dispatch] at global cap, returning')
+      return NextResponse.json({ ok: true, info: 'at global cap' })
+    }
+
+    // Check queued jobs count before claiming (diagnostic)
+    const { count: queuedCount } = await supabase.from('jobs')
+      .select('*', { head: true, count: 'exact' })
+      .eq('status', 'queued')
+    
+    console.log('[Dispatch] queued jobs in DB', { queuedCount })
+
+    // Atomically claim up to {slots} queued jobs globally
+    const { data: claimed, error } = await supabase.rpc('claim_jobs_global', {
+      p_limit: slots
+    }) as { data: Job[] | null, error: any }
+    
+    if (error) {
+      console.error('[Dispatch] failed to claim jobs:', error)
+      return NextResponse.json({ error: 'claim failed' }, { status: 500 })
+    }
+    
+    if (!claimed?.length) {
+      console.log('[Dispatch] nothing to claim (RPC returned empty)')
+      return NextResponse.json({ ok: true, info: 'nothing to claim' })
+    }
+
+    console.log('[Dispatch] claimed', { 
+      count: claimed.length, 
+      jobIds: claimed.map(j => j.id)
+    })
+
+    // Validate envs once (base URL falls back to docs value; API key required)
+    const hasKey = !!process.env.WAVESPEED_API_KEY
+    const hasBase = !!process.env.WAVESPEED_API_BASE
+    console.log('[Dispatch] env check', { hasKey, hasBase })
+    
+    if (!hasKey) {
+      console.error('[Dispatch] WaveSpeed API key missing')
+      return NextResponse.json({ error: 'Server not configured' }, { status: 500 })
+    }
+
+    // Mark associated rows as running if they were queued/idle
+    const rowIds = [...new Set(claimed.map(job => job.row_id))]
+    if (rowIds.length > 0) {
+      await supabase.rpc('mark_rows_running', { p_row_ids: rowIds })
+    }
+
+    // Process claimed jobs in parallel to utilize available slots
+    console.log('[Dispatch] processing jobs', { count: claimed.length })
+    
+    await Promise.allSettled(claimed.map(async (job) => {
+      try {
+        const payload = job.request_payload as {
+          refPaths: string[]
+          targetPath: string
+          prompt: string
+          size?: string
+        }
+
+        console.log('[Dispatch] job start', { 
+          jobId: job.id, 
+          refPathsCount: payload.refPaths?.length || 0,
+          refPaths: payload.refPaths?.map(p => p.slice(-30)) || [],
+          targetPath: payload.targetPath?.slice(-30) 
+        })
+
+        // Sign URLs for the images (120s expiry for external API call)
+        const signStart = Date.now()
+        const [refUrls, targetUrl] = await Promise.all([
+          payload.refPaths && payload.refPaths.length > 0 
+            ? Promise.all(payload.refPaths.map(path => signPath(path, 600)))
+            : Promise.resolve([]),
+          signPath(payload.targetPath, 600)
+        ])
+        console.log('[Dispatch] signed URLs', { 
+          jobId: job.id, 
+          refUrlsCount: refUrls.length,
+          duration: Date.now() - signStart 
+        })
+
+        // Build prompt (already hinted in creation if multiple desired)
+        const finalPrompt = payload.prompt
+
+        // Always use 4096x4096 for best results
+        const finalSize = '4096*4096'
+        console.log('[Dispatch] using fixed size', { 
+          jobId: job.id, 
+          size: finalSize
+        })
+
+        // Base URL fallback to docs value if unset
+        const base = process.env.WAVESPEED_API_BASE || 'https://api.wavespeed.ai'
+
+        // Minimal logging (no full signed URLs)
+        const previewUrl = (u: string) => {
+          try {
+            const url = new URL(u)
+            const parts = url.pathname.split('/')
+            const last = parts[parts.length - 1] || ''
+            return `${url.host}/…/${last.slice(-16)}`
+          } catch {
+            return 'url'
+          }
+        }
+
+        // Combine reference images with target image (refs first, target last)
+        // Handle case where no reference images exist (target-only processing)
+        const allImages = refUrls.length > 0 ? [...refUrls, targetUrl] : [targetUrl]
+        
+        console.log('[WaveSpeed] submit', {
+          jobId: job.id,
+          endpoint: '/api/v3/bytedance/seedream-v4/edit',
+          imagesCount: allImages.length,
+          refImagesCount: refUrls.length,
+          operationType: refUrls.length > 0 ? 'face-swap' : 'target-only',
+          promptLength: finalPrompt ? finalPrompt.length : 0,
+          size: finalSize,
+          urlPreviews: allImages.map(previewUrl)
+        })
+
+        // Make the WaveSpeed API call in async mode with retry (network/transient 5xx)
+        const submitOnce = () => axios.post(
+          `${base}/api/v3/bytedance/seedream-v4/edit`,
+          {
+            prompt: finalPrompt,
+            images: allImages,
+            size: finalSize,
+            enable_sync_mode: false,
+            enable_base64_output: false
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.WAVESPEED_API_KEY}`,
+              'Content-Type': 'application/json'
+            },
+            timeout: 600_000
+          }
+        )
+
+        let resp
+        try {
+          resp = await submitOnce()
+        } catch (e: any) {
+          const retriable = [408, 429, 500, 502, 503, 504].includes(Number(e?.response?.status)) ||
+            (e?.code === 'ECONNRESET' || e?.code === 'ETIMEDOUT')
+          if (retriable) {
+            console.warn('[WaveSpeed] submit retrying once due to transient error', {
+              status: e?.response?.status, code: e?.code
+            })
+            await new Promise(r => setTimeout(r, 1000))
+            resp = await submitOnce()
+          } else {
+            throw e
+          }
+        }
+
+        // Unwrap provider response and save request id for polling
+        // WaveSpeed API response structure: { code, message, data: { id, status, ... } }
+        const responseData = resp?.data?.data
+        const providerId = responseData?.id || null
+
+        console.log('[WaveSpeed] submitted', {
+          jobId: job.id,
+          providerId,
+          status: responseData?.status,
+          responseCode: resp?.data?.code,
+          responseMessage: resp?.data?.message
+        })
+
+        // If we got a successful response but no provider ID, mark as failed
+        if (!providerId) {
+          console.error(`[WaveSpeed] No provider ID returned for job ${job.id}`, {
+            responseCode: resp?.data?.code,
+            responseMessage: resp?.data?.message,
+            fullResponse: resp?.data
+          })
+          await supabase.from('jobs').update({
+            status: 'failed',
+            error: 'No provider request ID returned from WaveSpeed API',
+            updated_at: new Date().toISOString()
+          }).eq('id', job.id)
+        } else {
+          await supabase.from('jobs').update({
+            provider_request_id: providerId,
+            status: 'submitted', // Update status to submitted once we have provider ID
+            updated_at: new Date().toISOString()
+          }).eq('id', job.id)
+        }
+      } catch (e: any) {
+        console.error(`Failed to submit job ${job.id}:`, {
+          status: e?.response?.status,
+          statusText: e?.response?.statusText,
+          error: e?.response?.data?.error ?? e?.response?.data?.message ?? e?.message,
+          fullResponseData: e?.response?.data,
+          endpoint: '/api/v3/bytedance/seedream-v4/edit'
+        })
+        await supabase.from('jobs').update({
+          status: 'failed',
+          error: e?.message ?? 'submit error',
+          updated_at: new Date().toISOString()
+        }).eq('id', job.id)
+
+        const [{ count: remaining }, { count: succeeded }] = await Promise.all([
+          supabase.from('jobs')
+            .select('*', { count: 'exact', head: true })
+            .eq('row_id', job.row_id)
+            .in('status', ['queued', 'running']),
+          supabase.from('jobs')
+            .select('*', { count: 'exact', head: true })
+            .eq('row_id', job.row_id)
+            .eq('status', 'succeeded')
+        ])
+
+        await supabase.from('model_rows').update({
+          status: (remaining ?? 0) > 0
+            ? 'partial'
+            : (succeeded ?? 0) > 0
+              ? 'partial'
+              : 'error'
+        }).eq('id', job.row_id)
+      }
+    }))
+
+    // Try to dispatch more jobs if we still have capacity
+    const { count: stillRunning } = await supabase.from('jobs')
+      .select('*', { head: true, count: 'exact' })
+      .eq('status', 'running')
+
+    const remainingSlots = Math.max(0, MAX_CONCURRENCY - (stillRunning ?? 0))
+    console.log('[Dispatch] complete', { 
+      processed: claimed.length, 
+      stillRunning, 
+      remainingSlots 
+    })
+    
+    if (remainingSlots > 0) {
+      console.log('[Dispatch] recursive dispatch triggered')
+      // Recursive call to fill remaining slots (but don't wait for it)
+      fetch(new URL('/api/dispatch', req.url), { 
+        method: 'POST', 
+        cache: 'no-store'
+      }).catch(e => console.warn('[Dispatch] recursive dispatch failed:', e))
+    }
+
+    return NextResponse.json({ ok: true, claimed: claimed.length })
+    
+  } catch (error) {
+    console.error('[Dispatch] error:', error)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}

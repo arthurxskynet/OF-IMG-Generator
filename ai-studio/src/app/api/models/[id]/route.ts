@@ -1,0 +1,165 @@
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { createServer } from "@/lib/supabase-server";
+
+export const runtime = "nodejs";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+const UpdateModelSchema = z.object({
+  name: z.string().min(2).optional(),
+  default_prompt: z.string().min(3).optional(),
+  default_ref_headshot_url: z.string().optional(),
+  requests_default: z.number().int().min(1).max(50).optional(),
+  size: z.string().optional()
+});
+
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const { searchParams } = new URL(req.url);
+  const sort = searchParams.get('sort');
+  const supabase = await createServer();
+  const { data: { user } } = await supabase.auth.getUser();
+  
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    // Fetch model with its rows and latest images
+    const { data: model, error: modelError } = await supabase
+      .from("models")
+      .select(`
+        *,
+        model_rows (
+          id,
+          ref_image_urls,
+          target_image_url,
+          prompt_override,
+          status,
+          created_at,
+          generated_images (
+            id,
+            output_url,
+            is_favorited,
+            created_at
+          )
+        )
+      `)
+      .eq("id", id)
+      .single();
+
+    // Deduplicate nested arrays defensively (by id/output_url) to avoid UI confusion
+    if (model?.model_rows) {
+      const seenRows = new Set<string>()
+      model.model_rows = (model.model_rows as any[]).filter((r: any) => {
+        if (!r?.id) return false
+        if (seenRows.has(r.id)) return false
+        seenRows.add(r.id)
+        return true
+      })
+      for (const r of model.model_rows as any[]) {
+        if (Array.isArray(r.generated_images)) {
+          const seenImgs = new Set<string>()
+          r.generated_images = r.generated_images.filter((img: any) => {
+            const key = img?.id || img?.output_url
+            if (!key) return false
+            if (seenImgs.has(key)) return false
+            seenImgs.add(key)
+            return true
+          })
+        }
+      }
+
+      // Sort the model rows based on the sort parameter
+      const sortOrder = sort === 'oldest' ? 1 : -1;
+      model.model_rows.sort((a: any, b: any) => {
+        const dateA = new Date(a.created_at).getTime();
+        const dateB = new Date(b.created_at).getTime();
+        return (dateA - dateB) * sortOrder;
+      });
+    }
+
+    if (modelError || !model) {
+      return NextResponse.json({ error: "Model not found" }, { status: 404 });
+    }
+
+    return NextResponse.json({ model }, { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    console.error("Model GET error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
+}
+
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const supabase = await createServer();
+  const { data: { user } } = await supabase.auth.getUser();
+  
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const body = await req.json();
+    const validatedData = UpdateModelSchema.parse(body);
+
+    const { data: model, error } = await supabase
+      .from("models")
+      .update(validatedData)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error("Failed to update model:", error);
+      return NextResponse.json({ error: "Failed to update model" }, { status: 500 });
+    }
+
+    if (!model) {
+      return NextResponse.json({ error: "Model not found" }, { status: 404 });
+    }
+
+    return NextResponse.json({ ok: true, model });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({ 
+        error: "Validation failed", 
+        details: error.issues 
+      }, { status: 400 });
+    }
+    
+    console.error("Model PATCH error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
+}
+
+export async function DELETE(_: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const supabase = await createServer();
+  const { data: { user } } = await supabase.auth.getUser();
+  
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const { error } = await supabase
+      .from("models")
+      .delete()
+      .eq("id", id);
+
+    if (error) {
+      console.error("Failed to delete model:", error);
+      return NextResponse.json({ error: "Failed to delete model" }, { status: 500 });
+    }
+
+    return NextResponse.json({ ok: true, deleted: true });
+  } catch (error) {
+    console.error("Model DELETE error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
+}
+
+

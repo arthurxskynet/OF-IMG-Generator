@@ -1,0 +1,1935 @@
+'use client'
+
+import { useState, useCallback, useRef, useEffect } from 'react'
+import Image from 'next/image'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Badge } from '@/components/ui/badge'
+import { Textarea } from '@/components/ui/textarea'
+import { Thumb } from '@/components/ui/thumb'
+import { createJobs, getSignedUrl, getStatusColor, getStatusLabel, fetchActiveJobs } from '@/lib/jobs'
+import { Model, ModelRow, GeneratedImage } from '@/types/jobs'
+import { useToast } from '@/hooks/use-toast'
+import { useJobPolling } from '@/hooks/use-job-polling'
+import { uploadImage, validateFile } from '@/lib/client-upload'
+import { createClient } from '@/lib/supabase-browser'
+import { Plus, Upload, X, Sparkles, Folder, CheckCircle, XCircle, Wand2, Star, Download, Check } from 'lucide-react'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { Progress } from '@/components/ui/progress'
+import { Spinner } from '@/components/ui/spinner'
+import { Checkbox } from '@/components/ui/checkbox'
+
+interface ModelWorkspaceProps {
+  model: Model
+  rows: ModelRow[]
+  sort?: string
+}
+
+interface RowState {
+  id: string
+  isGenerating: boolean
+  isGeneratingPrompt: boolean
+  signedUrls: Record<string, string>
+  isLoadingResults?: boolean
+}
+
+interface BulkUploadItem {
+  rowId: string
+  filename: string
+  status: 'pending' | 'uploading' | 'success' | 'error'
+  progress: number
+  error?: string
+}
+
+// Simple client-side cache for signed URLs
+const urlCache = new Map<string, { url: string; expires: number }>()
+
+export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspaceProps) {
+  const { toast } = useToast()
+  const supabase = createClient()
+  const [rows, setRows] = useState(initialRows)
+  const [rowStates, setRowStates] = useState<Record<string, RowState>>({})
+  const [deletedRowIds, setDeletedRowIds] = useState<Set<string>>(new Set())
+  const fileInputRefs = useRef<Record<string, HTMLInputElement>>({})
+  
+  // Folder drop state
+  const [isFolderDropActive, setIsFolderDropActive] = useState(false)
+  const [bulkUploadState, setBulkUploadState] = useState<BulkUploadItem[]>([])
+  const [isBulkUploading, setIsBulkUploading] = useState(false)
+
+  // Download selection state
+  const [isSelectionMode, setIsSelectionMode] = useState(false)
+  const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set())
+  const [isDownloading, setIsDownloading] = useState(false)
+  
+  // Favorites state for immediate UI updates
+  const [favoritesState, setFavoritesState] = useState<Record<string, boolean>>({})
+  
+  // Initialize favorites state from data when component loads
+  useEffect(() => {
+    const initialFavorites: Record<string, boolean> = {}
+    rows.forEach(row => {
+      const images = (row as any).generated_images || []
+      images.forEach((img: any) => {
+        // Initialize all images, defaulting to false if undefined
+        const isFav = img.is_favorited === true
+        initialFavorites[img.id] = isFav
+      })
+    })
+    setFavoritesState(initialFavorites)
+  }, [rows])
+  
+  // Helper function to get current favorite status (prioritizes UI state over data state)
+  const getFavoriteStatus = (imageId: string, dataStatus: boolean | undefined): boolean => {
+    // Always check UI state first for instant updates
+    if (favoritesState.hasOwnProperty(imageId)) {
+      return favoritesState[imageId]
+    }
+    // Fallback to data status
+    return dataStatus === true
+  }
+
+  // Job polling hook
+  // Debounce refresh to avoid redundant fetches when many jobs complete together
+  const refreshTimeout = useRef<number | null>(null)
+  const scheduleRefresh = () => {
+    if (refreshTimeout.current) window.clearTimeout(refreshTimeout.current)
+    refreshTimeout.current = window.setTimeout(() => {
+      refreshRowData()
+      refreshTimeout.current = null
+    }, 500)
+  }
+
+  const { pollingState, startPolling } = useJobPolling((jobId, status) => {
+    if (['succeeded', 'failed'].includes(status)) {
+      const rowId = (pollingState as any)[jobId]?.rowId as string | undefined
+      if (status === 'succeeded' && rowId) {
+        const current = getRowState(rowId)
+        setRowStates(prev => ({
+          ...prev,
+          [rowId]: { ...current, isLoadingResults: true }
+        }))
+        refreshSingleRow(rowId).catch(() => {})
+      }
+      toast({
+        title: status === 'succeeded' ? 'Generation Complete' : 'Generation Failed',
+        description: `Job ${jobId} has ${status}`,
+        variant: status === 'failed' ? 'destructive' : 'default'
+      })
+      scheduleRefresh()
+    }
+  })
+
+  // Initialize row states
+  const getRowState = (rowId: string): RowState => {
+    if (!rowStates[rowId]) {
+      setRowStates(prev => ({
+        ...prev,
+        [rowId]: {
+          id: rowId,
+          isGenerating: false,
+          isGeneratingPrompt: false,
+          signedUrls: {},
+          isLoadingResults: false
+        }
+      }))
+      return {
+        id: rowId,
+        isGenerating: false,
+        isGeneratingPrompt: false,
+        signedUrls: {},
+        isLoadingResults: false
+      }
+    }
+    return rowStates[rowId]
+  }
+
+  // Function to get signed URL for an image path with caching
+  const getImageUrl = useCallback(async (path: string, rowId?: string) => {
+    // Check cache first
+    const cached = urlCache.get(path)
+    if (cached && cached.expires > Date.now()) {
+      // Update local state if we have a rowId
+      if (rowId) {
+        setRowStates(prev => ({
+          ...prev,
+          [rowId]: {
+            ...prev[rowId],
+            signedUrls: { ...prev[rowId]?.signedUrls, [path]: cached.url }
+          }
+        }))
+      }
+      return cached.url
+    }
+    
+    // Check local state as fallback
+    const rowState = rowId ? getRowState(rowId) : null
+    if (rowState?.signedUrls[path]) return rowState.signedUrls[path]
+    
+    try {
+      const { url } = await getSignedUrl(path)
+      
+      // Cache the URL (expires in 3.5 hours to be safe)
+      urlCache.set(path, { url, expires: Date.now() + (3.5 * 60 * 60 * 1000) })
+      
+      // Update local state
+      if (rowId) {
+        setRowStates(prev => ({
+          ...prev,
+          [rowId]: {
+            ...prev[rowId],
+            signedUrls: { ...prev[rowId]?.signedUrls, [path]: url }
+          }
+        }))
+      }
+      return url
+    } catch (error) {
+      console.error('Failed to get signed URL:', error)
+      return ''
+    }
+  }, [rowStates])
+
+  // Prefetch signed URLs when rows change - now with parallel fetching and batching
+  useEffect(() => {
+    const prefetch = async () => {
+      // Collect all image paths that need signed URLs
+      const imagePromises: Promise<string>[] = []
+      
+      for (const row of rows) {
+        const rowId = row.id
+        
+        // Handle multiple reference images
+        if (row.ref_image_urls && row.ref_image_urls.length > 0) {
+          for (const refPath of row.ref_image_urls) {
+            imagePromises.push(getImageUrl(refPath, rowId))
+          }
+        } else if (model.default_ref_headshot_url) {
+          imagePromises.push(getImageUrl(model.default_ref_headshot_url, rowId))
+        }
+        
+        if (row.target_image_url) {
+          imagePromises.push(getImageUrl(row.target_image_url, rowId))
+        }
+        
+        const images = (row as any).generated_images || []
+        for (const img of images) {
+          imagePromises.push(getImageUrl(img.output_url, rowId))
+        }
+      }
+      
+      // Process in batches to avoid overwhelming the server
+      const BATCH_SIZE = 20
+      for (let i = 0; i < imagePromises.length; i += BATCH_SIZE) {
+        const batch = imagePromises.slice(i, i + BATCH_SIZE)
+        await Promise.all(batch)
+        
+        // Small delay between batches to be nice to the server
+        if (i + BATCH_SIZE < imagePromises.length) {
+          await new Promise(resolve => setTimeout(resolve, 100))
+        }
+      }
+    }
+    prefetch().catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, model.id])
+
+  // On mount: resume active jobs and setup realtime
+  useEffect(() => {
+    let cancelled = false
+    const run = async () => {
+      try {
+        const active = await fetchActiveJobs(model.id)
+        if (cancelled) return
+        for (const j of active) {
+          startPolling(j.job_id, j.status, j.row_id)
+        }
+      } catch {}
+    }
+    run()
+    // Realtime subscription to jobs updates for this model
+    try {
+      const channel = supabase.channel(`jobs-model-${model.id}`)
+      channel.on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'jobs',
+        filter: `model_id=eq.${model.id}`
+      }, (payload: any) => {
+        const next = payload?.new
+        if (!next) return
+        const s = String(next.status)
+        if (['queued','submitted','running','saving'].includes(s)) {
+          startPolling(String(next.id), s, String(next.row_id))
+        }
+        if (['succeeded','failed'].includes(s)) {
+          scheduleRefresh()
+        }
+      })
+      .subscribe()
+      // Store channel on window to avoid unused var; cleanup on unmount
+      ;(window as any).__jobsRealtime = channel
+    } catch {}
+    return () => { cancelled = true
+      try {
+        if ((window as any).__jobsRealtime) {
+          supabase.removeChannel((window as any).__jobsRealtime)
+          ;(window as any).__jobsRealtime = null
+        }
+      } catch {}
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model.id])
+
+  // Derived live status and progress
+  const getLiveStatusForRow = (rowId: string, base: string) => {
+    const live = Object.values(pollingState).find(s => s.rowId === rowId && s.polling)
+    if (!live) return base
+    if (live.status === 'succeeded') return 'done'
+    if (live.status === 'failed') return 'error'
+    return String(live.status)
+  }
+
+  const statusToProgress = (status: string): number => {
+    switch (status) {
+      case 'queued': return 15
+      case 'submitted': return 35
+      case 'running': return 75
+      case 'saving': return 90
+      case 'done':
+      case 'succeeded':
+      case 'failed': return 100
+      default: return 0
+    }
+  }
+
+  const isActiveStatus = (s: string) => ['queued','submitted','running','saving'].includes(s)
+
+  // Refresh row data after generation
+  const refreshRowData = async () => {
+    try {
+      const url = new URL(`/api/models/${model.id}`, window.location.origin)
+      const currentSort = new URLSearchParams(window.location.search).get('sort')
+      if (currentSort) {
+        url.searchParams.set('sort', currentSort)
+      }
+      
+      const response = await fetch(url.toString(), { cache: 'no-store' })
+      if (response.ok) {
+        const { model: updatedModel } = await response.json()
+        setRows(updatedModel.model_rows || [])
+      }
+    } catch (error) {
+      console.error('Failed to refresh row data:', error)
+    }
+  }
+
+  // Refresh a single row and prefetch its image URLs; clear loading flag
+  const refreshSingleRow = async (rowId: string) => {
+    try {
+      const res = await fetch(`/api/rows/${rowId}`, { cache: 'no-store' })
+      if (!res.ok) return
+      const { row } = await res.json()
+      setRows(prev => prev.map(r => (r.id === rowId ? row : r)))
+      const images = (row as any).generated_images || []
+      for (const img of images) {
+        await getImageUrl(img.output_url, rowId)
+      }
+    } catch (e) {
+      // noop
+    } finally {
+      setRowStates(prev => ({
+        ...prev,
+        [rowId]: { ...getRowState(rowId), isLoadingResults: false }
+      }))
+    }
+  }
+
+  // Add new row
+  const handleAddRow = async () => {
+    // Create skeleton row for instant UI feedback
+    const tempId = `temp-${Date.now()}`
+    const skeletonRow = {
+      id: tempId,
+      model_id: model.id,
+      ref_image_urls: undefined,
+      target_image_url: '',
+      prompt_override: undefined,
+      status: 'idle' as const,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      isSkeleton: true // Flag to identify skeleton rows
+    } as ModelRow & { isSkeleton: boolean }
+
+    // Determine position based on sort order
+    const isNewestFirst = !sort || sort === 'newest'
+    
+    // Add skeleton row at correct position
+    setRows(prev => {
+      if (isNewestFirst) {
+        return [skeletonRow, ...prev] // Add to top for newest first
+      } else {
+        return [...prev, skeletonRow] // Add to bottom for oldest first
+      }
+    })
+
+    try {
+      const response = await fetch('/api/rows', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model_id: model.id
+        })
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to create row')
+      }
+
+      const { row } = await response.json()
+      
+      // Replace skeleton with real row data
+      setRows(prev => prev.map(r => r.id === tempId ? row : r))
+      
+      toast({
+        title: 'Row added',
+        description: 'New row created. Upload a target image to get started.'
+      })
+    } catch (error) {
+      // Remove skeleton row on error
+      setRows(prev => prev.filter(r => r.id !== tempId))
+      
+      toast({
+        title: 'Failed to add row',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive'
+      })
+    }
+  }
+
+  // Handle file upload for target image
+  const handleTargetImageUpload = async (file: File, rowId: string) => {
+    try {
+      validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 10)
+      
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Not authenticated')
+
+      const result = await uploadImage(file, 'targets', user.id)
+      
+      // Update row with new target image
+      const response = await fetch(`/api/rows/${rowId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          target_image_url: result.objectPath
+        })
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to update row')
+      }
+
+      const { row } = await response.json()
+      setRows(prev => prev.map(r => r.id === rowId ? row : r))
+      
+      toast({
+        title: 'Image uploaded',
+        description: 'Target image uploaded successfully'
+      })
+    } catch (error) {
+      toast({
+        title: 'Upload failed',
+        description: error instanceof Error ? error.message : 'Failed to upload image',
+        variant: 'destructive'
+      })
+    }
+  }
+
+  // Handle drag and drop
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
+  const handleDrop = (e: React.DragEvent, rowId: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    
+    const files = Array.from(e.dataTransfer.files)
+    const imageFile = files.find(file => file.type.startsWith('image/'))
+    
+    if (imageFile) {
+      handleTargetImageUpload(imageFile, rowId)
+    }
+  }
+
+  // Handle folder drag and drop
+  const handleFolderDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsFolderDropActive(true)
+  }
+
+  const handleFolderDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    // Only deactivate if we're leaving the drop zone entirely
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsFolderDropActive(false)
+    }
+  }
+
+  // Extract all image files from dropped items (supports folders)
+  const extractImageFiles = async (dataTransfer: DataTransfer): Promise<File[]> => {
+    const imageFiles: File[] = []
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif']
+    
+    const processItem = async (item: DataTransferItem): Promise<void> => {
+      if (item.kind === 'file') {
+        const entry = item.webkitGetAsEntry?.() || (item as any).getAsEntry?.()
+        
+        if (entry) {
+          if (entry.isFile) {
+            const file = item.getAsFile()
+            if (file && allowedTypes.includes(file.type)) {
+              imageFiles.push(file)
+            }
+          } else if (entry.isDirectory) {
+            // Process directory recursively
+            const dirReader = (entry as any).createReader()
+            const entries = await new Promise<any[]>((resolve) => {
+              dirReader.readEntries(resolve)
+            })
+            
+            for (const subEntry of entries) {
+              if (subEntry.isFile) {
+                const file = await new Promise<File>((resolve) => {
+                  subEntry.file(resolve)
+                })
+                if (allowedTypes.includes(file.type)) {
+                  imageFiles.push(file)
+                }
+              } else if (subEntry.isDirectory) {
+                // Recursively process subdirectories
+                const subDirReader = subEntry.createReader()
+                const subEntries = await new Promise<any[]>((resolve) => {
+                  subDirReader.readEntries(resolve)
+                })
+                
+                for (const subSubEntry of subEntries) {
+                  if (subSubEntry.isFile) {
+                    const file = await new Promise<File>((resolve) => {
+                      subSubEntry.file(resolve)
+                    })
+                    if (allowedTypes.includes(file.type)) {
+                      imageFiles.push(file)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Process all items
+    for (let i = 0; i < dataTransfer.items.length; i++) {
+      await processItem(dataTransfer.items[i])
+    }
+
+    // Sort alphabetically by filename
+    return imageFiles.sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  const handleFolderDrop = async (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsFolderDropActive(false)
+    
+    if (isBulkUploading) {
+      toast({
+        title: 'Upload in progress',
+        description: 'Please wait for the current upload to complete',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    try {
+      const imageFiles = await extractImageFiles(e.dataTransfer)
+      
+      if (imageFiles.length === 0) {
+        toast({
+          title: 'No images found',
+          description: 'No valid image files found in the dropped folder',
+          variant: 'destructive'
+        })
+        return
+      }
+
+      await handleBulkImageUpload(imageFiles)
+    } catch (error) {
+      console.error('Error processing folder:', error)
+      toast({
+        title: 'Error processing folder',
+        description: error instanceof Error ? error.message : 'Failed to process dropped folder',
+        variant: 'destructive'
+      })
+    }
+  }
+
+  // Handle bulk image upload
+  const handleBulkImageUpload = async (imageFiles: File[]) => {
+    setIsBulkUploading(true)
+    setBulkUploadState([])
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Not authenticated')
+
+      // Step 1: Create all rows first
+      const createRowPromises = imageFiles.map(async (file) => {
+        const response = await fetch('/api/rows', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model_id: model.id
+          })
+        })
+
+        if (!response.ok) {
+          throw new Error(`Failed to create row for ${file.name}`)
+        }
+
+        const { row } = await response.json()
+        return { row, file }
+      })
+
+      const createdRows = await Promise.all(createRowPromises)
+      
+      // Initialize bulk upload state
+      const initialBulkState: BulkUploadItem[] = createdRows.map(({ row, file }) => ({
+        rowId: row.id,
+        filename: file.name,
+        status: 'pending',
+        progress: 0
+      }))
+      setBulkUploadState(initialBulkState)
+
+      // Add new rows to the UI immediately
+      setRows(prev => [...prev, ...createdRows.map(({ row }) => row)])
+
+      // Step 2: Upload images sequentially and update rows
+      let successCount = 0
+      let errorCount = 0
+
+      for (let i = 0; i < createdRows.length; i++) {
+        const { row, file } = createdRows[i]
+        
+        try {
+          // Update status to uploading
+          setBulkUploadState(prev => prev.map(item => 
+            item.rowId === row.id 
+              ? { ...item, status: 'uploading', progress: 0 }
+              : item
+          ))
+
+          // Upload the image
+          const result = await uploadImage(file, 'targets', user.id)
+          
+          // Update the row with the uploaded image
+          const updateResponse = await fetch(`/api/rows/${row.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              target_image_url: result.objectPath
+            })
+          })
+
+          if (!updateResponse.ok) {
+            throw new Error(`Failed to update row for ${file.name}`)
+          }
+
+          const { row: updatedRow } = await updateResponse.json()
+          
+          // Update the row in the UI
+          setRows(prev => prev.map(r => r.id === row.id ? updatedRow : r))
+          
+          // Update bulk upload state to success
+          setBulkUploadState(prev => prev.map(item => 
+            item.rowId === row.id 
+              ? { ...item, status: 'success', progress: 100 }
+              : item
+          ))
+
+          successCount++
+        } catch (error) {
+          console.error(`Error uploading ${file.name}:`, error)
+          
+          // Update bulk upload state to error
+          setBulkUploadState(prev => prev.map(item => 
+            item.rowId === row.id 
+              ? { 
+                  ...item, 
+                  status: 'error', 
+                  progress: 0,
+                  error: error instanceof Error ? error.message : 'Upload failed'
+                }
+              : item
+          ))
+
+          errorCount++
+        }
+      }
+
+      // Show completion toast
+      if (successCount > 0) {
+        toast({
+          title: 'Bulk upload completed',
+          description: `Successfully uploaded ${successCount} image${successCount === 1 ? '' : 's'}${errorCount > 0 ? `, ${errorCount} failed` : ''}`,
+          variant: errorCount > 0 ? 'destructive' : 'default'
+        })
+      }
+
+      // Clear bulk upload state after a delay
+      setTimeout(() => {
+        setBulkUploadState([])
+      }, 3000)
+
+    } catch (error) {
+      console.error('Bulk upload error:', error)
+      toast({
+        title: 'Bulk upload failed',
+        description: error instanceof Error ? error.message : 'Failed to process bulk upload',
+        variant: 'destructive'
+      })
+      setBulkUploadState([])
+    } finally {
+      setIsBulkUploading(false)
+    }
+  }
+
+  // Handle prompt update
+  const handlePromptUpdate = async (rowId: string, prompt: string) => {
+    try {
+      // Optimistically update the local state first
+      setRows(prev => prev.map(row => 
+        row.id === rowId 
+          ? { ...row, prompt_override: prompt || undefined }
+          : row
+      ))
+
+      await fetch(`/api/rows/${rowId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt_override: prompt || undefined
+        })
+      })
+    } catch (error) {
+      console.error('Failed to update prompt:', error)
+      // Revert the optimistic update on error
+      setRows(prev => prev.map(row => 
+        row.id === rowId 
+          ? { ...row, prompt_override: rows.find(r => r.id === rowId)?.prompt_override }
+          : row
+      ))
+    }
+  }
+
+  // AI Prompt Generation
+  const handleAiPromptGeneration = async (rowId: string) => {
+    const row = rows.find(r => r.id === rowId)
+    
+    // Validate target image exists (reference images are optional)
+    if (!row?.target_image_url) {
+      toast({
+        title: 'Missing target image',
+        description: 'Target image is required for AI prompt generation',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    // Set loading state
+    setRowStates(prev => ({
+      ...prev,
+      [rowId]: { ...getRowState(rowId), isGeneratingPrompt: true }
+    }))
+
+    try {
+      const response = await fetch('/api/prompt/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rowId })
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to generate prompt')
+      }
+
+      const { prompt } = await response.json()
+      
+      // Update the prompt immediately (automatic replacement)
+      await handlePromptUpdate(rowId, prompt)
+      
+      toast({
+        title: 'AI prompt generated',
+        description: 'Prompt has been updated with AI-generated content'
+      })
+    } catch (error) {
+      toast({
+        title: 'AI generation failed',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive'
+      })
+    } finally {
+      setRowStates(prev => ({
+        ...prev,
+        [rowId]: { ...getRowState(rowId), isGeneratingPrompt: false }
+      }))
+    }
+  }
+
+  // Helper function to check if row has valid images for AI generation
+  const hasValidImages = (row: ModelRow): boolean => {
+    const hasTarget = Boolean(row?.target_image_url)
+    return hasTarget
+  }
+
+  // Removed generation count: provider does not support count parameter
+
+  // Handle generation
+  const handleGenerate = async (rowId: string) => {
+    const row = rows.find(r => r.id === rowId)
+    if (!row?.target_image_url) {
+      toast({
+        title: 'Missing target image',
+        description: 'Upload a target image first',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    const rowState = getRowState(rowId)
+    setRowStates(prev => ({
+      ...prev,
+      [rowId]: { ...rowState, isGenerating: true }
+    }))
+
+    try {
+      // Optimistically mark status as queued for instant feedback
+      setRows(prev => prev.map(r => r.id === rowId ? { ...r, status: 'queued' as any } : r))
+      const result = await createJobs({ rowId })
+      const ids = result.jobIds || []
+      if (ids[0]) startPolling(ids[0], 'submitted', rowId)
+      
+      toast({
+        title: 'Generation started',
+        description: `Queued ${ids.length} task${ids.length === 1 ? '' : 's'}`
+      })
+    } catch (error) {
+      // Revert optimistic status on error
+      setRows(prev => prev.map(r => r.id === rowId ? { ...r, status: 'idle' as any } : r))
+      toast({
+        title: 'Generation failed',
+        description: error instanceof Error ? error.message : 'Failed to create generation job',
+        variant: 'destructive'
+      })
+    } finally {
+      setRowStates(prev => ({
+        ...prev,
+        [rowId]: { ...getRowState(rowId), isGenerating: false }
+      }))
+    }
+  }
+
+  // Remove row
+  const handleRemoveRow = async (rowId: string) => {
+    try {
+      await fetch(`/api/rows/${rowId}`, { method: 'DELETE' })
+      setRows(prev => prev.filter(r => r.id !== rowId))
+      setRowStates(prev => {
+        const { [rowId]: _removed, ...rest } = prev
+        return rest
+      })
+      setDeletedRowIds(prev => {
+        const next = new Set(prev)
+        next.add(rowId)
+        return next
+      })
+      toast({
+        title: 'Row removed',
+        description: 'Row deleted successfully'
+      })
+    } catch (error) {
+      toast({
+        title: 'Failed to remove row',
+        description: 'Could not delete row',
+        variant: 'destructive'
+      })
+    }
+  }
+
+  // Toggle favorite status for a generated image
+  const handleToggleFavorite = async (imageId: string, currentStatus: boolean | undefined) => {
+    try {
+      // Handle case where currentStatus might be undefined (default to false)
+      const newStatus = currentStatus === true ? false : true
+      
+      // Immediately update the UI state for instant feedback
+      setFavoritesState(prev => {
+        const newState = {
+          ...prev,
+          [imageId]: newStatus
+        }
+        return newState
+      })
+      
+      const response = await fetch(`/api/images/${imageId}/favorite`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_favorited: newStatus })
+      })
+
+      if (response.ok) {
+        const { is_favorited } = await response.json()
+        
+        // Update the main rows state to keep it in sync
+        setRows(prev => {
+          const updatedRows = prev.map(row => {
+            const updatedImages = (row as any).generated_images?.map((img: any) => {
+              if (img.id === imageId) {
+                return { ...img, is_favorited }
+              }
+              return img
+            }) || []
+            
+            return {
+              ...row,
+              generated_images: updatedImages
+            }
+          })
+          return updatedRows
+        })
+
+        toast({
+          title: is_favorited ? 'Added to favorites' : 'Removed from favorites',
+          description: is_favorited ? 'Image marked as favorite' : 'Image removed from favorites'
+        })
+      } else {
+        // Revert the UI state if API call failed
+        setFavoritesState(prev => ({
+          ...prev,
+          [imageId]: currentStatus === true ? true : false
+        }))
+        
+        const errorData = await response.json()
+        throw new Error(errorData.error || 'Failed to update favorite status')
+      }
+    } catch (error) {
+      // Revert the UI state if there was an error
+      setFavoritesState(prev => ({
+        ...prev,
+        [imageId]: currentStatus === true ? true : false
+      }))
+      
+      toast({
+        title: 'Failed to update favorite',
+        description: error instanceof Error ? error.message : 'Could not update favorite status',
+        variant: 'destructive'
+      })
+    }
+  }
+
+  // Helper functions for download selection
+  const getAllImageIds = (): string[] => {
+    const allIds: string[] = []
+    rows.forEach(row => {
+      const images = (row as any).generated_images || []
+      images.forEach((image: GeneratedImage) => {
+        allIds.push(image.id)
+      })
+    })
+    return allIds
+  }
+
+  const handleSelectAll = () => {
+    const allIds = getAllImageIds()
+    if (selectedImageIds.size === allIds.length) {
+      // Deselect all
+      setSelectedImageIds(new Set())
+    } else {
+      // Select all
+      setSelectedImageIds(new Set(allIds))
+    }
+  }
+
+  const handleToggleImageSelection = (imageId: string) => {
+    setSelectedImageIds(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(imageId)) {
+        newSet.delete(imageId)
+      } else {
+        newSet.add(imageId)
+      }
+      return newSet
+    })
+  }
+
+  const handleDownloadSelected = async () => {
+    if (selectedImageIds.size === 0) {
+      toast({
+        title: 'No images selected',
+        description: 'Please select at least one image to download',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    setIsDownloading(true)
+    try {
+      const JSZip = (await import('jszip')).default
+      const zip = new JSZip()
+      
+      // Fetch each selected image and add to zip
+      for (const imageId of selectedImageIds) {
+        // Find the image in rows
+        let image: GeneratedImage | null = null
+        let signedUrl = ''
+        
+        for (const row of rows) {
+          const images = (row as any).generated_images || []
+          const foundImage = images.find((img: GeneratedImage) => img.id === imageId)
+          if (foundImage) {
+            image = foundImage
+            signedUrl = rowStates[row.id]?.signedUrls[foundImage.output_url] || ''
+            break
+          }
+        }
+
+        if (image && signedUrl) {
+          try {
+            // Fetch the image as blob
+            const response = await fetch(signedUrl)
+            const blob = await response.blob()
+            
+            // Determine file extension from content type or URL
+            const extension = blob.type.includes('png') ? 'png' : 
+                            blob.type.includes('webp') ? 'webp' : 'jpg'
+            
+            // Add to zip with a meaningful filename
+            const filename = `image-${image.id.slice(0, 8)}.${extension}`
+            zip.file(filename, blob)
+          } catch (error) {
+            console.error(`Failed to fetch image ${imageId}:`, error)
+          }
+        }
+      }
+
+      // Generate and download zip
+      const blob = await zip.generateAsync({ type: 'blob' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `results-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.zip`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+
+      toast({
+        title: 'Download started',
+        description: `Downloading ${selectedImageIds.size} image${selectedImageIds.size === 1 ? '' : 's'} as ZIP file`
+      })
+
+      // Clear selections after download
+      setSelectedImageIds(new Set())
+      setIsSelectionMode(false)
+
+    } catch (error) {
+      console.error('Download failed:', error)
+      toast({
+        title: 'Download failed',
+        description: 'Could not create ZIP file. Please try again.',
+        variant: 'destructive'
+      })
+    } finally {
+      setIsDownloading(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Status Summary with Folder Drop Zone */}
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="text-sm text-muted-foreground">Status overview</div>
+            
+            {/* Compact Folder Drop Zone */}
+            <div
+              className={`relative transition-all duration-200 rounded-lg border-2 border-dashed px-4 py-2 min-w-[200px] ${
+                isFolderDropActive 
+                  ? 'border-primary bg-primary/5' 
+                  : 'border-muted-foreground/25 hover:border-muted-foreground/50'
+              }`}
+              onDragOver={handleFolderDragOver}
+              onDragLeave={handleFolderDragLeave}
+              onDrop={handleFolderDrop}
+            >
+              {isBulkUploading ? (
+                <div className="flex items-center gap-2">
+                  <Spinner size="sm" />
+                  <div className="text-xs">
+                    <div className="font-medium">Processing...</div>
+                    {bulkUploadState.length > 0 && (
+                      <div className="text-muted-foreground">
+                        {bulkUploadState.filter(item => item.status === 'uploading').length} of {bulkUploadState.length}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Folder className="h-4 w-4 text-muted-foreground" />
+                  <div className="text-xs">
+                    <div className="font-medium">
+                      {isFolderDropActive ? 'Drop folder' : 'Drop folder'}
+                    </div>
+                    <div className="text-muted-foreground">Bulk upload</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          
+          <div className="mt-3 flex gap-6 flex-wrap">
+            {(() => {
+              const counts = rows.reduce((acc, row) => {
+                const status = getLiveStatusForRow(row.id, row.status)
+                if (['queued', 'submitted'].includes(status)) acc.queued++
+                else if (['running', 'saving'].includes(status)) acc.processing++
+                else if (['done', 'succeeded'].includes(status)) acc.completed++
+                else if (['failed', 'error'].includes(status)) acc.failed++
+                return acc
+              }, { queued: 0, processing: 0, completed: 0, failed: 0 })
+              
+              return (
+                <>
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-yellow-500" />
+                    <span className="text-sm font-medium">{counts.queued}</span>
+                    <span className="text-xs text-muted-foreground">Queued</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
+                    <span className="text-sm font-medium">{counts.processing}</span>
+                    <span className="text-xs text-muted-foreground">Processing</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-green-500" />
+                    <span className="text-sm font-medium">{counts.completed}</span>
+                    <span className="text-xs text-muted-foreground">Completed</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-red-500" />
+                    <span className="text-sm font-medium">{counts.failed}</span>
+                    <span className="text-xs text-muted-foreground">Failed</span>
+                  </div>
+                </>
+              )
+            })()}
+          </div>
+          
+          {/* Progress indicator for bulk upload */}
+          {isBulkUploading && bulkUploadState.length > 0 && (
+            <div className="mt-3 space-y-2">
+              <Progress 
+                value={
+                  (bulkUploadState.filter(item => item.status === 'success').length / bulkUploadState.length) * 100
+                } 
+                className="h-1.5"
+              />
+              
+              {/* Individual file status - compact view */}
+              <div className="max-h-20 overflow-y-auto">
+                <div className="grid grid-cols-2 gap-1 text-xs">
+                  {bulkUploadState.map((item) => (
+                    <div key={item.rowId} className="flex items-center gap-1 px-2 py-1 rounded bg-muted/30">
+                      <div className="flex items-center">
+                        {item.status === 'pending' && <div className="w-2 h-2 rounded-full bg-gray-300" />}
+                        {item.status === 'uploading' && <Spinner size="sm" />}
+                        {item.status === 'success' && <CheckCircle className="w-2 h-2 text-green-500" />}
+                        {item.status === 'error' && <XCircle className="w-2 h-2 text-red-500" />}
+                      </div>
+                      <span className="truncate text-muted-foreground">{item.filename}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+
+      {/* Add Row Button */}
+      <div className="flex justify-between items-center">
+        <h2 className="text-lg font-medium">Generation Rows</h2>
+        <Button onClick={handleAddRow} size="sm">
+          <Plus className="h-4 w-4 mr-2" />
+          Add Row
+        </Button>
+      </div>
+
+      {/* Rows Table */}
+      <Card>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-20 align-top">Ref</TableHead>
+                  <TableHead className="w-24 align-top">Target</TableHead>
+                  <TableHead className="w-[16rem] md:w-[18rem] lg:w-[20rem] xl:w-[22rem] shrink-0 align-top">Prompt</TableHead>
+                  
+                  <TableHead className="w-28 align-top">Generate</TableHead>
+                  <TableHead className="w-20 align-top">Status</TableHead>
+                  <TableHead className="w-full align-top">
+                    <div className="flex items-center justify-between w-full">
+                      <span className={`flex-shrink-0 ${isSelectionMode ? 'text-blue-600 font-medium' : ''}`}>
+                        {isSelectionMode ? 'Select Images' : 'Results'}
+                      </span>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {!isSelectionMode ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setIsSelectionMode(true)
+                              setSelectedImageIds(new Set())
+                            }}
+                            className="h-6 px-2 text-xs whitespace-nowrap"
+                          >
+                            <Check className="w-3 h-3 mr-1" />
+                            Select
+                          </Button>
+                        ) : (
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <div className="flex items-center gap-1">
+                              <Checkbox
+                                checked={selectedImageIds.size > 0}
+                                onCheckedChange={handleSelectAll}
+                                className="h-3 w-3"
+                              />
+                              <span className="text-xs text-muted-foreground whitespace-nowrap">
+                                {selectedImageIds.size > 0 ? `${selectedImageIds.size} selected` : 'Select All'}
+                              </span>
+                            </div>
+                            {selectedImageIds.size > 0 && (
+                              <Button
+                                variant="default"
+                                size="sm"
+                                onClick={handleDownloadSelected}
+                                disabled={isDownloading}
+                                className="h-6 px-2 text-xs whitespace-nowrap"
+                              >
+                                {isDownloading ? (
+                                  <>
+                                    <Spinner size="sm" />
+                                    <span className="ml-1">Downloading...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Download className="w-3 h-3 mr-1" />
+                                    Download
+                                  </>
+                                )}
+                              </Button>
+                            )}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                setIsSelectionMode(false)
+                                setSelectedImageIds(new Set())
+                              }}
+                              className="h-6 px-2 text-xs whitespace-nowrap"
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </TableHead>
+                  <TableHead className="w-16 align-top">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((row) => {
+                  // Handle skeleton rows with loading state
+                  if ((row as any).isSkeleton) {
+                    return (
+                      <TableRow key={row.id} className="opacity-60">
+                        <TableCell className="align-top">
+                          <div className="space-y-2">
+                            <div className="w-16 h-16 bg-gray-200 rounded animate-pulse"></div>
+                          </div>
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <div className="space-y-2">
+                            <div className="w-16 h-16 bg-gray-200 rounded animate-pulse"></div>
+                          </div>
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <div className="space-y-2">
+                            <div className="h-4 bg-gray-200 rounded animate-pulse w-3/4"></div>
+                            <div className="h-3 bg-gray-200 rounded animate-pulse w-1/2"></div>
+                          </div>
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <div className="space-y-2">
+                            <div className="h-4 bg-gray-200 rounded animate-pulse w-1/4"></div>
+                            <div className="h-2 bg-gray-200 rounded animate-pulse w-full"></div>
+                          </div>
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <div className="space-y-2">
+                            <div className="h-4 bg-gray-200 rounded animate-pulse w-1/3"></div>
+                          </div>
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <div className="flex items-center gap-2">
+                            <Spinner size="sm" />
+                            <span className="text-sm text-muted-foreground">Creating...</span>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  }
+
+                  const rowState = getRowState(row.id)
+                  const images = (row as any).generated_images || []
+                  const displayStatus = getLiveStatusForRow(row.id, row.status)
+                  const displayProgress = statusToProgress(displayStatus)
+                  const live = Object.values(pollingState).find(s => s.rowId === row.id && s.polling)
+                  
+                  
+                  return (
+                    <TableRow key={row.id} aria-busy={isActiveStatus(displayStatus)}>
+                      {/* 1. Reference Image */}
+                      <TableCell className="align-top">
+                        <div className="space-y-2">
+                          {/* Display reference images */}
+                          <div className="flex flex-wrap gap-2">
+                            {row.ref_image_urls && row.ref_image_urls.length > 0 ? (
+                              row.ref_image_urls.map((refUrl, index) => (
+                                <Dialog key={index}>
+                                  <div className="relative group">
+                                    <DialogTrigger asChild>
+                                      <div className="cursor-zoom-in">
+                                        <Thumb
+                                          src={rowState.signedUrls[refUrl]}
+                                          alt={`Reference image ${index + 1}`}
+                                          size={64}
+                                          className="transition-transform group-hover:scale-[1.02]"
+                                        />
+                                      </div>
+                                    </DialogTrigger>
+                                    <DialogContent className="max-w-4xl">
+                                      <DialogHeader>
+                                        <DialogTitle>Reference Image {index + 1}</DialogTitle>
+                                      </DialogHeader>
+                                      <div className="flex justify-center">
+                                        <Image
+                                          src={rowState.signedUrls[refUrl] || ''}
+                                          alt={`Reference image ${index + 1}`}
+                                          width={1600}
+                                          height={1600}
+                                          className="max-w-full max-h-[80vh] object-contain rounded-lg"
+                                          unoptimized
+                                        />
+                                      </div>
+                                    </DialogContent>
+                                  </div>
+                                </Dialog>
+                              ))
+                            ) : (row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url ? (
+                              <Dialog>
+                                <div className="relative group">
+                                  <DialogTrigger asChild>
+                                    <div className="cursor-zoom-in">
+                                      <Thumb
+                                        src={rowState.signedUrls[model.default_ref_headshot_url]}
+                                        alt="Default reference image"
+                                        size={64}
+                                        className="transition-transform group-hover:scale-[1.02]"
+                                      />
+                                    </div>
+                                  </DialogTrigger>
+                                </div>
+                                <DialogContent className="max-w-4xl">
+                                  <DialogHeader>
+                                    <DialogTitle>Default Reference Image</DialogTitle>
+                                  </DialogHeader>
+                                  <div className="flex justify-center">
+                                    <Image
+                                      src={rowState.signedUrls[model.default_ref_headshot_url] || ''}
+                                      alt="Default reference image"
+                                      width={1600}
+                                      height={1600}
+                                      className="max-w-full max-h-[80vh] object-contain rounded-lg"
+                                      unoptimized
+                                    />
+                                  </div>
+                                </DialogContent>
+                              </Dialog>
+                            ) : (
+                              <div className="w-16 h-16 border-2 border-dashed border-gray-300 rounded flex items-center justify-center text-gray-400 text-xs">
+                                No ref
+                              </div>
+                            )}
+                          </div>
+                          
+                          {/* Upload button */}
+                          <div className="flex gap-1">
+                            <input
+                              ref={(el) => { if (el) fileInputRefs.current[`ref-${row.id}`] = el }}
+                              type="file"
+                              accept="image/*"
+                              multiple
+                              onChange={async (e) => {
+                                const files = Array.from(e.target.files || [])
+                                if (files.length === 0) return
+                                
+                                try {
+                                  const { data: { user } } = await supabase.auth.getUser()
+                                  if (!user) throw new Error('Not authenticated')
+                                  
+                                  const uploadPromises = files.map(file => {
+                                    validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 10)
+                                    return uploadImage(file, 'refs', user.id)
+                                  })
+                                  
+                                  const results = await Promise.all(uploadPromises)
+                                  const newRefs = [...(row.ref_image_urls || []), ...results.map(r => r.objectPath)]
+                                  
+                                  await fetch(`/api/rows/${row.id}`, {
+                                    method: 'PATCH',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ ref_image_urls: newRefs })
+                                  })
+                                  refreshRowData()
+                                  toast({ title: `Added ${files.length} reference image${files.length === 1 ? '' : 's'}` })
+                                } catch (err) {
+                                  toast({ title: 'Ref upload failed', description: err instanceof Error ? err.message : 'Error', variant: 'destructive' })
+                                } finally {
+                                  // Clear the input using the ref to avoid null reference error
+                                  const input = fileInputRefs.current[`ref-${row.id}`]
+                                  if (input) {
+                                    input.value = ''
+                                  }
+                                }
+                              }}
+                              className="hidden"
+                            />
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => fileInputRefs.current[`ref-${row.id}`]?.click()}
+                              className="text-xs h-8 px-3 w-auto bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700 hover:text-slate-800 transition-colors duration-200"
+                            >
+                              <Plus className="w-3 h-3 mr-1.5" />
+                              Add Ref
+                            </Button>
+                            {row.ref_image_urls && row.ref_image_urls.length > 0 && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={async () => {
+                                  await fetch(`/api/rows/${row.id}`, {
+                                    method: 'PATCH',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ ref_image_urls: [] })
+                                  })
+                                  refreshRowData()
+                                }}
+                                className="text-xs h-6 px-2 bg-orange-100 hover:bg-orange-200 border-orange-300 text-orange-700 hover:text-orange-800 transition-colors duration-200"
+                              >
+                                <X className="w-3 h-3 mr-1" />
+                                Clear All
+                              </Button>
+                            )}
+                          </div>
+                          
+                          {/* Remove buttons for reference images */}
+                          {((row.ref_image_urls && row.ref_image_urls.length > 0) || (row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url) && (
+                            <div className="flex flex-wrap gap-1 mt-2">
+                              {/* Remove buttons for row-specific reference images */}
+                              {row.ref_image_urls && row.ref_image_urls.length > 0 && 
+                                row.ref_image_urls.map((refUrl, index) => (
+                                   <Button
+                                     key={`remove-${index}`}
+                                     size="sm"
+                                     variant="destructive"
+                                     onClick={async () => {
+                                       const newRefs = row.ref_image_urls?.filter((_, i) => i !== index) || []
+                                       await fetch(`/api/rows/${row.id}`, {
+                                         method: 'PATCH',
+                                         headers: { 'Content-Type': 'application/json' },
+                                         body: JSON.stringify({ ref_image_urls: newRefs })
+                                       })
+                                       refreshRowData()
+                                     }}
+                                     className="text-xs h-6 px-2 bg-red-500 hover:bg-red-600 text-white border-red-500 hover:border-red-600 transition-colors duration-200 shadow-sm"
+                                     title={`Remove reference image ${index + 1}`}
+                                   >
+                                     <X className="w-3 h-3 mr-1" />
+                                     Remove {index + 1}
+                                   </Button>
+                                ))
+                              }
+                              
+                               {/* Remove button for default reference image (only show when ref_image_urls is null/undefined, not when it's explicitly empty []) */}
+                               {(row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url && (
+                                 <Button
+                                   size="sm"
+                                   variant="destructive"
+                                   onClick={async () => {
+                                     // Set ref_image_urls to empty array to disable default ref
+                                     await fetch(`/api/rows/${row.id}`, {
+                                       method: 'PATCH',
+                                       headers: { 'Content-Type': 'application/json' },
+                                       body: JSON.stringify({ ref_image_urls: [] })
+                                     })
+                                     refreshRowData()
+                                   }}
+                                   className="text-xs px-3 w-auto h-8 flex flex-col items-center justify-center leading-none bg-red-500 hover:bg-red-600 text-white border-red-500 hover:border-red-600 transition-colors duration-200 shadow-sm"
+                                   title="Remove default reference image"
+                                 >
+                                   <div className="flex items-center">
+                                     <X className="w-3 h-3 mr-1.5" />
+                                     Remove
+                                   </div>
+                                   <div>Default</div>
+                                 </Button>
+                               )}
+                            </div>
+                          )}
+                        </div>
+                      </TableCell>
+                      
+                      {/* 2. Target Image (Drag & Drop) */}
+                      <TableCell className="align-top">
+                        <div
+                          className="relative group"
+                          onDragOver={handleDragOver}
+                          onDrop={(e) => handleDrop(e, row.id)}
+                        >
+                          {row.target_image_url ? (
+                            <Dialog>
+                              <div className="relative group">
+                                <DialogTrigger asChild>
+                                  <div className="cursor-zoom-in">
+                                    <Thumb
+                                      src={rowState.signedUrls[row.target_image_url]}
+                                      alt="Target image"
+                                      size={88}
+                                      className="transition-transform group-hover:scale-[1.02]"
+                                    />
+                                  </div>
+                                </DialogTrigger>
+                                <div className="absolute inset-0 hidden group-hover:flex items-center justify-center bg-black/40 rounded">
+                                  <button
+                                    className="text-white text-[10px] px-1 py-0.5 bg-white/20 rounded"
+                                    onClick={async (e) => {
+                                      e.stopPropagation()
+                                      await fetch(`/api/rows/${row.id}`, {
+                                        method: 'PATCH',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ target_image_url: '' })
+                                      })
+                                      refreshRowData()
+                                    }}
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                                <DialogContent className="max-w-4xl">
+                                  <DialogHeader>
+                                    <DialogTitle>Target Image</DialogTitle>
+                                  </DialogHeader>
+                                  <div className="flex justify-center">
+                                    <Image
+                                      src={rowState.signedUrls[row.target_image_url] || ''}
+                                      alt="Target image"
+                                      width={1600}
+                                      height={1600}
+                                      className="max-w-full max-h-[80vh] object-contain rounded-lg"
+                                      unoptimized
+                                    />
+                                  </div>
+                                </DialogContent>
+                              </div>
+                            </Dialog>
+                          ) : (
+                            <div 
+                              className="relative flex h-22 w-22 items-center justify-center rounded-2xl border-2 border-dashed border-muted-foreground/25 bg-muted text-muted-foreground transition-colors hover:border-muted-foreground/50"
+                              onClick={() => fileInputRefs.current[row.id]?.click()}
+                            >
+                              <Upload className="h-5 w-5" />
+                            </div>
+                          )}
+                          <input
+                            ref={(el) => {
+                              if (el) fileInputRefs.current[row.id] = el
+                            }}
+                            type="file"
+                            accept="image/*"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0]
+                              if (file) handleTargetImageUpload(file, row.id)
+                            }}
+                            className="hidden"
+                          />
+                        </div>
+                      </TableCell>
+                      
+                      {/* 3. Prompt Editor */}
+                      <TableCell className="align-top">
+                        <Dialog>
+                          <div className="flex flex-col gap-1">
+                            <Textarea
+                              value={row.prompt_override || model.default_prompt || ''}
+                              placeholder="Enter prompt..."
+                              className="min-h-[80px] md:min-h-[88px] resize-y bg-muted/60 w-[16rem] md:w-[18rem] lg:w-[20rem] xl:w-[22rem] select-text shrink-0"
+                              onChange={(e) => {
+                                // Update local state immediately for responsive UI
+                                setRows(prev => prev.map(r => 
+                                  r.id === row.id 
+                                    ? { ...r, prompt_override: e.target.value }
+                                    : r
+                                ))
+                              }}
+                              onBlur={(e) => handlePromptUpdate(row.id, e.target.value)}
+                              onKeyDown={(e) => {
+                                if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                                  const target = e.target as HTMLTextAreaElement
+                                  handlePromptUpdate(row.id, target.value)
+                                  handleGenerate(row.id)
+                                }
+                              }}
+                            />
+                            <div className="flex gap-1">
+                              <DialogTrigger asChild>
+                                <Button variant="soft" size="sm">Expand</Button>
+                              </DialogTrigger>
+                              <Button 
+                                variant="outline" 
+                                size="sm"
+                                onClick={() => handleAiPromptGeneration(row.id)}
+                                disabled={rowState.isGeneratingPrompt || !hasValidImages(row)}
+                                title="Generate AI prompt from images"
+                              >
+                                {rowState.isGeneratingPrompt ? (
+                                  <Spinner size="sm" />
+                                ) : (
+                                  <Wand2 className="w-3.5 h-3.5" />
+                                )}
+                              </Button>
+                            </div>
+                          </div>
+                          <DialogContent className="max-w-3xl">
+                            <DialogHeader>
+                              <DialogTitle>Edit Prompt</DialogTitle>
+                            </DialogHeader>
+                            <div className="space-y-2">
+                              <Textarea
+                                value={row.prompt_override || model.default_prompt || ''}
+                                className="min-h-[40vh] w-full resize-y"
+                                onChange={(e) => {
+                                  // Update local state immediately for responsive UI
+                                  setRows(prev => prev.map(r => 
+                                    r.id === row.id 
+                                      ? { ...r, prompt_override: e.target.value }
+                                      : r
+                                  ))
+                                }}
+                                onBlur={(e) => handlePromptUpdate(row.id, e.target.value)}
+                              />
+                            </div>
+                          </DialogContent>
+                        </Dialog>
+                      </TableCell>
+                      
+                      
+                      
+                      {/* Generate Button */}
+                      <TableCell className="align-top">
+                        {(() => {
+                          const hasTarget = Boolean(row?.target_image_url)
+                          const disabledReason = !hasTarget
+                            ? 'Upload a target image first'
+                            : ''
+                          const isDisabled = !hasTarget || rowState.isGenerating || isActiveStatus(displayStatus)
+                          return (
+                            <Tooltip open={isDisabled && !!disabledReason ? undefined : false}>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  onClick={() => handleGenerate(row.id)}
+                                  disabled={isDisabled}
+                                  size="sm"
+                                  aria-busy={rowState.isGenerating || isActiveStatus(displayStatus)}
+                                  className="gap-2 transition-opacity duration-200"
+                                >
+                                  {isActiveStatus(displayStatus) ? (
+                                    <>
+                                      <Spinner 
+                                        key={`spinner-${row.id}-${displayStatus}`}
+                                        size="sm"
+                                      />
+                                      {getStatusLabel(displayStatus)}
+                                    </>
+                                  ) : rowState.isGenerating ? (
+                                    <>
+                                      <Spinner 
+                                        key={`spinner-${row.id}-generating`}
+                                        size="sm"
+                                      />
+                                      Generating
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Sparkles className="h-4 w-4 transition-transform hover:scale-110" />
+                                      Generate
+                                    </>
+                                  )}
+                                </Button>
+                              </TooltipTrigger>
+                              {disabledReason && (
+                                <TooltipContent>{disabledReason}</TooltipContent>
+                              )}
+                            </Tooltip>
+                          )
+                        })()}
+                        {live?.queuePosition !== undefined && isActiveStatus(displayStatus) && (
+                          <div className="mt-1 text-[10px] text-muted-foreground">{live.queuePosition > 0 ? `#${live.queuePosition} in queue` : 'In progress'}</div>
+                        )}
+                      </TableCell>
+                      
+                      {/* 6. Status */}
+                      <TableCell className="align-top">
+                        <div className="flex flex-col gap-2 min-w-[6.5rem]" aria-live="polite">
+                          <Badge variant={getStatusColor(displayStatus) as any} className="w-fit">
+                            <span className="inline-flex items-center gap-2">
+                              {isActiveStatus(displayStatus) && (
+                                <span className="h-2.5 w-2.5 rounded-full bg-current animate-pulse" />
+                              )}
+                              {getStatusLabel(displayStatus)}
+                            </span>
+                          </Badge>
+                          <Progress value={displayProgress} className="h-1.5" />
+                        </div>
+                      </TableCell>
+                      
+                      {/* 7. Results (Horizontal Single Row Scroll) */}
+                      <TableCell className="align-top">
+                        <div className="flex flex-nowrap gap-2 pb-2 h-[112px] overflow-x-auto overflow-y-hidden overscroll-x-contain -mx-1 px-1 snap-x snap-mandatory">
+                          {images.length > 0 ? (
+                            images.map((image: GeneratedImage) => (
+                              <Dialog key={image.id}>
+                                <div className="relative group">
+                                  {!isSelectionMode ? (
+                                    <DialogTrigger asChild>
+                                      <div className="relative cursor-zoom-in">
+                                        <Thumb
+                                          src={rowState.signedUrls[image.output_url]}
+                                          alt="Generated image"
+                                          size={96}
+                                          className="flex-shrink-0 snap-start"
+                                        />
+                                        {/* Favorite button overlay - always visible in top-left */}
+                                        {(() => {
+                                          const isFavorited = favoritesState[image.id] ?? (image.is_favorited === true)
+                                          
+                                          return (
+                                            <button
+                                              key={`star-${image.id}-${isFavorited}`}
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                handleToggleFavorite(image.id, isFavorited)
+                                              }}
+                                              className={`absolute top-1 left-1 p-1.5 rounded-full transition-all duration-200 z-20 ${
+                                                isFavorited
+                                                  ? 'bg-transparent hover:bg-black/20'
+                                                  : 'bg-transparent hover:bg-black/20'
+                                              }`}
+                                              title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+                                              style={{ position: 'absolute', top: '4px', left: '4px', zIndex: 20 }}
+                                            >
+                                              {isFavorited ? (
+                                                // Favorited state - filled yellow star
+                                                <div className="w-4 h-4 flex items-center justify-center relative">
+                                                  <Star className="w-4 h-4 text-yellow-400" style={{ fill: 'currentColor' }} />
+                                                  <div className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full"></div>
+                                                </div>
+                                              ) : (
+                                                // Not favorited state - outline white star
+                                                <Star className="w-4 h-4 text-white hover:text-yellow-300" />
+                                              )}
+                                            </button>
+                                          )
+                                        })()}
+                                      </div>
+                                    </DialogTrigger>
+                                  ) : (
+                                    <div 
+                                      className={`relative cursor-pointer transition-all duration-200 ${
+                                        selectedImageIds.has(image.id) 
+                                          ? 'ring-2 ring-blue-500 ring-offset-2' 
+                                          : 'hover:ring-1 hover:ring-gray-300'
+                                      }`} 
+                                      onClick={() => handleToggleImageSelection(image.id)}
+                                    >
+                                      <Thumb
+                                        src={rowState.signedUrls[image.output_url]}
+                                        alt="Generated image"
+                                        size={96}
+                                        className={`flex-shrink-0 snap-start transition-opacity duration-200 ${
+                                          selectedImageIds.has(image.id) ? 'opacity-80' : ''
+                                        }`}
+                                      />
+                                      {/* Favorite button overlay - always visible in top-left */}
+                                      {(() => {
+                                        const isFavorited = favoritesState[image.id] ?? (image.is_favorited === true)
+                                        
+                                        return (
+                                          <button
+                                            key={`star-${image.id}-${isFavorited}`}
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              handleToggleFavorite(image.id, isFavorited)
+                                            }}
+                                            className={`absolute top-1 left-1 p-1.5 rounded-full transition-all duration-200 z-20 ${
+                                              isFavorited
+                                                ? 'bg-transparent hover:bg-black/20'
+                                                : 'bg-transparent hover:bg-black/20'
+                                            }`}
+                                            title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+                                            style={{ position: 'absolute', top: '4px', left: '4px', zIndex: 20 }}
+                                          >
+                                            {isFavorited ? (
+                                              // Favorited state - filled yellow star
+                                              <div className="w-4 h-4 flex items-center justify-center relative">
+                                                <Star className="w-4 h-4 text-yellow-400" style={{ fill: 'currentColor' }} />
+                                                <div className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full"></div>
+                                              </div>
+                                            ) : (
+                                              // Not favorited state - outline white star
+                                              <Star className="w-4 h-4 text-white hover:text-yellow-300" />
+                                            )}
+                                          </button>
+                                        )
+                                      })()}
+                                      {/* Selection checkbox overlay - in bottom-right when in selection mode */}
+                                      {isSelectionMode && (
+                                        <div 
+                                          className="absolute bottom-1 right-1 z-20"
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            e.preventDefault()
+                                            handleToggleImageSelection(image.id)
+                                          }}
+                                          style={{ position: 'absolute', bottom: '4px', right: '4px', zIndex: 20 }}
+                                        >
+                                          <div className="p-1 rounded-full bg-transparent">
+                                            <Checkbox
+                                              checked={selectedImageIds.has(image.id)}
+                                              onCheckedChange={(checked) => {
+                                                handleToggleImageSelection(image.id)
+                                              }}
+                                              className="h-4 w-4"
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                e.preventDefault()
+                                              }}
+                                            />
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                                <DialogContent className="max-w-5xl">
+                                  <DialogHeader>
+                                    <DialogTitle>Generated Image</DialogTitle>
+                                  </DialogHeader>
+                                  <div className="flex justify-center">
+                                    <Image
+                                      src={rowState.signedUrls[image.output_url] || ''}
+                                      alt="Generated image"
+                                      width={1920}
+                                      height={1920}
+                                      className="max-w-full max-h-[80vh] object-contain rounded-lg"
+                                      unoptimized
+                                    />
+                                  </div>
+                                </DialogContent>
+                              </Dialog>
+                            ))
+                          ) : (isActiveStatus(displayStatus) || rowState.isLoadingResults) ? (
+                            <div className="flex items-center gap-3">
+                              <div className="h-[72px] w-[72px] rounded-xl bg-muted animate-pulse" />
+                              <div className="h-[72px] w-[72px] rounded-xl bg-muted animate-pulse" />
+                              {rowState.isLoadingResults && (
+                                <span className="text-xs text-muted-foreground">Loading images…</span>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-center h-14 px-4 text-xs text-muted-foreground">
+                              No images yet
+                            </div>
+                          )}
+                        </div>
+                      </TableCell>
+                      
+                      {/* 8. Actions */}
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleRemoveRow(row.id)}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {rows.length === 0 && (
+        <Card>
+          <CardContent className="p-8 text-center">
+            <p className="text-muted-foreground mb-4">No rows yet. Add your first row to start generating images.</p>
+            <Button onClick={handleAddRow}>
+              <Plus className="h-4 w-4 mr-2" />
+              Add First Row
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}
