@@ -3,7 +3,7 @@ import { GrokVisionRequest, GrokVisionResponse, GrokVisionMessage, GrokVisionCon
 const XAI_API_BASE = 'https://api.x.ai/v1'
 // Try different model names in order of preference (latest models first)
 const GROK_MODELS = ['grok-4-fast-reasoning', 'grok-4', 'grok-3-mini', 'grok-2-vision-1212', 'grok-2-image-1212']
-const GROK_VISION_MODEL = GROK_MODELS[0] // Start with the most likely to work
+// const GROK_VISION_MODEL = GROK_MODELS[0] // Start with the most likely to work
 
 export async function generatePromptWithGrok(refUrls: string[], targetUrl: string): Promise<string> {
   // Handle target-only processing (no reference images)

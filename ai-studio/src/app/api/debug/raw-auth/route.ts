@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
-export async function GET(_: NextRequest) {
+export async function GET(_request: NextRequest) {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
   const service = process.env.SUPABASE_SERVICE_ROLE_KEY
   

@@ -8,12 +8,15 @@ export const ThemeToggle = () => {
   const [isDark, setIsDark] = useState(false);
 
   useEffect(() => {
-    const root = document.documentElement;
+    // Initialize state based on current theme
     const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
     const stored = localStorage.getItem("theme");
     const current = stored ?? (prefersDark ? "dark" : "light");
-    root.classList.toggle("dark", current === "dark");
-    setIsDark(current === "dark");
+    
+    // Use setTimeout to avoid synchronous setState in effect
+    setTimeout(() => {
+      setIsDark(current === "dark");
+    }, 0);
   }, []);
 
   const toggle = () => {

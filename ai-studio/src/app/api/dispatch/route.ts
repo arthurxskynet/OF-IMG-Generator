@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import axios from 'axios'
 import { supabaseAdmin } from '@/lib/supabase-admin'
 import { signPath } from '@/lib/storage'
-import { getRemoteImageSizeAsSeedream } from '@/lib/server-utils'
-import { normalizeSizeOrDefault } from '@/lib/utils'
+// import { getRemoteImageSizeAsSeedream } from '@/lib/server-utils'
+// import { normalizeSizeOrDefault } from '@/lib/utils'
 import type { Job } from '@/types/jobs'
 
 const MAX_CONCURRENCY = Number(process.env.DISPATCH_MAX_CONCURRENCY || 3)

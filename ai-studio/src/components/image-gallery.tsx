@@ -15,7 +15,7 @@ interface ImageGalleryProps {
   getSignedUrl: (path: string) => Promise<string>
 }
 
-export function ImageGallery({ images, getSignedUrl }: ImageGalleryProps) {
+export function ImageGallery({ images }: ImageGalleryProps) {
   const { toast } = useToast()
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({})
   const [loadingImages, setLoadingImages] = useState<Set<string>>(new Set())
@@ -69,7 +69,7 @@ export function ImageGallery({ images, getSignedUrl }: ImageGalleryProps) {
         title: 'URL Copied',
         description: 'Image URL has been copied to clipboard'
       })
-    } catch (error) {
+    } catch {
       toast({
         title: 'Copy Failed',
         description: 'Failed to copy URL to clipboard',

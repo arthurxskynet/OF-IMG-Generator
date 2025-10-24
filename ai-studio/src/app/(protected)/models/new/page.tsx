@@ -20,7 +20,7 @@ const schema = z.object({
   requests_default: z.number().int().min(1).max(50),
 });
 
-interface FormValues extends z.infer<typeof schema> {}
+type FormValues = z.infer<typeof schema>;
 
 const Page = () => {
   const [isLoading, setIsLoading] = useState(false);
@@ -30,7 +30,7 @@ const Page = () => {
   const { toast } = useToast();
   const supabase = createClient();
 
-  const { register, handleSubmit, formState: { errors }, setValue, watch } = useForm<FormValues>({ 
+  const { register, handleSubmit, formState: { errors } } = useForm<FormValues>({ 
     resolver: zodResolver(schema),
     defaultValues: {
       requests_default: 6,

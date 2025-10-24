@@ -28,6 +28,25 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  const stored = localStorage.getItem('theme');
+                  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                  const theme = stored ?? (prefersDark ? 'dark' : 'light');
+                  document.documentElement.classList.toggle('dark', theme === 'dark');
+                } catch (e) {
+                  // Fallback to light theme if localStorage is not available
+                  document.documentElement.classList.remove('dark');
+                }
+              })();
+            `,
+          }}
+        />
+      </head>
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <ThemeProvider>{children}</ThemeProvider>
       </body>

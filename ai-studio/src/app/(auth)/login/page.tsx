@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { useRouter } from "next/navigation";
+// import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 
 const schema = z.object({
@@ -16,10 +16,9 @@ const schema = z.object({
   password: z.string().min(6),
 });
 
-interface FormValues extends z.infer<typeof schema> {}
+type FormValues = z.infer<typeof schema>;
 
 const Page = () => {
-  const router = useRouter();
   const supabase = createClient();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

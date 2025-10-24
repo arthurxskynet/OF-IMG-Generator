@@ -3,8 +3,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
@@ -52,7 +51,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   const supabase = createClient()
   const [rows, setRows] = useState(initialRows)
   const [rowStates, setRowStates] = useState<Record<string, RowState>>({})
-  const [deletedRowIds, setDeletedRowIds] = useState<Set<string>>(new Set())
+  const [, setDeletedRowIds] = useState<Set<string>>(new Set())
   const fileInputRefs = useRef<Record<string, HTMLInputElement>>({})
   
   // Folder drop state
@@ -83,14 +82,14 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   }, [rows])
   
   // Helper function to get current favorite status (prioritizes UI state over data state)
-  const getFavoriteStatus = (imageId: string, dataStatus: boolean | undefined): boolean => {
-    // Always check UI state first for instant updates
-    if (favoritesState.hasOwnProperty(imageId)) {
-      return favoritesState[imageId]
-    }
-    // Fallback to data status
-    return dataStatus === true
-  }
+  // const getFavoriteStatus = (imageId: string, dataStatus: boolean | undefined): boolean => {
+  //   // Always check UI state first for instant updates
+  //   if (favoritesState.hasOwnProperty(imageId)) {
+  //     return favoritesState[imageId]
+  //   }
+  //   // Fallback to data status
+  //   return dataStatus === true
+  // }
 
   // Job polling hook
   // Debounce refresh to avoid redundant fetches when many jobs complete together

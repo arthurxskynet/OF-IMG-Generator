@@ -18,7 +18,7 @@ export function Spinner({ className, size = 'sm' }: SpinnerProps) {
 
   useEffect(() => {
     let animationId: number
-    let startTime = Date.now()
+    const startTime = Date.now()
 
     const animate = () => {
       const elapsed = Date.now() - startTime
