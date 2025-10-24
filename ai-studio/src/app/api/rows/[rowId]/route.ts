@@ -62,6 +62,22 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ro
     const body = await req.json();
     const validatedData = UpdateRowSchema.parse(body);
 
+    // First, verify the row exists and belongs to the user
+    const { data: existingRow, error: fetchError } = await supabase
+      .from("model_rows")
+      .select("id, model_id, models!inner(owner_id)")
+      .eq("id", rowId)
+      .single();
+
+    if (fetchError || !existingRow) {
+      return NextResponse.json({ error: "Row not found" }, { status: 404 });
+    }
+
+    // Check if user owns the model
+    if (existingRow.models.owner_id !== user.id) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
     // Align with databases that still enforce NOT NULL on target_image_url
     const updateData = {
       ...validatedData,
@@ -77,7 +93,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ro
 
     if (error) {
       console.error("Failed to update row:", error);
-      return NextResponse.json({ error: "Failed to update row" }, { status: 500 });
+      return NextResponse.json({ 
+        error: "Failed to update row", 
+        details: error.message 
+      }, { status: 500 });
     }
 
     if (!row) {
@@ -94,7 +113,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ro
     }
     
     console.error("Row PATCH error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json({ 
+      error: "Internal server error",
+      details: error instanceof Error ? error.message : "Unknown error"
+    }, { status: 500 });
   }
 }
 

@@ -51,6 +51,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   const { toast } = useToast()
   const supabase = createClient()
   const [rows, setRows] = useState(initialRows)
+  
+  // Debug: Log model info
+  console.log('ModelWorkspace received model:', { id: model.id, name: model.name, owner_id: model.owner_id })
   const [rowStates, setRowStates] = useState<Record<string, RowState>>({})
   const [, setDeletedRowIds] = useState<Set<string>>(new Set())
   const fileInputRefs = useRef<Record<string, HTMLInputElement>>({})
@@ -428,23 +431,33 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error('Not authenticated')
 
-      const result = await uploadImage(file, 'targets', user.id)
-      
-      // Update row with new target image
-      const response = await fetch(`/api/rows/${rowId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          target_image_url: result.objectPath
+      // Use retry logic for single image upload
+      await retryWithBackoff(async () => {
+        // Refresh auth token before upload
+        await refreshAuth()
+        
+        const result = await uploadImage(file, 'targets', user.id)
+        
+        // Update row with new target image
+        const response = await fetch(`/api/rows/${rowId}`, {
+          method: 'PATCH',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+          },
+          body: JSON.stringify({
+            target_image_url: result.objectPath
+          })
         })
-      })
 
-      if (!response.ok) {
-        throw new Error('Failed to update row')
-      }
+        if (!response.ok) {
+          const errorText = await response.text()
+          throw new Error(`Failed to update row: ${response.status} ${errorText}`)
+        }
 
-      const { row } = await response.json()
-      setRows(prev => prev.map(r => r.id === rowId ? row : r))
+        const { row } = await response.json()
+        setRows(prev => prev.map(r => r.id === rowId ? row : r))
+      }, 3, 1000)
       
       toast({
         title: 'Image uploaded',
@@ -681,6 +694,75 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     }
   }
 
+  // Helper function to retry operations with exponential backoff
+  const retryWithBackoff = async (
+    operation: () => Promise<any>,
+    maxRetries: number = 3,
+    baseDelay: number = 1000
+  ): Promise<any> => {
+    let lastError: Error
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation()
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error('Unknown error')
+        
+        if (attempt === maxRetries) {
+          throw lastError
+        }
+        
+        // Exponential backoff with jitter
+        const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000
+        await new Promise(resolve => setTimeout(resolve, delay))
+      }
+    }
+    
+    throw lastError!
+  }
+
+  // Helper function to refresh authentication token
+  const refreshAuth = async () => {
+    const { data: { session }, error } = await supabase.auth.refreshSession()
+    if (error) {
+      throw new Error('Failed to refresh authentication')
+    }
+    return session
+  }
+
+  // Helper function to upload a single image with retry logic
+  const uploadSingleImage = async (row: any, file: File, user: any): Promise<void> => {
+    return retryWithBackoff(async () => {
+      // Refresh auth token before each upload to prevent expiry
+      await refreshAuth()
+      
+      // Upload the image
+      const result = await uploadImage(file, 'targets', user.id)
+      
+      // Update the row with the uploaded image
+      const updateResponse = await fetch(`/api/rows/${row.id}`, {
+        method: 'PATCH',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+        },
+        body: JSON.stringify({
+          target_image_url: result.objectPath
+        })
+      })
+
+      if (!updateResponse.ok) {
+        const errorText = await updateResponse.text()
+        throw new Error(`Failed to update row for ${file.name}: ${updateResponse.status} ${errorText}`)
+      }
+
+      const { row: updatedRow } = await updateResponse.json()
+      
+      // Update the row in the UI
+      setRows(prev => prev.map(r => r.id === row.id ? updatedRow : r))
+    }, 3, 1000)
+  }
+
   // Handle bulk image upload
   const handleBulkImageUpload = async (imageFiles: File[]) => {
     setIsBulkUploading(true)
@@ -690,22 +772,34 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error('Not authenticated')
 
-      // Step 1: Create all rows first
+      console.log('Bulk upload starting for model:', model.id, 'user:', user.id, 'files:', imageFiles.length);
+
+      // Step 1: Create all rows first with retry logic
       const createRowPromises = imageFiles.map(async (file) => {
-        const response = await fetch('/api/rows', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model_id: model.id
+        return retryWithBackoff(async () => {
+          console.log('Creating row for file:', file.name, 'model:', model.id);
+          
+          const response = await fetch('/api/rows', {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+            },
+            body: JSON.stringify({
+              model_id: model.id
+            })
           })
-        })
 
-        if (!response.ok) {
-          throw new Error(`Failed to create row for ${file.name}`)
-        }
+          if (!response.ok) {
+            const errorText = await response.text()
+            console.error('Row creation failed:', { file: file.name, status: response.status, error: errorText });
+            throw new Error(`Failed to create row for ${file.name}: ${response.status} ${errorText}`)
+          }
 
-        const { row } = await response.json()
-        return { row, file }
+          const { row } = await response.json()
+          console.log('Row created successfully:', row.id);
+          return { row, file }
+        }, 3, 1000)
       })
 
       const createdRows = await Promise.all(createRowPromises)
@@ -722,66 +816,70 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       // Add new rows to the UI immediately
       setRows(prev => [...prev, ...createdRows.map(({ row }) => row)])
 
-      // Step 2: Upload images sequentially and update rows
+      // Step 2: Upload images in batches to avoid overwhelming the server
+      const BATCH_SIZE = 3 // Process 3 images at a time
+      const batches = []
+      for (let i = 0; i < createdRows.length; i += BATCH_SIZE) {
+        batches.push(createdRows.slice(i, i + BATCH_SIZE))
+      }
+
       let successCount = 0
       let errorCount = 0
 
-      for (let i = 0; i < createdRows.length; i++) {
-        const { row, file } = createdRows[i]
-        
-        try {
-          // Update status to uploading
-          setBulkUploadState(prev => prev.map(item => 
-            item.rowId === row.id 
-              ? { ...item, status: 'uploading', progress: 0 }
-              : item
-          ))
+      for (const batch of batches) {
+        const batchPromises = batch.map(async ({ row, file }) => {
+          try {
+            // Update status to uploading
+            setBulkUploadState(prev => prev.map(item => 
+              item.rowId === row.id 
+                ? { ...item, status: 'uploading', progress: 0 }
+                : item
+            ))
 
-          // Upload the image
-          const result = await uploadImage(file, 'targets', user.id)
-          
-          // Update the row with the uploaded image
-          const updateResponse = await fetch(`/api/rows/${row.id}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              target_image_url: result.objectPath
-            })
-          })
+            await uploadSingleImage(row, file, user)
+            
+            // Update bulk upload state to success
+            setBulkUploadState(prev => prev.map(item => 
+              item.rowId === row.id 
+                ? { ...item, status: 'success', progress: 100 }
+                : item
+            ))
 
-          if (!updateResponse.ok) {
-            throw new Error(`Failed to update row for ${file.name}`)
+            return { success: true, filename: file.name }
+          } catch (error) {
+            console.error(`Error uploading ${file.name}:`, error)
+            
+            // Update bulk upload state to error
+            setBulkUploadState(prev => prev.map(item => 
+              item.rowId === row.id 
+                ? { 
+                    ...item, 
+                    status: 'error', 
+                    progress: 0,
+                    error: error instanceof Error ? error.message : 'Upload failed'
+                  }
+                : item
+            ))
+
+            return { success: false, filename: file.name, error }
           }
+        })
 
-          const { row: updatedRow } = await updateResponse.json()
-          
-          // Update the row in the UI
-          setRows(prev => prev.map(r => r.id === row.id ? updatedRow : r))
-          
-          // Update bulk upload state to success
-          setBulkUploadState(prev => prev.map(item => 
-            item.rowId === row.id 
-              ? { ...item, status: 'success', progress: 100 }
-              : item
-          ))
+        // Wait for current batch to complete before starting next batch
+        const batchResults = await Promise.all(batchPromises)
+        
+        // Count results
+        batchResults.forEach(result => {
+          if (result.success) {
+            successCount++
+          } else {
+            errorCount++
+          }
+        })
 
-          successCount++
-        } catch (error) {
-          console.error(`Error uploading ${file.name}:`, error)
-          
-          // Update bulk upload state to error
-          setBulkUploadState(prev => prev.map(item => 
-            item.rowId === row.id 
-              ? { 
-                  ...item, 
-                  status: 'error', 
-                  progress: 0,
-                  error: error instanceof Error ? error.message : 'Upload failed'
-                }
-              : item
-          ))
-
-          errorCount++
+        // Small delay between batches to prevent overwhelming the server
+        if (batches.indexOf(batch) < batches.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 500))
         }
       }
 
@@ -797,7 +895,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       // Clear bulk upload state after a delay
       setTimeout(() => {
         setBulkUploadState([])
-      }, 3000)
+      }, 5000)
 
     } catch (error) {
       console.error('Bulk upload error:', error)
@@ -1527,19 +1625,35 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                   const { data: { user } } = await supabase.auth.getUser()
                                   if (!user) throw new Error('Not authenticated')
                                   
+                                  // Use retry logic for reference image uploads
                                   const uploadPromises = files.map(file => {
                                     validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 10)
-                                    return uploadImage(file, 'refs', user.id)
+                                    return retryWithBackoff(async () => {
+                                      await refreshAuth()
+                                      return uploadImage(file, 'refs', user.id)
+                                    }, 3, 1000)
                                   })
                                   
                                   const results = await Promise.all(uploadPromises)
                                   const newRefs = [...(row.ref_image_urls || []), ...results.map(r => r.objectPath)]
                                   
-                                  await fetch(`/api/rows/${row.id}`, {
-                                    method: 'PATCH',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ ref_image_urls: newRefs })
-                                  })
+                                  // Update row with retry logic
+                                  await retryWithBackoff(async () => {
+                                    const response = await fetch(`/api/rows/${row.id}`, {
+                                      method: 'PATCH',
+                                      headers: { 
+                                        'Content-Type': 'application/json',
+                                        'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+                                      },
+                                      body: JSON.stringify({ ref_image_urls: newRefs })
+                                    })
+                                    
+                                    if (!response.ok) {
+                                      const errorText = await response.text()
+                                      throw new Error(`Failed to update row: ${response.status} ${errorText}`)
+                                    }
+                                  }, 3, 1000)
+                                  
                                   refreshRowData()
                                   toast({ title: `Added ${files.length} reference image${files.length === 1 ? '' : 's'}` })
                                 } catch (err) {
