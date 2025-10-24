@@ -20,7 +20,7 @@ const Page = async () => {
   }
 
   // Fetch all models accessible to the user
-  const { data: models } = await supabase
+  const { data: models, error: modelsError } = await supabase
     .from("models")
     .select(`
       id, 
@@ -40,6 +40,10 @@ const Page = async () => {
       )
     `)
     .order("created_at", { ascending: false });
+
+  if (modelsError) {
+    console.error("Failed to fetch models:", modelsError);
+  }
 
   // Sign URLs for headshot previews and calculate stats
   const modelsWithData = await Promise.all(

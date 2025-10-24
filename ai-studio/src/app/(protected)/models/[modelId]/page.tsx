@@ -46,6 +46,9 @@ const Page = async ({ params, searchParams }: PageProps) => {
     .single();
 
   if (modelError || !model) {
+    console.error("Model fetch error:", modelError);
+    console.error("Model ID:", modelId);
+    console.error("User ID:", user.id);
     return notFound();
   }
 

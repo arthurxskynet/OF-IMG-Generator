@@ -67,8 +67,10 @@ export async function POST(req: NextRequest) {
       .single();
 
     const teamId = membership?.team_id || null;
+    
+    console.log("Creating model for user:", user.id, "with team:", teamId);
 
-    // Create the model
+    // Create the model - set team_id to null to ensure owner can always access
     const { data: model, error } = await supabase
       .from("models")
       .insert({
@@ -78,7 +80,7 @@ export async function POST(req: NextRequest) {
         requests_default: validatedData.requests_default,
         size: validatedData.size,
         owner_id: user.id,
-        team_id: teamId
+        team_id: null // Set to null to ensure owner can always access via RLS policy
       })
       .select()
       .single();
