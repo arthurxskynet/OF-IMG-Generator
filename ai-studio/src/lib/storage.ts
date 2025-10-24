@@ -24,3 +24,59 @@ export async function fetchAndSaveToOutputs(remoteUrl: string, userId: string) {
   if (error) throw new Error('Upload to outputs failed')
   return { bucket: 'outputs', objectKey: key, objectPath: `outputs/${key}` }
 }
+
+/** Delete a single file from storage bucket */
+export async function deleteStorageFile(objectPath: string): Promise<boolean> {
+  if (!objectPath) return false
+  
+  const supabase = supabaseAdmin
+  const [bucket, ...rest] = objectPath.split('/')
+  const key = rest.join('/')
+  
+  if (!bucket || !key) return false
+  
+  const { error } = await supabase.storage.from(bucket).remove([key])
+  if (error) {
+    console.error(`Failed to delete storage file ${objectPath}:`, error)
+    return false
+  }
+  return true
+}
+
+/** Delete multiple files from storage buckets */
+export async function deleteStorageFiles(objectPaths: string[]): Promise<{ deleted: number; failed: number }> {
+  if (!objectPaths.length) return { deleted: 0, failed: 0 }
+  
+  const supabase = supabaseAdmin
+  const bucketGroups = new Map<string, string[]>()
+  
+  // Group files by bucket
+  for (const objectPath of objectPaths) {
+    if (!objectPath) continue
+    const [bucket, ...rest] = objectPath.split('/')
+    const key = rest.join('/')
+    
+    if (!bucket || !key) continue
+    
+    if (!bucketGroups.has(bucket)) {
+      bucketGroups.set(bucket, [])
+    }
+    bucketGroups.get(bucket)!.push(key)
+  }
+  
+  let deleted = 0
+  let failed = 0
+  
+  // Delete files from each bucket
+  for (const [bucket, keys] of bucketGroups) {
+    const { error } = await supabase.storage.from(bucket).remove(keys)
+    if (error) {
+      console.error(`Failed to delete files from bucket ${bucket}:`, error)
+      failed += keys.length
+    } else {
+      deleted += keys.length
+    }
+  }
+  
+  return { deleted, failed }
+}

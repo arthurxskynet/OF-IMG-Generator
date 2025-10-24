@@ -938,7 +938,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     }
   }
 
-  // AI Prompt Generation
+  // AI Prompt Generation (using queue system)
   const handleAiPromptGeneration = async (rowId: string) => {
     const row = rows.find(r => r.id === rowId)
     
@@ -959,38 +959,106 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     }))
 
     try {
-      const response = await fetch('/api/prompt/generate', {
+      // Enqueue prompt generation request
+      const response = await fetch('/api/prompt/queue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rowId })
+        body: JSON.stringify({ 
+          rowId,
+          refUrls: row.ref_image_urls || [],
+          targetUrl: row.target_image_url,
+          priority: 8 // High priority for user-initiated requests
+        })
       })
 
       if (!response.ok) {
         const error = await response.json()
-        throw new Error(error.error || 'Failed to generate prompt')
+        throw new Error(error.error || 'Failed to enqueue prompt generation')
       }
 
-      const { prompt } = await response.json()
-      
-      // Update the prompt immediately (automatic replacement)
-      await handlePromptUpdate(rowId, prompt)
+      const { promptJobId, estimatedWaitTime } = await response.json()
       
       toast({
-        title: 'AI prompt generated',
-        description: 'Prompt has been updated with AI-generated content'
+        title: 'AI prompt generation queued',
+        description: `Your request has been queued. Estimated wait time: ${Math.ceil(estimatedWaitTime / 60)} minutes`
       })
+
+      // Start polling for completion
+      pollPromptGeneration(rowId, promptJobId)
+
     } catch (error) {
       toast({
         title: 'AI generation failed',
         description: error instanceof Error ? error.message : 'Unknown error',
         variant: 'destructive'
       })
-    } finally {
+      
       setRowStates(prev => ({
         ...prev,
         [rowId]: { ...getRowState(rowId), isGeneratingPrompt: false }
       }))
     }
+  }
+
+  // Poll for prompt generation completion
+  const pollPromptGeneration = async (rowId: string, promptJobId: string) => {
+    const maxAttempts = 60 // Poll for up to 5 minutes (5 second intervals)
+    let attempts = 0
+
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/prompt/queue/${promptJobId}`)
+        
+        if (!response.ok) {
+          throw new Error('Failed to check prompt status')
+        }
+
+        const { status, generatedPrompt, error } = await response.json()
+
+        if (status === 'completed' && generatedPrompt) {
+          // Update the prompt immediately (automatic replacement)
+          await handlePromptUpdate(rowId, generatedPrompt)
+          
+          toast({
+            title: 'AI prompt generated',
+            description: 'Prompt has been updated with AI-generated content'
+          })
+
+          setRowStates(prev => ({
+            ...prev,
+            [rowId]: { ...getRowState(rowId), isGeneratingPrompt: false }
+          }))
+          return
+        }
+
+        if (status === 'failed') {
+          throw new Error(error || 'Prompt generation failed')
+        }
+
+        // Still processing, continue polling
+        attempts++
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 5000) // Poll every 5 seconds
+        } else {
+          throw new Error('Prompt generation timed out')
+        }
+
+      } catch (error) {
+        toast({
+          title: 'AI generation failed',
+          description: error instanceof Error ? error.message : 'Unknown error',
+          variant: 'destructive'
+        })
+        
+        setRowStates(prev => ({
+          ...prev,
+          [rowId]: { ...getRowState(rowId), isGeneratingPrompt: false }
+        }))
+      }
+    }
+
+    // Start polling
+    poll()
   }
 
   // Helper function to check if row has valid images for AI generation
@@ -1002,7 +1070,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   // Removed generation count: provider does not support count parameter
 
   // Handle generation
-  const handleGenerate = async (rowId: string) => {
+  const handleGenerate = async (rowId: string, useAiPrompt: boolean = false) => {
     const row = rows.find(r => r.id === rowId)
     if (!row?.target_image_url) {
       toast({
@@ -1022,13 +1090,19 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     try {
       // Optimistically mark status as queued for instant feedback
       setRows(prev => prev.map(r => r.id === rowId ? { ...r, status: 'queued' as any } : r))
-      const result = await createJobs({ rowId })
+      
+      // Create job with optional AI prompt generation
+      const result = await createJobs({ rowId, useAiPrompt })
       const ids = result.jobIds || []
       if (ids[0]) startPolling(ids[0], 'submitted', rowId)
       
+      const message = useAiPrompt 
+        ? `Queued ${ids.length} task${ids.length === 1 ? '' : 's'} with AI prompt generation`
+        : `Queued ${ids.length} task${ids.length === 1 ? '' : 's'}`
+      
       toast({
         title: 'Generation started',
-        description: `Queued ${ids.length} task${ids.length === 1 ? '' : 's'}`
+        description: message
       })
     } catch (error) {
       // Revert optimistic status on error
@@ -1999,6 +2073,59 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                             </Tooltip>
                           )
                         })()}
+                        
+                        {/* AI-Powered Generate Button */}
+                        {(() => {
+                          const hasTarget = Boolean(row?.target_image_url)
+                          const disabledReason = !hasTarget
+                            ? 'Upload a target image first'
+                            : ''
+                          const isDisabled = !hasTarget || rowState.isGenerating || isActiveStatus(displayStatus)
+                          return (
+                            <Tooltip open={isDisabled && !!disabledReason ? undefined : false}>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  onClick={() => handleGenerate(row.id, true)}
+                                  disabled={isDisabled}
+                                  size="sm"
+                                  variant="outline"
+                                  aria-busy={rowState.isGenerating || isActiveStatus(displayStatus)}
+                                  className="gap-2 transition-opacity duration-200"
+                                >
+                                  {isActiveStatus(displayStatus) ? (
+                                    <>
+                                      <Spinner 
+                                        key={`ai-spinner-${row.id}-${displayStatus}`}
+                                        size="sm"
+                                      />
+                                      AI Processing
+                                    </>
+                                  ) : rowState.isGenerating ? (
+                                    <>
+                                      <Spinner 
+                                        key={`ai-spinner-${row.id}-generating`}
+                                        size="sm"
+                                      />
+                                      AI Generating
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Wand2 className="h-4 w-4 transition-transform hover:scale-110" />
+                                      AI Generate
+                                    </>
+                                  )}
+                                </Button>
+                              </TooltipTrigger>
+                              {disabledReason && (
+                                <TooltipContent>{disabledReason}</TooltipContent>
+                              )}
+                              {!disabledReason && (
+                                <TooltipContent>Generate with AI-powered prompt</TooltipContent>
+                              )}
+                            </Tooltip>
+                          )
+                        })()}
+                        
                         {live?.queuePosition !== undefined && isActiveStatus(displayStatus) && (
                           <div className="mt-1 text-[10px] text-muted-foreground">{live.queuePosition > 0 ? `#${live.queuePosition} in queue` : 'In progress'}</div>
                         )}

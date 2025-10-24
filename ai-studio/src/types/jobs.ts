@@ -2,7 +2,8 @@ import { z } from 'zod'
 
 // API Schemas
 export const CreateJobsSchema = z.object({
-  rowId: z.string().uuid()
+  rowId: z.string().uuid(),
+  useAiPrompt: z.boolean().optional().default(false)
 })
 
 // Type definitions
@@ -21,6 +22,8 @@ export interface Job {
   user_id: string
   status: JobStatus
   provider_request_id?: string
+  prompt_job_id?: string
+  prompt_status?: 'pending' | 'generating' | 'completed' | 'failed'
   request_payload: {
     refPaths: string[]
     targetPath: string

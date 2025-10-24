@@ -1,11 +1,11 @@
 'use client'
 
 import { ModelWorkspace } from './model-workspace'
-import { Model } from '@/types/jobs'
+import { Model, ModelRow } from '@/types/jobs'
 
 interface ModelWorkspaceWrapperProps {
   model: Model
-  rows: any[]
+  rows: ModelRow[]
   sort?: string
 }
 

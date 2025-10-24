@@ -107,11 +107,83 @@ export async function POST(req: NextRequest) {
           size?: string
         }
 
+        // Check if this job is waiting for AI prompt generation
+        if (job.prompt_job_id && job.prompt_status === 'generating') {
+          console.log('[Dispatch] job waiting for prompt generation', { 
+            jobId: job.id, 
+            promptJobId: job.prompt_job_id 
+          })
+
+          // Check prompt generation status
+          const { data: promptJob } = await supabase
+            .from('prompt_generation_jobs')
+            .select('status, generated_prompt, error')
+            .eq('id', job.prompt_job_id)
+            .single()
+
+          if (promptJob?.status === 'completed' && promptJob.generated_prompt) {
+            // Update job with generated prompt
+            await supabase
+              .from('jobs')
+              .update({
+                prompt_status: 'completed',
+                request_payload: {
+                  ...payload,
+                  prompt: promptJob.generated_prompt
+                },
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', job.id)
+
+            console.log('[Dispatch] updated job with AI prompt', { 
+              jobId: job.id, 
+              promptLength: promptJob.generated_prompt.length 
+            })
+
+            // Update payload for processing
+            payload.prompt = promptJob.generated_prompt
+
+          } else if (promptJob?.status === 'failed') {
+            // Mark job as failed due to prompt generation failure
+            await supabase
+              .from('jobs')
+              .update({
+                status: 'failed',
+                prompt_status: 'failed',
+                error: promptJob.error || 'AI prompt generation failed',
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', job.id)
+
+            console.log('[Dispatch] job failed due to prompt generation', { 
+              jobId: job.id, 
+              error: promptJob.error 
+            })
+            return // Skip processing this job
+          } else {
+            // Still processing, put job back to queued status
+            await supabase
+              .from('jobs')
+              .update({
+                status: 'queued',
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', job.id)
+
+            console.log('[Dispatch] job still waiting for prompt, requeued', { 
+              jobId: job.id, 
+              promptStatus: promptJob?.status 
+            })
+            return // Skip processing this job
+          }
+        }
+
         console.log('[Dispatch] job start', { 
           jobId: job.id, 
           refPathsCount: payload.refPaths?.length || 0,
           refPaths: payload.refPaths?.map(p => p.slice(-30)) || [],
-          targetPath: payload.targetPath?.slice(-30) 
+          targetPath: payload.targetPath?.slice(-30),
+          promptLength: payload.prompt?.length || 0
         })
 
         // Sign URLs for the images (120s expiry for external API call)
