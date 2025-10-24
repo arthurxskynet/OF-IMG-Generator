@@ -65,7 +65,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   
   // Target image drag and drop state
   const [dragOverRowId, setDragOverRowId] = useState<string | null>(null)
-  const [isDragOverTarget, setIsDragOverTarget] = useState(false)
+  const [, setIsDragOverTarget] = useState(false)
   const [isGlobalDragActive, setIsGlobalDragActive] = useState(false)
 
   // Download selection state

@@ -73,8 +73,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ro
       return NextResponse.json({ error: "Row not found" }, { status: 404 });
     }
 
-    // Check if user owns the model
-    if (existingRow.models.owner_id !== user.id) {
+    // Check if user owns the model (models is an array from the join)
+    const model = Array.isArray(existingRow.models) ? existingRow.models[0] : existingRow.models;
+    if (!model || model.owner_id !== user.id) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

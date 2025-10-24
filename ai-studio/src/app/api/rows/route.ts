@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
 
     // Create the row with retry logic for potential race conditions
     let retries = 3;
-    let lastError: any;
+    let lastError: Error | null = null;
 
     while (retries > 0) {
       try {
@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json({ ok: true, row });
       } catch (error) {
-        lastError = error;
+        lastError = error instanceof Error ? error : new Error('Unknown error');
         retries--;
         
         if (retries > 0) {
