@@ -33,6 +33,7 @@ interface RowState {
   isGeneratingPrompt: boolean
   signedUrls: Record<string, string>
   isLoadingResults?: boolean
+  isUploadingTarget?: boolean
 }
 
 interface BulkUploadItem {
@@ -58,6 +59,11 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   const [isFolderDropActive, setIsFolderDropActive] = useState(false)
   const [bulkUploadState, setBulkUploadState] = useState<BulkUploadItem[]>([])
   const [isBulkUploading, setIsBulkUploading] = useState(false)
+  
+  // Target image drag and drop state
+  const [dragOverRowId, setDragOverRowId] = useState<string | null>(null)
+  const [isDragOverTarget, setIsDragOverTarget] = useState(false)
+  const [isGlobalDragActive, setIsGlobalDragActive] = useState(false)
 
   // Download selection state
   const [isSelectionMode, setIsSelectionMode] = useState(false)
@@ -410,6 +416,12 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
 
   // Handle file upload for target image
   const handleTargetImageUpload = async (file: File, rowId: string) => {
+    // Set loading state
+    setRowStates(prev => ({
+      ...prev,
+      [rowId]: { ...getRowState(rowId), isUploadingTarget: true }
+    }))
+
     try {
       validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 10)
       
@@ -444,24 +456,112 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         description: error instanceof Error ? error.message : 'Failed to upload image',
         variant: 'destructive'
       })
+    } finally {
+      // Clear loading state
+      setRowStates(prev => ({
+        ...prev,
+        [rowId]: { ...getRowState(rowId), isUploadingTarget: false }
+      }))
     }
   }
 
-  // Handle drag and drop
-  const handleDragOver = (e: React.DragEvent) => {
+  // Handle drag and drop for target images
+  const handleTargetDragOver = (e: React.DragEvent, rowId: string) => {
     e.preventDefault()
     e.stopPropagation()
+    
+    const rowState = getRowState(rowId)
+    
+    // Don't allow drag and drop if already uploading
+    if (rowState.isUploadingTarget) {
+      e.dataTransfer.dropEffect = 'none'
+      return
+    }
+    
+    // Check if we have valid image files
+    const hasValidFiles = Array.from(e.dataTransfer.items).some(item => 
+      item.kind === 'file' && item.type.startsWith('image/')
+    )
+    
+    if (hasValidFiles) {
+      setDragOverRowId(rowId)
+      setIsDragOverTarget(true)
+      e.dataTransfer.dropEffect = 'copy'
+    } else {
+      e.dataTransfer.dropEffect = 'none'
+    }
   }
 
-  const handleDrop = (e: React.DragEvent, rowId: string) => {
+  const handleTargetDragLeave = (e: React.DragEvent, rowId: string) => {
     e.preventDefault()
     e.stopPropagation()
+    
+    // Only clear drag state if we're leaving the drop zone entirely
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragOverRowId(null)
+      setIsDragOverTarget(false)
+    }
+  }
+
+  const handleTargetDrop = (e: React.DragEvent, rowId: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    
+    const rowState = getRowState(rowId)
+    
+    // Don't allow drop if already uploading
+    if (rowState.isUploadingTarget) {
+      toast({
+        title: 'Upload in progress',
+        description: 'Please wait for the current upload to complete',
+        variant: 'destructive'
+      })
+      return
+    }
+    
+    // Clear drag state
+    setDragOverRowId(null)
+    setIsDragOverTarget(false)
+    setIsGlobalDragActive(false)
     
     const files = Array.from(e.dataTransfer.files)
     const imageFile = files.find(file => file.type.startsWith('image/'))
     
     if (imageFile) {
       handleTargetImageUpload(imageFile, rowId)
+    } else {
+      toast({
+        title: 'Invalid file type',
+        description: 'Please drop an image file (JPEG, PNG, WebP)',
+        variant: 'destructive'
+      })
+    }
+  }
+
+  // Global drag handlers for the table
+  const handleTableDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    
+    const hasValidFiles = Array.from(e.dataTransfer.items).some(item => 
+      item.kind === 'file' && item.type.startsWith('image/')
+    )
+    
+    if (hasValidFiles) {
+      setIsGlobalDragActive(true)
+      e.dataTransfer.dropEffect = 'copy'
+    } else {
+      e.dataTransfer.dropEffect = 'none'
+    }
+  }
+
+  const handleTableDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    
+    // Only clear global drag state if we're leaving the table entirely
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsGlobalDragActive(false)
     }
   }
 
@@ -1188,14 +1288,29 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       </div>
 
       {/* Rows Table */}
-      <Card>
+      <Card className={`transition-all duration-200 ${
+        isGlobalDragActive ? 'ring-2 ring-primary ring-offset-2 bg-primary/5' : ''
+      }`}>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
+          <div 
+            className="overflow-x-auto"
+            onDragOver={handleTableDragOver}
+            onDragLeave={handleTableDragLeave}
+          >
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-20 align-top">Ref</TableHead>
-                  <TableHead className="w-24 align-top">Target</TableHead>
+                  <TableHead className="w-24 align-top">
+                    <div className="flex flex-col gap-1">
+                      <span>Target</span>
+                      {isGlobalDragActive && (
+                        <span className="text-xs text-primary font-medium">
+                          Drop on target area
+                        </span>
+                      )}
+                    </div>
+                  </TableHead>
                   <TableHead className="w-[16rem] md:w-[18rem] lg:w-[20rem] xl:w-[22rem] shrink-0 align-top">Prompt</TableHead>
                   
                   <TableHead className="w-28 align-top">Generate</TableHead>
@@ -1525,12 +1640,17 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                         </div>
                       </TableCell>
                       
-                      {/* 2. Target Image (Drag & Drop) */}
+                      {/* 2. Target Image (Enhanced Drag & Drop) */}
                       <TableCell className="align-top">
                         <div
-                          className="relative group"
-                          onDragOver={handleDragOver}
-                          onDrop={(e) => handleDrop(e, row.id)}
+                          className={`relative group transition-all duration-200 ${
+                            dragOverRowId === row.id 
+                              ? 'scale-105 shadow-lg' 
+                              : ''
+                          }`}
+                          onDragOver={(e) => handleTargetDragOver(e, row.id)}
+                          onDragLeave={(e) => handleTargetDragLeave(e, row.id)}
+                          onDrop={(e) => handleTargetDrop(e, row.id)}
                         >
                           {row.target_image_url ? (
                             <Dialog>
@@ -1541,7 +1661,13 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                       src={rowState.signedUrls[row.target_image_url]}
                                       alt="Target image"
                                       size={88}
-                                      className="transition-transform group-hover:scale-[1.02]"
+                                      className={`transition-all duration-200 ${
+                                        dragOverRowId === row.id 
+                                          ? 'ring-2 ring-primary ring-offset-2' 
+                                          : rowState.isUploadingTarget
+                                          ? 'opacity-50'
+                                          : 'group-hover:scale-[1.02]'
+                                      }`}
                                     />
                                   </div>
                                 </DialogTrigger>
@@ -1580,12 +1706,53 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                             </Dialog>
                           ) : (
                             <div 
-                              className="relative flex h-22 w-22 items-center justify-center rounded-2xl border-2 border-dashed border-muted-foreground/25 bg-muted text-muted-foreground transition-colors hover:border-muted-foreground/50"
-                              onClick={() => fileInputRefs.current[row.id]?.click()}
+                              className={`relative flex h-22 w-22 items-center justify-center rounded-2xl border-2 border-dashed transition-all duration-200 ${
+                                dragOverRowId === row.id
+                                  ? 'border-primary bg-primary/10 text-primary scale-105 shadow-lg'
+                                  : rowState.isUploadingTarget
+                                  ? 'border-blue-500 bg-blue-50 text-blue-600'
+                                  : 'border-muted-foreground/25 bg-muted text-muted-foreground hover:border-muted-foreground/50'
+                              }`}
+                              onClick={() => !rowState.isUploadingTarget && fileInputRefs.current[row.id]?.click()}
                             >
-                              <Upload className="h-5 w-5" />
+                              {rowState.isUploadingTarget ? (
+                                <div className="flex flex-col items-center gap-1">
+                                  <Spinner size="sm" />
+                                  <span className="text-xs font-medium">Uploading...</span>
+                                </div>
+                              ) : dragOverRowId === row.id ? (
+                                <div className="flex flex-col items-center gap-1">
+                                  <Upload className="h-6 w-6 animate-bounce" />
+                                  <span className="text-xs font-medium">Drop image</span>
+                                </div>
+                              ) : (
+                                <div className="flex flex-col items-center gap-1">
+                                  <Upload className="h-5 w-5" />
+                                  <span className="text-xs">Drop or click</span>
+                                </div>
+                              )}
                             </div>
                           )}
+                          
+                          {/* Drag overlay for existing images */}
+                          {row.target_image_url && dragOverRowId === row.id && (
+                            <div className="absolute inset-0 bg-primary/20 border-2 border-primary border-dashed rounded-lg flex items-center justify-center z-10">
+                              <div className="bg-primary text-primary-foreground px-3 py-1 rounded-full text-xs font-medium">
+                                Drop to replace
+                              </div>
+                            </div>
+                          )}
+                          
+                          {/* Upload loading overlay for existing images */}
+                          {row.target_image_url && rowState.isUploadingTarget && (
+                            <div className="absolute inset-0 bg-black/40 rounded-lg flex items-center justify-center z-10">
+                              <div className="bg-white text-black px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2">
+                                <Spinner size="sm" />
+                                Replacing...
+                              </div>
+                            </div>
+                          )}
+                          
                           <input
                             ref={(el) => {
                               if (el) fileInputRefs.current[row.id] = el

@@ -95,6 +95,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
 
     // Success - process the images
     if (responseData.status === 'succeeded' || responseData.status === 'completed') {
+      // Early return if job is already succeeded to prevent duplicate processing
+      if (job.status === 'succeeded') {
+        return NextResponse.json({ status: 'succeeded', step: 'done' })
+      }
+
       // Mark intermediate 'saving' state to avoid UI "complete" before images are stored
       if (job.status !== 'saving') {
         await admin.from('jobs').update({ 
@@ -102,6 +107,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
           updated_at: new Date().toISOString() 
         }).eq('id', job.id)
       }
+
+      // Double-check job status after potential concurrent update
+      const { data: updatedJob } = await admin.from('jobs').select('status').eq('id', job.id).single()
+      if (updatedJob?.status === 'succeeded') {
+        return NextResponse.json({ status: 'succeeded', step: 'done' })
+      }
+
       const raw = responseData?.outputs ?? []
       const urls: string[] = Array.isArray(raw)
         ? raw.flatMap((v: any) => {
@@ -127,7 +139,18 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
       }
       
       if (inserts.length) {
-        await admin.from('generated_images').insert(inserts)
+        try {
+          await admin.from('generated_images').insert(inserts)
+        } catch (error: any) {
+          // Handle unique constraint violation gracefully
+          if (error?.code === '23505' && error?.constraint === 'unique_job_output_url') {
+            console.log('[Poll] Duplicate images prevented for job', { jobId: job.id })
+            // Continue to mark job as succeeded since images were already saved
+          } else {
+            // Re-throw other database errors
+            throw error
+          }
+        }
       }
 
       await admin.from('jobs').update({ 

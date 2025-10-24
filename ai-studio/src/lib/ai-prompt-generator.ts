@@ -234,13 +234,11 @@ Example: "Take the face and hair from the person in the first image who is weari
       throw new Error(`Generated prompt contains camera jargon: ${foundJargon.join(', ')}, retrying with different model`)
     }
 
-    // Validate that the prompt is concise and not overly detailed
+    // Validate that the prompt is not overly detailed or structured
     const isOverlyDetailed = generatedPrompt.includes('**') || // Markdown formatting
                             generatedPrompt.includes('###') || // Headers
                             generatedPrompt.includes('Image Descriptions') || // Structured format
-                            generatedPrompt.includes('Key Visual Features') || // Bullet points
-                            generatedPrompt.split('\n').length > 3 || // Too many lines
-                            generatedPrompt.length > 200 // Too long
+                            generatedPrompt.includes('Key Visual Features') // Bullet points
     
     if (isOverlyDetailed) {
       console.log(`${model} rejected due to overly detailed/structured prompt`)

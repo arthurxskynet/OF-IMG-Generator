@@ -52,6 +52,7 @@ export interface GeneratedImage {
   user_id: string
   output_url: string
   is_favorited?: boolean
+  is_upscaled?: boolean
   created_at: string
 }
 
