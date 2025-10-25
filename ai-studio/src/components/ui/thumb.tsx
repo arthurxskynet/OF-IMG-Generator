@@ -26,7 +26,7 @@ const Thumb = ({ src, alt, size = 96, className }: ThumbProps) => {
           fill
           sizes={`${size}px`}
           className="object-cover"
-          unoptimized
+          loading="lazy"
         />
       ) : (
         <div className="absolute inset-0 grid place-items-center text-xs text-muted-foreground">IMG</div>

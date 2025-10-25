@@ -1902,7 +1902,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                           width={1600}
                                           height={1600}
                                           className="max-w-full max-h-[80vh] object-contain rounded-lg"
-                                          unoptimized
+                                          loading="lazy"
                                         />
                                       </div>
                                     </DialogContent>
@@ -1934,7 +1934,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                       width={1600}
                                       height={1600}
                                       className="max-w-full max-h-[80vh] object-contain rounded-lg"
-                                      unoptimized
+                                      loading="lazy"
                                     />
                                   </div>
                                 </DialogContent>
@@ -2148,7 +2148,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                       width={1600}
                                       height={1600}
                                       className="max-w-full max-h-[80vh] object-contain rounded-lg"
-                                      unoptimized
+                                      loading="lazy"
                                     />
                                   </div>
                                 </DialogContent>
@@ -2604,7 +2604,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                         width={1920}
                         height={1920}
                         className="max-w-full max-h-[80vh] object-contain rounded-lg"
-                        unoptimized
+                        loading="lazy"
                       />
                     )
                   })()}
