@@ -8,14 +8,22 @@ export const config = {
      * - api (API routes)
      * - _next/static (static files)
      * - _next/image (image optimization files)
+     * - _next/webpack-hmr (HMR requests)
+     * - _nextjs_original-stack-frames (Next.js dev tools)
      * - favicon.ico (favicon file)
+     * - RSC requests (containing _rsc parameter)
      */
-    '/((?!api|_next/static|_next/image|favicon.ico).*)',
+    '/((?!api|_next/static|_next/image|_next/webpack-hmr|_nextjs_original-stack-frames|favicon.ico).*)',
   ],
 }
 
 export async function middleware(req: NextRequest) {
   const res = NextResponse.next();
+
+  // Skip middleware for RSC requests to prevent interference with React Server Components
+  if (req.nextUrl.searchParams.has('_rsc')) {
+    return res;
+  }
 
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnon = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;

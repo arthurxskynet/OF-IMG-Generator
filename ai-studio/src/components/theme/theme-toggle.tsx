@@ -6,17 +6,15 @@ import { Button } from "@/components/ui/button";
 
 export const ThemeToggle = () => {
   const [isDark, setIsDark] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     // Initialize state based on current theme
     const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
     const stored = localStorage.getItem("theme");
     const current = stored ?? (prefersDark ? "dark" : "light");
-    
-    // Use setTimeout to avoid synchronous setState in effect
-    setTimeout(() => {
-      setIsDark(current === "dark");
-    }, 0);
+    setIsDark(current === "dark");
   }, []);
 
   const toggle = () => {
@@ -26,6 +24,22 @@ export const ThemeToggle = () => {
     localStorage.setItem("theme", next ? "dark" : "light");
     setIsDark(next);
   };
+
+  // Prevent hydration mismatch by not rendering until mounted
+  if (!mounted) {
+    return (
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        aria-label="Toggle theme"
+        className="rounded-full"
+        suppressHydrationWarning
+      >
+        <Moon className="size-4" />
+      </Button>
+    );
+  }
 
   return (
     <Button

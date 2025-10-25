@@ -51,6 +51,13 @@ export async function POST(req: NextRequest) {
         ? [model.default_ref_headshot_url]  // Fallback to model default
         : []  // No references at all
 
+    console.log('[Prompt Generation] Reference images logic:', {
+      rowRefImageUrls: row.ref_image_urls,
+      modelDefaultRef: model.default_ref_headshot_url,
+      finalRefImages: refImages,
+      refImagesLength: refImages.length
+    })
+
     // Validate we have required images (only target image is required)
     if (!row.target_image_url) {
       return NextResponse.json({ 
@@ -65,6 +72,13 @@ export async function POST(req: NextRequest) {
         : Promise.resolve([]),
       signPath(row.target_image_url, 600)
     ])
+
+    console.log('[Prompt Generation] After URL signing:', {
+      refUrls: refUrls,
+      refUrlsLength: refUrls.length,
+      targetUrl: targetUrl,
+      operationType: refUrls.length > 0 ? 'face-swap' : 'target-only'
+    })
 
           console.log('[Prompt Generation] Processing with Grok', { 
             rowId, 

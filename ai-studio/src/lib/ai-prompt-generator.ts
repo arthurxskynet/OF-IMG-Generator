@@ -6,10 +6,22 @@ const GROK_MODELS = ['grok-4-fast-reasoning', 'grok-4', 'grok-3-mini', 'grok-2-v
 // const GROK_VISION_MODEL = GROK_MODELS[0] // Start with the most likely to work
 
 export async function generatePromptWithGrok(refUrls: string[], targetUrl: string): Promise<string> {
+  // Log what we received at the entry point
+  console.log('[generatePromptWithGrok] Entry point:', {
+    refUrls: refUrls,
+    refUrlsLength: refUrls?.length,
+    refUrlsType: typeof refUrls,
+    targetUrl: targetUrl,
+    targetUrlType: typeof targetUrl
+  })
+
   // Handle target-only processing (no reference images)
   if (!refUrls || refUrls.length === 0) {
+    console.log('[generatePromptWithGrok] No reference images, using target-only mode')
     return generateTargetOnlyPrompt(targetUrl)
   }
+
+  console.log('[generatePromptWithGrok] Reference images present, using face-swap mode')
   const apiKey = process.env.XAI_API_KEY
   if (!apiKey) {
     throw new Error('XAI_API_KEY environment variable is not set')
@@ -81,6 +93,15 @@ Example: "Enhance this image with better lighting and improved clarity while kee
     }
   ]
 
+  // Log image passing details for target-only
+  console.log(`${model} sending target-only request to Grok:`, {
+    totalImages: 1,
+    refImagesCount: 0,
+    hasTarget: !!targetUrl,
+    imageOrder: 'target only',
+    promptType: 'target-only'
+  })
+
   const response = await fetch(`${XAI_API_BASE}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -124,8 +145,9 @@ async function generatePromptWithModel(model: string, refUrls: string[], targetU
 
   // Build the system prompt optimized for Seedream v4
   const systemPrompt = `You write simple face swap instructions for Seedream v4. 
-You will see reference images (faces to copy) and a target image (body/scene to keep).
-Write ONE sentence that tells Seedream to swap the face from the reference image onto the target image.
+You will see ${refUrls.length} reference image${refUrls.length > 1 ? 's' : ''} (faces to copy) and 1 target image (body/scene to keep).
+You MUST write ONE sentence that tells Seedream to swap the face from the reference image${refUrls.length > 1 ? 's' : ''} onto the target image.
+You MUST reference both the reference image${refUrls.length > 1 ? 's' : ''} and the target image in your response.
 For reference images: describe clothing or pose to identify the person.
 For target image: only mention simple setting or background, avoid describing the person's appearance.
 Mention face and hair to ensure proper blending. Use simple words. No technical terms. No bullet points or structured format.
@@ -135,7 +157,7 @@ Example: "Take the face and hair from the person in the first image who is weari
   const userContent: GrokVisionContent[] = [
     { 
       type: 'text', 
-      text: `Write one simple sentence for face swapping. The first ${refUrls.length} image${refUrls.length > 1 ? 's' : ''} ${refUrls.length > 1 ? 'contain the faces to copy' : 'contains the face to copy'}. The last image is the target person. For reference images, use "who is" to describe clothing or pose. For target image, only mention setting or background, not the person's appearance. Mention face and hair for better blending.`
+      text: `Write one simple sentence for face swapping. You have ${refUrls.length + 1} images total. The first ${refUrls.length} image${refUrls.length > 1 ? 's' : ''} ${refUrls.length > 1 ? 'contain the faces to copy' : 'contains the face to copy'}. The last image is the target person. You MUST reference both the reference image${refUrls.length > 1 ? 's' : ''} and the target image in your response. For reference images, use "who is" to describe clothing or pose. For target image, only mention setting or background, not the person's appearance. Mention face and hair for better blending.`
     }
   ]
 
@@ -151,6 +173,15 @@ Example: "Take the face and hair from the person in the first image who is weari
   userContent.push({
     type: 'image_url',
     image_url: { url: targetUrl }
+  })
+
+  // Log image passing details
+  console.log(`${model} sending face-swap request to Grok:`, {
+    totalImages: userContent.filter(item => item.type === 'image_url').length,
+    refImagesCount: refUrls.length,
+    hasTarget: !!targetUrl,
+    imageOrder: 'refs first, then target',
+    promptType: 'face-swap'
   })
 
   const messages: GrokVisionMessage[] = [
@@ -216,9 +247,19 @@ Example: "Take the face and hair from the person in the first image who is weari
     }
 
     // Debug logging to see what's being generated
-    console.log(`${model} generated prompt:`, generatedPrompt)
+    console.log(`${model} generated prompt:`, {
+      prompt: generatedPrompt,
+      promptLength: generatedPrompt.length,
+      refUrlsCount: refUrls.length,
+      hasTarget: !!targetUrl
+    })
 
     // Validate response content (removed length restriction to avoid unnecessary limits)
+    console.log(`${model} starting validation for face-swap prompt`, {
+      refUrlsCount: refUrls.length,
+      promptLength: generatedPrompt.length,
+      promptPreview: generatedPrompt.substring(0, 100) + (generatedPrompt.length > 100 ? '...' : '')
+    })
 
     // Check for camera jargon that should be avoided
     const cameraJargon = ['lens', 'mm', 'f/', 'ISO', 'bokeh', 'aperture', 'shutter', 'exposure', 'DOF', 'HDR', 'anamorphic']
@@ -244,6 +285,7 @@ Example: "Take the face and hair from the person in the first image who is weari
       console.log(`${model} rejected due to overly detailed/structured prompt`)
       throw new Error(`Generated prompt is too detailed or structured, retrying with different model`)
     }
+
 
     // Validate that the prompt contains identifying descriptions (not just generic text)
     const isGeneric = generatedPrompt.toLowerCase().includes('first image') && 
@@ -274,7 +316,9 @@ Example: "Take the face and hair from the person in the first image who is weari
     console.log(`${model} prompt generation successful:`, {
       model,
       promptLength: generatedPrompt.length,
-      refImagesCount: refUrls.length
+      refImagesCount: refUrls.length,
+      promptType: refUrls.length > 0 ? 'face-swap' : 'target-only',
+      validationPassed: true
     })
 
     return generatedPrompt
