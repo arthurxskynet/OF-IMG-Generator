@@ -47,12 +47,63 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
           updated_at: new Date().toISOString()
         }).eq('id', job.id)
 
+        // Update row status to error if all jobs failed
+        const [{ count: remaining }, { count: succeeded }] = await Promise.all([
+          supabase.from('jobs')
+            .select('*', { count: 'exact', head: true })
+            .eq('row_id', job.row_id)
+            .in('status', ['queued', 'running', 'submitted', 'saving']),
+          supabase.from('jobs')
+            .select('*', { count: 'exact', head: true })
+            .eq('row_id', job.row_id)
+            .eq('status', 'succeeded')
+        ])
+
+        await supabase.from('model_rows').update({
+          status: (remaining ?? 0) > 0
+            ? 'partial'
+            : (succeeded ?? 0) > 0
+              ? 'done'
+              : 'error'
+        }).eq('id', job.row_id)
+
         // Kick dispatcher to move on to next jobs
         try {
           await fetch(new URL('/api/dispatch', req.url), { method: 'POST', cache: 'no-store' })
         } catch {}
 
         return NextResponse.json({ status: 'failed', error: 'timeout: no provider request id' })
+      }
+
+      // Additional cleanup: fail very old queued jobs (2+ minutes) immediately
+      if (job.status === 'queued' && ageSec > 120) {
+        await supabase.from('jobs').update({
+          status: 'failed',
+          error: 'timeout: stuck in queue too long',
+          updated_at: new Date().toISOString()
+        }).eq('id', job.id)
+
+        // Update row status
+        const [{ count: remaining2 }, { count: succeeded2 }] = await Promise.all([
+          supabase.from('jobs')
+            .select('*', { count: 'exact', head: true })
+            .eq('row_id', job.row_id)
+            .in('status', ['queued', 'running', 'submitted', 'saving']),
+          supabase.from('jobs')
+            .select('*', { count: 'exact', head: true })
+            .eq('row_id', job.row_id)
+            .eq('status', 'succeeded')
+        ])
+
+        await supabase.from('model_rows').update({
+          status: (remaining2 ?? 0) > 0
+            ? 'partial'
+            : (succeeded2 ?? 0) > 0
+              ? 'done'
+              : 'error'
+        }).eq('id', job.row_id)
+
+        return NextResponse.json({ status: 'failed', error: 'timeout: stuck in queue too long' })
       }
 
       // Also return queuePosition for visibility while waiting for provider id

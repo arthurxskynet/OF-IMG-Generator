@@ -36,12 +36,12 @@ export async function POST(req: NextRequest) {
         .in('status', ['submitted', 'running', 'saving'])
         .lt('updated_at', staleCutoff)
 
-      // Fail very old queued jobs (5+ minutes) that dispatcher never picked up
-      const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+      // Fail very old queued jobs (2+ minutes) that dispatcher never picked up
+      const twoMinAgoQueued = new Date(Date.now() - 2 * 60 * 1000).toISOString()
       await supabase.from('jobs')
         .update({ status: 'failed', error: 'timeout: stuck in queue', updated_at: new Date().toISOString() })
         .eq('status', 'queued')
-        .lt('created_at', fiveMinAgo)
+        .lt('created_at', twoMinAgoQueued)
     } catch {}
 
     // Count active running jobs within the active window (submitted|running and recently updated)
