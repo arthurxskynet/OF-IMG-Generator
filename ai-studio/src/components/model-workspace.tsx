@@ -799,21 +799,37 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     return session
   }
 
-  // Helper function to upload a single image with retry logic
+  // Helper function to upload a single image with retry logic and improved auth handling
   const uploadSingleImage = async (row: any, file: File, user: any): Promise<void> => {
     return retryWithBackoff(async () => {
       // Refresh auth token before each upload to prevent expiry
-      await refreshAuth()
+      try {
+        await refreshAuth()
+      } catch (authError) {
+        console.warn('Auth refresh failed, continuing with current session:', authError)
+        // Continue with current session - it might still be valid
+      }
       
-      // Upload the image
-      const result = await uploadImage(file, 'targets', user.id)
+      // Get fresh session token
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) {
+        throw new Error('No valid authentication session')
+      }
+      
+      // Upload the image with timeout handling
+      const uploadPromise = uploadImage(file, 'targets', user.id)
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Upload timeout after 30 seconds')), 30000)
+      )
+      
+      const result = await Promise.race([uploadPromise, timeoutPromise]) as any
       
       // Update the row with the uploaded image
       const updateResponse = await fetch(`/api/rows/${row.id}`, {
         method: 'PATCH',
         headers: { 
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+          'Authorization': `Bearer ${session.access_token}`
         },
         body: JSON.stringify({
           target_image_url: result.objectPath
@@ -829,24 +845,26 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       
       // Update the row in the UI
       setRows(prev => prev.map(r => r.id === row.id ? updatedRow : r))
-    }, 3, 1000)
+    }, 5, 2000) // Increased retries and base delay for production stability
   }
 
-  // Handle bulk image upload
-  const handleBulkImageUpload = async (imageFiles: File[]) => {
-    setIsBulkUploading(true)
-    setBulkUploadState([])
-
+  // Fallback client-side bulk upload with improved error handling
+  const handleBulkImageUploadClientSide = async (imageFiles: File[]) => {
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error('Not authenticated')
 
-      console.log('Bulk upload starting for model:', model.id, 'user:', user.id, 'files:', imageFiles.length);
+      console.log('Client-side bulk upload starting for model:', model.id, 'user:', user.id, 'files:', imageFiles.length);
 
-      // Step 1: Create all rows first with retry logic
-      const createRowPromises = imageFiles.map(async (file) => {
+      // Step 1: Create all rows first with improved retry logic
+      const createRowPromises = imageFiles.map(async (file, index) => {
         return retryWithBackoff(async () => {
-          console.log('Creating row for file:', file.name, 'model:', model.id);
+          console.log('Creating row for file:', file.name, 'model:', model.id, 'index:', index);
+          
+          // Add staggered delay to prevent overwhelming the API
+          if (index > 0) {
+            await new Promise(resolve => setTimeout(resolve, index * 100))
+          }
           
           const response = await fetch('/api/rows', {
             method: 'POST',
@@ -868,7 +886,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
           const { row } = await response.json()
           console.log('Row created successfully:', row.id);
           return { row, file }
-        }, 3, 1000)
+        }, 5, 2000) // Increased retries and base delay for production
       })
 
       const createdRows = await Promise.all(createRowPromises)
@@ -885,8 +903,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       // Add new rows to the UI immediately
       setRows(prev => [...prev, ...createdRows.map(({ row }) => row)])
 
-      // Step 2: Upload images in batches to avoid overwhelming the server
-      const BATCH_SIZE = 3 // Process 3 images at a time
+      // Step 2: Upload images in smaller batches with longer delays for production stability
+      const BATCH_SIZE = 2 // Reduced batch size for production
       const batches = []
       for (let i = 0; i < createdRows.length; i += BATCH_SIZE) {
         batches.push(createdRows.slice(i, i + BATCH_SIZE))
@@ -895,8 +913,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       let successCount = 0
       let errorCount = 0
 
-      for (const batch of batches) {
-        const batchPromises = batch.map(async ({ row, file }) => {
+      for (const [batchIndex, batch] of batches.entries()) {
+        console.log(`Processing batch ${batchIndex + 1}/${batches.length} with ${batch.length} files`)
+        
+        const batchPromises = batch.map(async ({ row, file }, fileIndex) => {
           try {
             // Update status to uploading
             setBulkUploadState(prev => prev.map(item => 
@@ -904,6 +924,11 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                 ? { ...item, status: 'uploading', progress: 0 }
                 : item
             ))
+
+            // Add staggered delay within batch to prevent rate limiting
+            if (fileIndex > 0) {
+              await new Promise(resolve => setTimeout(resolve, fileIndex * 200))
+            }
 
             await uploadSingleImage(row, file, user)
             
@@ -946,9 +971,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
           }
         })
 
-        // Small delay between batches to prevent overwhelming the server
-        if (batches.indexOf(batch) < batches.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 500))
+        // Longer delay between batches in production to prevent overwhelming the server
+        if (batchIndex < batches.length - 1) {
+          console.log(`Waiting 2 seconds before next batch...`)
+          await new Promise(resolve => setTimeout(resolve, 2000))
         }
       }
 
@@ -958,6 +984,144 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
           title: 'Bulk upload completed',
           description: `Successfully uploaded ${successCount} image${successCount === 1 ? '' : 's'}${errorCount > 0 ? `, ${errorCount} failed` : ''}`,
           variant: errorCount > 0 ? 'destructive' : 'default'
+        })
+      }
+
+      // Clear bulk upload state after a delay
+      setTimeout(() => {
+        setBulkUploadState([])
+      }, 5000)
+
+    } catch (error) {
+      console.error('Client-side bulk upload error:', error)
+      toast({
+        title: 'Bulk upload failed',
+        description: error instanceof Error ? error.message : 'Failed to process bulk upload',
+        variant: 'destructive'
+      })
+      setBulkUploadState([])
+    }
+  }
+
+  // Handle bulk image upload using server-side processing for better production stability
+  const handleBulkImageUpload = async (imageFiles: File[]) => {
+    setIsBulkUploading(true)
+    setBulkUploadState([])
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Not authenticated')
+
+      console.log('Bulk upload starting for model:', model.id, 'user:', user.id, 'files:', imageFiles.length);
+
+      // Initialize bulk upload state for UI feedback
+      const initialBulkState: BulkUploadItem[] = imageFiles.map((file, index) => ({
+        rowId: `temp-${index}`, // Temporary ID for UI
+        filename: file.name,
+        status: 'pending',
+        progress: 0
+      }))
+      setBulkUploadState(initialBulkState)
+
+      // Convert files to base64 for server processing
+      const filesData = await Promise.all(
+        imageFiles.map(async (file) => {
+          return new Promise<{ name: string; size: number; type: string; data: string }>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => {
+              const base64 = (reader.result as string).split(',')[1] // Remove data:image/...;base64, prefix
+              resolve({
+                name: file.name,
+                size: file.size,
+                type: file.type,
+                data: base64
+              })
+            }
+            reader.onerror = reject
+            reader.readAsDataURL(file)
+          })
+        })
+      )
+
+      // Update UI to show processing
+      setBulkUploadState(prev => prev.map(item => ({ ...item, status: 'uploading', progress: 50 })))
+
+      // Try server-side bulk upload first, fallback to client-side if it fails
+      let response: Response | null = null
+      let useServerSide = true
+      
+      try {
+        response = await fetch('/api/upload/bulk', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+          },
+          body: JSON.stringify({
+            model_id: model.id,
+            files: filesData
+          })
+        })
+
+        if (!response.ok) {
+          throw new Error(`Server-side bulk upload failed: ${response.status}`)
+        }
+      } catch (serverError) {
+        console.warn('Server-side bulk upload failed, falling back to client-side:', serverError)
+        useServerSide = false
+      }
+
+      if (!useServerSide || !response) {
+        // Fallback to original client-side approach with improved error handling
+        return await handleBulkImageUploadClientSide(imageFiles)
+      }
+
+      const result = await response.json()
+      console.log('Bulk upload result:', result)
+
+      // Update UI with results
+      const updatedBulkState: BulkUploadItem[] = imageFiles.map((file, index) => {
+        const successResult = result.results.find((r: any) => r.filename === file.name)
+        const errorResult = result.errors.find((e: any) => e.filename === file.name)
+        
+        if (successResult) {
+          return {
+            rowId: successResult.row.id,
+            filename: file.name,
+            status: 'success',
+            progress: 100
+          }
+        } else if (errorResult) {
+          return {
+            rowId: `temp-${index}`,
+            filename: file.name,
+            status: 'error',
+            progress: 0,
+            error: errorResult.error
+          }
+        } else {
+          return {
+            rowId: `temp-${index}`,
+            filename: file.name,
+            status: 'error',
+            progress: 0,
+            error: 'Unknown error'
+          }
+        }
+      })
+      setBulkUploadState(updatedBulkState)
+
+      // Add successful rows to the UI
+      if (result.results.length > 0) {
+        setRows(prev => [...prev, ...result.results.map((r: any) => r.row)])
+      }
+
+      // Show completion toast
+      if (result.summary.successful > 0) {
+        toast({
+          title: 'Bulk upload completed',
+          description: `Successfully uploaded ${result.summary.successful} image${result.summary.successful === 1 ? '' : 's'}${result.summary.failed > 0 ? `, ${result.summary.failed} failed` : ''}`,
+          variant: result.summary.failed > 0 ? 'destructive' : 'default'
         })
       }
 
@@ -2172,57 +2336,6 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                           )
                         })()}
                         
-                        {/* AI-Powered Generate Button */}
-                        {(() => {
-                          const hasTarget = Boolean(row?.target_image_url)
-                          const disabledReason = !hasTarget
-                            ? 'Upload a target image first'
-                            : ''
-                          const isDisabled = !hasTarget || rowState.isGenerating || isActiveStatus(displayStatus)
-                          return (
-                            <Tooltip open={isDisabled && !!disabledReason ? undefined : false}>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  onClick={() => handleGenerate(row.id, true)}
-                                  disabled={isDisabled}
-                                  size="sm"
-                                  variant="outline"
-                                  aria-busy={rowState.isGenerating || isActiveStatus(displayStatus)}
-                                  className="gap-2 transition-opacity duration-200"
-                                >
-                                  {isActiveStatus(displayStatus) ? (
-                                    <>
-                                      <Spinner 
-                                        key={`ai-spinner-${row.id}-${displayStatus}`}
-                                        size="sm"
-                                      />
-                                      AI Processing
-                                    </>
-                                  ) : rowState.isGenerating ? (
-                                    <>
-                                      <Spinner 
-                                        key={`ai-spinner-${row.id}-generating`}
-                                        size="sm"
-                                      />
-                                      AI Generating
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Wand2 className="h-4 w-4 transition-transform hover:scale-110" />
-                                      AI Generate
-                                    </>
-                                  )}
-                                </Button>
-                              </TooltipTrigger>
-                              {disabledReason && (
-                                <TooltipContent>{disabledReason}</TooltipContent>
-                              )}
-                              {!disabledReason && (
-                                <TooltipContent>Generate with AI-powered prompt</TooltipContent>
-                              )}
-                            </Tooltip>
-                          )
-                        })()}
                         
                         {live?.queuePosition !== undefined && isActiveStatus(displayStatus) && (
                           <div className="mt-1 text-[10px] text-muted-foreground">{live.queuePosition > 0 ? `#${live.queuePosition} in queue` : 'In progress'}</div>

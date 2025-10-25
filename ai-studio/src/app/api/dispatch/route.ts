@@ -21,20 +21,27 @@ export async function POST(req: NextRequest) {
 
     // Clean up clearly stuck jobs to avoid capacity deadlock
     try {
-      // Fail any 'running' without provider id after 2 minutes
+      // Fail any 'running' or 'saving' without provider id after 2 minutes
       const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString()
       await supabase.from('jobs')
         .update({ status: 'failed', error: 'timeout: no provider request id', updated_at: new Date().toISOString() })
         .is('provider_request_id', null)
-        .eq('status', 'running')
+        .in('status', ['running', 'saving'])
         .lt('updated_at', twoMinAgo)
 
-      // Fail very stale submitted/running jobs after STALE_MAX_MS (provider likely dead)
+      // Fail very stale submitted/running/saving jobs after STALE_MAX_MS (provider likely dead)
       const staleCutoff = new Date(Date.now() - STALE_MAX_MS).toISOString()
       await supabase.from('jobs')
         .update({ status: 'failed', error: 'stale: auto-cleanup', updated_at: new Date().toISOString() })
-        .in('status', ['submitted', 'running'])
+        .in('status', ['submitted', 'running', 'saving'])
         .lt('updated_at', staleCutoff)
+
+      // Fail very old queued jobs (5+ minutes) that dispatcher never picked up
+      const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+      await supabase.from('jobs')
+        .update({ status: 'failed', error: 'timeout: stuck in queue', updated_at: new Date().toISOString() })
+        .eq('status', 'queued')
+        .lt('created_at', fiveMinAgo)
     } catch {}
 
     // Count active running jobs within the active window (submitted|running and recently updated)
@@ -326,7 +333,7 @@ export async function POST(req: NextRequest) {
           supabase.from('jobs')
             .select('*', { count: 'exact', head: true })
             .eq('row_id', job.row_id)
-            .in('status', ['queued', 'running']),
+            .in('status', ['queued', 'running', 'submitted', 'saving']),
           supabase.from('jobs')
             .select('*', { count: 'exact', head: true })
             .eq('row_id', job.row_id)
@@ -337,7 +344,7 @@ export async function POST(req: NextRequest) {
           status: (remaining ?? 0) > 0
             ? 'partial'
             : (succeeded ?? 0) > 0
-              ? 'partial'
+              ? 'done'
               : 'error'
         }).eq('id', job.row_id)
       }

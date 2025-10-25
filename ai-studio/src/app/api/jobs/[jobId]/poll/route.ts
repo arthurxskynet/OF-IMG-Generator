@@ -39,8 +39,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         }
       }
 
-      // Hard timeout: fail the job after 2 minutes without a provider id
-      if (['queued', 'submitted', 'saving'].includes(job.status) && ageSec > 120) {
+      // Hard timeout: fail the job after 90 seconds without a provider id
+      if (['queued', 'submitted', 'saving'].includes(job.status) && ageSec > 90) {
         await supabase.from('jobs').update({
           status: 'failed',
           error: 'timeout: no provider request id',
@@ -100,7 +100,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         return NextResponse.json({ status: 'succeeded', step: 'done' })
       }
 
-      // Mark intermediate 'saving' state to avoid UI "complete" before images are stored
+      // Mark as saving if not already saving (allow retry of saving jobs)
       if (job.status !== 'saving') {
         await admin.from('jobs').update({ 
           status: 'saving', 
@@ -108,21 +108,54 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         }).eq('id', job.id)
       }
 
-      // Double-check job status after potential concurrent update
-      const { data: updatedJob } = await admin.from('jobs').select('status').eq('id', job.id).single()
-      if (updatedJob?.status === 'succeeded') {
-        return NextResponse.json({ status: 'succeeded', step: 'done' })
-      }
-
       const raw = responseData?.outputs ?? []
-      const urls: string[] = Array.isArray(raw)
+      const urls: string[] = Array.from(new Set(Array.isArray(raw)
         ? raw.flatMap((v: any) => {
             if (!v) return []
             if (typeof v === 'string') return [v]
             if (v.url && typeof v.url === 'string') return [v.url]
             return []
           })
-        : []
+        : []))
+      
+      console.log('[Poll] Processing Wave Speed outputs', {
+        jobId: job.id,
+        rawOutputsCount: raw.length,
+        uniqueUrlsCount: urls.length,
+        outputs: raw
+      })
+      
+      // Check if images already exist for this job (primary duplicate prevention)
+      const { data: existingImages } = await admin
+        .from('generated_images')
+        .select('output_url')
+        .eq('job_id', job.id)
+
+      const existingUrls = new Set((existingImages || []).map(img => img.output_url))
+      if (existingUrls.size > 0) {
+        console.log('[Poll] Images already exist for job', { 
+          jobId: job.id, 
+          existingCount: existingUrls.size 
+        })
+        // Skip to marking job as succeeded
+        await admin.from('jobs').update({ 
+          status: 'succeeded', 
+          updated_at: new Date().toISOString() 
+        }).eq('id', job.id)
+        return NextResponse.json({ status: 'succeeded', step: 'done' })
+      }
+
+      // Additional safety: double-check job status right before processing
+      const { data: finalJobCheck } = await admin
+        .from('jobs')
+        .select('status')
+        .eq('id', job.id)
+        .single()
+      
+      if (finalJobCheck?.status === 'succeeded') {
+        console.log('[Poll] Job completed by another request during processing', { jobId: job.id })
+        return NextResponse.json({ status: 'succeeded', step: 'done' })
+      }
       const inserts = []
       
       for (const u of urls) {
