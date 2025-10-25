@@ -104,7 +104,9 @@ export class PromptQueueService {
       return this.currentRun
     }
 
-    const run = (async () => {
+    let run: Promise<void> | null = null
+
+    const runPromise = (async () => {
       try {
         while (true) {
           // Claim up to the batch size at a time (adjust based on API rate limits)
@@ -140,9 +142,10 @@ export class PromptQueueService {
       }
     })()
 
-    this.currentRun = run
+    run = runPromise
+    this.currentRun = runPromise
 
-    return run
+    return runPromise
   }
 
   /**
