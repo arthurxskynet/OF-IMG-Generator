@@ -9,6 +9,7 @@ import type { Job } from '@/types/jobs'
 const MAX_CONCURRENCY = Number(process.env.DISPATCH_MAX_CONCURRENCY || 3)
 const ACTIVE_WINDOW_MS = Number(process.env.DISPATCH_ACTIVE_WINDOW_MS || 10 * 60 * 1000) // 10 minutes
 const STALE_MAX_MS = Number(process.env.DISPATCH_STALE_MAX_MS || 60 * 60 * 1000) // 60 minutes
+const ACTIVE_STATUSES: Job['status'][] = ['submitted', 'running', 'saving']
 
 export async function POST(req: NextRequest) {
   const supabase = supabaseAdmin
@@ -48,7 +49,7 @@ export async function POST(req: NextRequest) {
     const activeCutoff = new Date(Date.now() - ACTIVE_WINDOW_MS).toISOString()
     const { count: running } = await supabase.from('jobs')
       .select('*', { head: true, count: 'exact' })
-      .in('status', ['submitted', 'running'])
+      .in('status', ACTIVE_STATUSES)
       .gt('updated_at', activeCutoff)
 
     const slots = Math.max(0, MAX_CONCURRENCY - (running ?? 0))
@@ -351,15 +352,16 @@ export async function POST(req: NextRequest) {
     }))
 
     // Try to dispatch more jobs if we still have capacity
-    const { count: stillRunning } = await supabase.from('jobs')
+    const { count: stillActive } = await supabase.from('jobs')
       .select('*', { head: true, count: 'exact' })
-      .eq('status', 'running')
+      .in('status', ACTIVE_STATUSES)
+      .gt('updated_at', activeCutoff)
 
-    const remainingSlots = Math.max(0, MAX_CONCURRENCY - (stillRunning ?? 0))
-    console.log('[Dispatch] complete', { 
-      processed: claimed.length, 
-      stillRunning, 
-      remainingSlots 
+    const remainingSlots = Math.max(0, MAX_CONCURRENCY - (stillActive ?? 0))
+    console.log('[Dispatch] complete', {
+      processed: claimed.length,
+      stillActive,
+      remainingSlots
     })
     
     if (remainingSlots > 0) {
