@@ -14,7 +14,7 @@ import { useToast } from '@/hooks/use-toast'
 import { useJobPolling } from '@/hooks/use-job-polling'
 import { uploadImage, validateFile } from '@/lib/client-upload'
 import { createClient } from '@/lib/supabase-browser'
-import { Plus, Upload, X, Sparkles, Folder, CheckCircle, XCircle, Wand2, Star, Download, Check } from 'lucide-react'
+import { Plus, Upload, X, Sparkles, Folder, CheckCircle, XCircle, Wand2, Star, Download, Check, ChevronLeft, ChevronRight } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Progress } from '@/components/ui/progress'
@@ -76,6 +76,13 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   // Favorites state for immediate UI updates
   const [favoritesState, setFavoritesState] = useState<Record<string, boolean>>({})
   
+  // Dialog state for image navigation
+  const [dialogState, setDialogState] = useState<{
+    isOpen: boolean;
+    rowId: string | null;
+    imageIndex: number;
+  }>({ isOpen: false, rowId: null, imageIndex: 0 })
+  
   // Initialize favorites state from data when component loads
   useEffect(() => {
     const initialFavorites: Record<string, boolean> = {}
@@ -91,14 +98,76 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   }, [rows])
   
   // Helper function to get current favorite status (prioritizes UI state over data state)
-  // const getFavoriteStatus = (imageId: string, dataStatus: boolean | undefined): boolean => {
-  //   // Always check UI state first for instant updates
-  //   if (favoritesState.hasOwnProperty(imageId)) {
-  //     return favoritesState[imageId]
-  //   }
-  //   // Fallback to data status
-  //   return dataStatus === true
-  // }
+  const getCurrentFavoriteStatus = (imageId: string, dataStatus?: boolean) => {
+    // If we have UI state, use that (for immediate feedback)
+    if (favoritesState[imageId] !== undefined) {
+      return favoritesState[imageId]
+    }
+    // Otherwise fall back to data status
+    return dataStatus === true
+  }
+
+  // Navigation handlers for image dialog
+  const handleNavigateImage = (direction: 'prev' | 'next') => {
+    if (!dialogState.rowId) return
+    
+    const currentRow = rows.find(row => row.id === dialogState.rowId)
+    if (!currentRow) return
+    
+    const images = (currentRow as any).generated_images || []
+    const newIndex = direction === 'prev' 
+      ? Math.max(0, dialogState.imageIndex - 1)
+      : Math.min(images.length - 1, dialogState.imageIndex + 1)
+    
+    setDialogState(prev => ({ ...prev, imageIndex: newIndex }))
+  }
+
+  // Keyboard navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!dialogState.isOpen) return
+      
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        handleNavigateImage('prev')
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        handleNavigateImage('next')
+      } else if (e.key === 'Escape') {
+        setDialogState({ isOpen: false, rowId: null, imageIndex: 0 })
+      }
+    }
+    
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [dialogState])
+
+  // Image preloading for smooth navigation
+  useEffect(() => {
+    if (dialogState.isOpen && dialogState.rowId) {
+      const currentRow = rows.find(row => row.id === dialogState.rowId)
+      if (!currentRow) return
+      
+      const images = (currentRow as any).generated_images || []
+      const currentRowState = rowStates[dialogState.rowId]
+      if (!currentRowState) return
+      
+      // Preload adjacent images
+      const adjacentIndexes = [
+        dialogState.imageIndex - 1,
+        dialogState.imageIndex + 1
+      ].filter(i => i >= 0 && i < images.length)
+      
+      adjacentIndexes.forEach(index => {
+        const image = images[index]
+        const imageUrl = currentRowState.signedUrls[image.output_url]
+        if (imageUrl) {
+          const img = new window.Image()
+          img.src = imageUrl
+        }
+      })
+    }
+  }, [dialogState, rowStates, rows])
 
   // Job polling hook
   // Debounce refresh to avoid redundant fetches when many jobs complete together
@@ -959,14 +1028,43 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     }))
 
     try {
+      // Build reference images array using same logic as direct API route
+      // If ref_image_urls is explicitly set (even if empty), use it
+      // If ref_image_urls is null/undefined, fallback to model default
+      const refImages = row.ref_image_urls !== null && row.ref_image_urls !== undefined
+        ? row.ref_image_urls  // Use row's ref images (could be empty array if user removed all refs)
+        : model.default_ref_headshot_url 
+          ? [model.default_ref_headshot_url]  // Fallback to model default
+          : []  // No references at all
+
+      console.log('[Frontend] Reference images logic:', {
+        rowRefImageUrls: row.ref_image_urls,
+        modelDefaultRef: model.default_ref_headshot_url,
+        finalRefImages: refImages,
+        refImagesLength: refImages.length
+      })
+
+      // Convert storage paths to signed URLs for Grok API access
+      const refSignedUrls = await Promise.all(
+        refImages.map(path => getSignedUrl(path).then(r => r.url))
+      )
+      const targetSignedUrl = await getSignedUrl(row.target_image_url).then(r => r.url)
+
+      console.log('[Frontend] After URL signing:', {
+        refSignedUrls: refSignedUrls,
+        refSignedUrlsLength: refSignedUrls.length,
+        targetSignedUrl: targetSignedUrl,
+        operationType: refSignedUrls.length > 0 ? 'face-swap' : 'target-only'
+      })
+
       // Enqueue prompt generation request
       const response = await fetch('/api/prompt/queue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           rowId,
-          refUrls: row.ref_image_urls || [],
-          targetUrl: row.target_image_url,
+          refUrls: refSignedUrls,  // Full signed URLs
+          targetUrl: targetSignedUrl,  // Full signed URL
           priority: 8 // High priority for user-initiated requests
         })
       })
@@ -2150,146 +2248,130 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                       <TableCell className="align-top">
                         <div className="flex flex-nowrap gap-2 pb-2 h-[112px] overflow-x-auto overflow-y-hidden overscroll-x-contain -mx-1 px-1 snap-x snap-mandatory">
                           {images.length > 0 ? (
-                            images.map((image: GeneratedImage) => (
-                              <Dialog key={image.id}>
-                                <div className="relative group">
-                                  {!isSelectionMode ? (
-                                    <DialogTrigger asChild>
-                                      <div className="relative cursor-zoom-in">
-                                        <Thumb
-                                          src={rowState.signedUrls[image.output_url]}
-                                          alt="Generated image"
-                                          size={96}
-                                          className="flex-shrink-0 snap-start"
-                                        />
-                                        {/* Favorite button overlay - always visible in top-left */}
-                                        {(() => {
-                                          const isFavorited = favoritesState[image.id] ?? (image.is_favorited === true)
-                                          
-                                          return (
-                                            <button
-                                              key={`star-${image.id}-${isFavorited}`}
-                                              onClick={(e) => {
-                                                e.stopPropagation()
-                                                handleToggleFavorite(image.id, isFavorited)
-                                              }}
-                                              className={`absolute top-1 left-1 p-1.5 rounded-full transition-all duration-200 z-20 ${
-                                                isFavorited
-                                                  ? 'bg-transparent hover:bg-black/20'
-                                                  : 'bg-transparent hover:bg-black/20'
-                                              }`}
-                                              title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
-                                              style={{ position: 'absolute', top: '4px', left: '4px', zIndex: 20 }}
-                                            >
-                                              {isFavorited ? (
-                                                // Favorited state - filled yellow star
-                                                <div className="w-4 h-4 flex items-center justify-center relative">
-                                                  <Star className="w-4 h-4 text-yellow-400" style={{ fill: 'currentColor' }} />
-                                                  <div className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full"></div>
-                                                </div>
-                                              ) : (
-                                                // Not favorited state - outline white star
-                                                <Star className="w-4 h-4 text-white hover:text-yellow-300" />
-                                              )}
-                                            </button>
-                                          )
-                                        })()}
-                                      </div>
-                                    </DialogTrigger>
-                                  ) : (
-                                    <div 
-                                      className={`relative cursor-pointer transition-all duration-200 ${
-                                        selectedImageIds.has(image.id) 
-                                          ? 'ring-2 ring-blue-500 ring-offset-2' 
-                                          : 'hover:ring-1 hover:ring-gray-300'
-                                      }`} 
-                                      onClick={() => handleToggleImageSelection(image.id)}
-                                    >
-                                      <Thumb
-                                        src={rowState.signedUrls[image.output_url]}
-                                        alt="Generated image"
-                                        size={96}
-                                        className={`flex-shrink-0 snap-start transition-opacity duration-200 ${
-                                          selectedImageIds.has(image.id) ? 'opacity-80' : ''
-                                        }`}
-                                      />
-                                      {/* Favorite button overlay - always visible in top-left */}
-                                      {(() => {
-                                        const isFavorited = favoritesState[image.id] ?? (image.is_favorited === true)
-                                        
-                                        return (
-                                          <button
-                                            key={`star-${image.id}-${isFavorited}`}
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              handleToggleFavorite(image.id, isFavorited)
-                                            }}
-                                            className={`absolute top-1 left-1 p-1.5 rounded-full transition-all duration-200 z-20 ${
-                                              isFavorited
-                                                ? 'bg-transparent hover:bg-black/20'
-                                                : 'bg-transparent hover:bg-black/20'
-                                            }`}
-                                            title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
-                                            style={{ position: 'absolute', top: '4px', left: '4px', zIndex: 20 }}
-                                          >
-                                            {isFavorited ? (
-                                              // Favorited state - filled yellow star
-                                              <div className="w-4 h-4 flex items-center justify-center relative">
-                                                <Star className="w-4 h-4 text-yellow-400" style={{ fill: 'currentColor' }} />
-                                                <div className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full"></div>
-                                              </div>
-                                            ) : (
-                                              // Not favorited state - outline white star
-                                              <Star className="w-4 h-4 text-white hover:text-yellow-300" />
-                                            )}
-                                          </button>
-                                        )
-                                      })()}
-                                      {/* Selection checkbox overlay - in bottom-right when in selection mode */}
-                                      {isSelectionMode && (
-                                        <div 
-                                          className="absolute bottom-1 right-1 z-20"
+                            images.map((image: GeneratedImage, index: number) => (
+                              <div key={image.id} className="relative group">
+                                {!isSelectionMode ? (
+                                  <div 
+                                    className="relative cursor-zoom-in"
+                                    onClick={() => setDialogState({ isOpen: true, rowId: row.id, imageIndex: index })}
+                                  >
+                                    <Thumb
+                                      src={rowState.signedUrls[image.output_url]}
+                                      alt="Generated image"
+                                      size={96}
+                                      className="flex-shrink-0 snap-start"
+                                    />
+                                    {/* Favorite button overlay - always visible in top-left */}
+                                    {(() => {
+                                      const isFavorited = favoritesState[image.id] ?? (image.is_favorited === true)
+                                      
+                                      return (
+                                        <button
+                                          key={`star-${image.id}-${isFavorited}`}
                                           onClick={(e) => {
                                             e.stopPropagation()
-                                            e.preventDefault()
-                                            handleToggleImageSelection(image.id)
+                                            handleToggleFavorite(image.id, isFavorited)
                                           }}
-                                          style={{ position: 'absolute', bottom: '4px', right: '4px', zIndex: 20 }}
+                                          className={`absolute top-1 left-1 p-1.5 rounded-full transition-all duration-200 z-20 ${
+                                            isFavorited
+                                              ? 'bg-transparent hover:bg-black/20'
+                                              : 'bg-transparent hover:bg-black/20'
+                                          }`}
+                                          title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+                                          style={{ position: 'absolute', top: '4px', left: '4px', zIndex: 20 }}
                                         >
-                                          <div className="p-1 rounded-full bg-transparent">
-                                            <Checkbox
-                                              checked={selectedImageIds.has(image.id)}
-                                              onCheckedChange={(checked) => {
-                                                handleToggleImageSelection(image.id)
-                                              }}
-                                              className="h-4 w-4"
-                                              onClick={(e) => {
-                                                e.stopPropagation()
-                                                e.preventDefault()
-                                              }}
-                                            />
-                                          </div>
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                                <DialogContent className="max-w-5xl">
-                                  <DialogHeader>
-                                    <DialogTitle>Generated Image</DialogTitle>
-                                  </DialogHeader>
-                                  <div className="flex justify-center">
-                                    <Image
-                                      src={rowState.signedUrls[image.output_url] || ''}
-                                      alt="Generated image"
-                                      width={1920}
-                                      height={1920}
-                                      className="max-w-full max-h-[80vh] object-contain rounded-lg"
-                                      unoptimized
-                                    />
+                                          {isFavorited ? (
+                                            // Favorited state - filled yellow star
+                                            <div className="w-4 h-4 flex items-center justify-center relative">
+                                              <Star className="w-4 h-4 text-yellow-400" style={{ fill: 'currentColor' }} />
+                                              <div className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full"></div>
+                                            </div>
+                                          ) : (
+                                            // Not favorited state - outline white star
+                                            <Star className="w-4 h-4 text-white hover:text-yellow-300" />
+                                          )}
+                                        </button>
+                                      )
+                                    })()}
                                   </div>
-                                </DialogContent>
-                              </Dialog>
+                                ) : (
+                                  <div 
+                                    className={`relative cursor-pointer transition-all duration-200 ${
+                                      selectedImageIds.has(image.id) 
+                                        ? 'ring-2 ring-blue-500 ring-offset-2' 
+                                        : 'hover:ring-1 hover:ring-gray-300'
+                                    }`} 
+                                    onClick={() => handleToggleImageSelection(image.id)}
+                                  >
+                                    <Thumb
+                                      src={rowState.signedUrls[image.output_url]}
+                                      alt="Generated image"
+                                      size={96}
+                                      className={`flex-shrink-0 snap-start transition-opacity duration-200 ${
+                                        selectedImageIds.has(image.id) ? 'opacity-80' : ''
+                                      }`}
+                                    />
+                                    {/* Favorite button overlay - always visible in top-left */}
+                                    {(() => {
+                                      const isFavorited = favoritesState[image.id] ?? (image.is_favorited === true)
+                                      
+                                      return (
+                                        <button
+                                          key={`star-${image.id}-${isFavorited}`}
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            handleToggleFavorite(image.id, isFavorited)
+                                          }}
+                                          className={`absolute top-1 left-1 p-1.5 rounded-full transition-all duration-200 z-20 ${
+                                            isFavorited
+                                              ? 'bg-transparent hover:bg-black/20'
+                                              : 'bg-transparent hover:bg-black/20'
+                                          }`}
+                                          title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+                                          style={{ position: 'absolute', top: '4px', left: '4px', zIndex: 20 }}
+                                        >
+                                          {isFavorited ? (
+                                            // Favorited state - filled yellow star
+                                            <div className="w-4 h-4 flex items-center justify-center relative">
+                                              <Star className="w-4 h-4 text-yellow-400" style={{ fill: 'currentColor' }} />
+                                              <div className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full"></div>
+                                            </div>
+                                          ) : (
+                                            // Not favorited state - outline white star
+                                            <Star className="w-4 h-4 text-white hover:text-yellow-300" />
+                                          )}
+                                        </button>
+                                      )
+                                    })()}
+                                    {/* Selection checkbox overlay - in bottom-right when in selection mode */}
+                                    {isSelectionMode && (
+                                      <div 
+                                        className="absolute bottom-1 right-1 z-20"
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          e.preventDefault()
+                                          handleToggleImageSelection(image.id)
+                                        }}
+                                        style={{ position: 'absolute', bottom: '4px', right: '4px', zIndex: 20 }}
+                                      >
+                                        <div className="p-1 rounded-full bg-transparent">
+                                          <Checkbox
+                                            checked={selectedImageIds.has(image.id)}
+                                            onCheckedChange={(checked) => {
+                                              handleToggleImageSelection(image.id)
+                                            }}
+                                            className="h-4 w-4"
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              e.preventDefault()
+                                            }}
+                                          />
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
                             ))
                           ) : (isActiveStatus(displayStatus) || rowState.isLoadingResults) ? (
                             <div className="flex items-center gap-3">
@@ -2337,6 +2419,100 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
           </CardContent>
         </Card>
       )}
+
+      {/* Single controlled Dialog for image navigation */}
+      {rows.map((row) => {
+        const images = (row as any).generated_images || []
+        const rowState = rowStates[row.id]
+        
+        if (!rowState || images.length === 0) return null
+        
+        return (
+          <Dialog 
+            key={`dialog-${row.id}`}
+            open={dialogState.isOpen && dialogState.rowId === row.id} 
+            onOpenChange={(open) => {
+              if (!open) {
+                setDialogState({ isOpen: false, rowId: null, imageIndex: 0 })
+              }
+            }}
+          >
+            <DialogContent className="max-w-5xl">
+              <DialogHeader>
+                <DialogTitle>
+                  Generated Image {dialogState.imageIndex + 1} of {images.length}
+                </DialogTitle>
+              </DialogHeader>
+              
+              {/* Favorites button - top-left overlay */}
+              {(() => {
+                const currentImage = images[dialogState.imageIndex]
+                if (!currentImage) return null
+                
+                const isFavorited = getCurrentFavoriteStatus(currentImage.id, currentImage.is_favorited)
+                
+                return (
+                  <button 
+                    onClick={() => handleToggleFavorite(currentImage.id, isFavorited)}
+                    className="absolute top-4 left-4 z-50 p-2 rounded-full bg-black/50 hover:bg-black/70 transition-colors"
+                    title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+                  >
+                    <Star 
+                      className={`w-5 h-5 ${isFavorited ? 'fill-yellow-400 text-yellow-400' : 'text-white hover:text-yellow-300'}`} 
+                    />
+                  </button>
+                )
+              })()}
+              
+              {/* Image container with navigation arrows */}
+              <div className="relative w-full min-h-[400px]">
+                {/* Left arrow */}
+                {dialogState.imageIndex > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleNavigateImage('prev')}
+                    className="absolute left-4 top-1/2 -translate-y-1/2 z-40 h-12 w-12 rounded-full bg-black/50 hover:bg-black/70 text-white hover:text-white"
+                  >
+                    <ChevronLeft className="h-6 w-6" />
+                  </Button>
+                )}
+                
+                {/* Image - centered using flexbox */}
+                <div className="flex items-center justify-center h-full min-h-[400px]">
+                  {(() => {
+                    const currentImage = images[dialogState.imageIndex]
+                    if (!currentImage) return null
+                    
+                    return (
+                      <Image
+                        src={rowState.signedUrls[currentImage.output_url] || ''}
+                        alt="Generated image"
+                        width={1920}
+                        height={1920}
+                        className="max-w-full max-h-[80vh] object-contain rounded-lg"
+                        unoptimized
+                      />
+                    )
+                  })()}
+                </div>
+                
+                {/* Right arrow */}
+                {dialogState.imageIndex < images.length - 1 && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleNavigateImage('next')}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 z-40 h-12 w-12 rounded-full bg-black/50 hover:bg-black/70 text-white hover:text-white"
+                  >
+                    <ChevronRight className="h-6 w-6" />
+                  </Button>
+                )}
+              </div>
+            </DialogContent>
+          </Dialog>
+        )
+      })}
     </div>
   )
 }
