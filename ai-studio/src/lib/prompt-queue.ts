@@ -11,6 +11,8 @@ export class PromptQueueService {
   private static instance: PromptQueueService
   private isProcessing = false
   private processingInterval: NodeJS.Timeout | null = null
+  private currentRun: Promise<void> | null = null
+  private readonly batchSize = 3
   private readonly retryConfig: PromptRetryConfig
 
   constructor(retryConfig: PromptRetryConfig = DEFAULT_RETRY_CONFIG) {
@@ -76,9 +78,9 @@ export class PromptQueueService {
     console.log('[PromptQueue] Starting background processing')
 
     // Process immediately, then every 5 seconds
-    this.processQueue()
+    void this.processQueue()
     this.processingInterval = setInterval(() => {
-      this.processQueue()
+      void this.processQueue()
     }, 5000)
   }
 
@@ -98,30 +100,49 @@ export class PromptQueueService {
    * Process queued prompt generation jobs
    */
   private async processQueue(): Promise<void> {
-    try {
-      // Claim up to 3 jobs at a time (adjust based on API rate limits)
-      const { data: claimedJobs, error } = await supabaseAdmin
-        .rpc('claim_prompt_jobs', { p_limit: 3 })
-
-      if (error) {
-        console.error('[PromptQueue] Failed to claim jobs:', error)
-        return
-      }
-
-      if (!claimedJobs || claimedJobs.length === 0) {
-        return // No jobs to process
-      }
-
-      console.log('[PromptQueue] Processing jobs', { count: claimedJobs.length })
-
-      // Process jobs in parallel
-      await Promise.allSettled(
-        claimedJobs.map((job: PromptGenerationJob) => this.processPromptJob(job))
-      )
-
-    } catch (error) {
-      console.error('[PromptQueue] Error in processQueue:', error)
+    if (this.currentRun) {
+      return this.currentRun
     }
+
+    const run = (async () => {
+      try {
+        while (true) {
+          // Claim up to the batch size at a time (adjust based on API rate limits)
+          const { data: claimedJobs, error } = await supabaseAdmin
+            .rpc('claim_prompt_jobs', { p_limit: this.batchSize })
+
+          if (error) {
+            console.error('[PromptQueue] Failed to claim jobs:', error)
+            return
+          }
+
+          if (!claimedJobs || claimedJobs.length === 0) {
+            return // No jobs to process
+          }
+
+          console.log('[PromptQueue] Processing jobs', { count: claimedJobs.length })
+
+          // Process jobs in parallel within the batch
+          await Promise.allSettled(
+            claimedJobs.map((job: PromptGenerationJob) => this.processPromptJob(job))
+          )
+
+          if (claimedJobs.length < this.batchSize) {
+            return // Nothing left to claim in this run
+          }
+        }
+      } catch (error) {
+        console.error('[PromptQueue] Error in processQueue:', error)
+      } finally {
+        if (this.currentRun === run) {
+          this.currentRun = null
+        }
+      }
+    })()
+
+    this.currentRun = run
+
+    return run
   }
 
   /**
@@ -193,7 +214,7 @@ export class PromptQueueService {
 
         // Schedule retry with delay
         setTimeout(() => {
-          this.processQueue()
+          void this.processQueue()
         }, delayMs)
 
       } else {
@@ -321,7 +342,7 @@ export class PromptQueueService {
     // Estimate based on current queue length and average processing time
     const estimatedProcessingTime = avgWaitTime || 30 // Default 30 seconds if no history
     const totalActive = queued + processing
-    const processingRate = 3 // 3 jobs processed per batch, every 5 seconds = 36 jobs/minute
+    const processingRate = this.batchSize // Jobs processed per batch, every 5 seconds = 36 jobs/minute when batch size is 3
 
     return Math.ceil((totalActive / processingRate) * 60) // Convert to seconds
   }
