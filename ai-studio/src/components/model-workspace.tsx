@@ -269,46 +269,66 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     }
   }, [rowStates])
 
-  // Prefetch signed URLs when rows change - now with parallel fetching and batching
+  // Prefetch signed URLs when rows change - now with bounded concurrency
   useEffect(() => {
-    const prefetch = async () => {
-      // Collect all image paths that need signed URLs
-      const imagePromises: Promise<string>[] = []
-      
+    const buildPrefetchQueue = () => {
+      const tasks: Array<() => Promise<void>> = []
+
+      const enqueue = (path: string, rowId?: string) => {
+        if (!path) return
+        tasks.push(async () => {
+          try {
+            await getImageUrl(path, rowId)
+          } catch (error) {
+            console.error('Failed prefetching signed URL', { path, error })
+          }
+        })
+      }
+
       for (const row of rows) {
         const rowId = row.id
-        
-        // Handle multiple reference images
+
         if (row.ref_image_urls && row.ref_image_urls.length > 0) {
           for (const refPath of row.ref_image_urls) {
-            imagePromises.push(getImageUrl(refPath, rowId))
+            enqueue(refPath, rowId)
           }
         } else if (model.default_ref_headshot_url) {
-          imagePromises.push(getImageUrl(model.default_ref_headshot_url, rowId))
+          enqueue(model.default_ref_headshot_url, rowId)
         }
-        
+
         if (row.target_image_url) {
-          imagePromises.push(getImageUrl(row.target_image_url, rowId))
+          enqueue(row.target_image_url, rowId)
         }
-        
+
         const images = (row as any).generated_images || []
         for (const img of images) {
-          imagePromises.push(getImageUrl(img.output_url, rowId))
+          enqueue(img.output_url, rowId)
         }
       }
-      
-      // Process in batches to avoid overwhelming the server
-      const BATCH_SIZE = 20
-      for (let i = 0; i < imagePromises.length; i += BATCH_SIZE) {
-        const batch = imagePromises.slice(i, i + BATCH_SIZE)
-        await Promise.all(batch)
-        
-        // Small delay between batches to be nice to the server
-        if (i + BATCH_SIZE < imagePromises.length) {
-          await new Promise(resolve => setTimeout(resolve, 100))
-        }
-      }
+
+      return tasks
     }
+
+    const runWithConcurrency = async (tasks: Array<() => Promise<void>>, concurrency: number) => {
+      if (tasks.length === 0 || concurrency <= 0) return
+
+      const queue = [...tasks]
+      const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+        while (queue.length > 0) {
+          const next = queue.shift()
+          if (!next) return
+          await next()
+        }
+      })
+
+      await Promise.all(workers)
+    }
+
+    const prefetch = async () => {
+      const tasks = buildPrefetchQueue()
+      await runWithConcurrency(tasks, 5)
+    }
+
     prefetch().catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, model.id])
