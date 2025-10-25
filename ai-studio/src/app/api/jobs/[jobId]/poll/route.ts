@@ -151,28 +151,43 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         return NextResponse.json({ status: 'succeeded', step: 'done' })
       }
 
-      // Mark as saving if not already saving (allow retry of saving jobs)
-      if (job.status !== 'saving') {
-        await admin.from('jobs').update({ 
+      // Use a more robust atomic approach: try to claim the job for processing
+      // This prevents race conditions by using a database-level atomic operation
+      const { data: claimResult, error: claimError } = await admin
+        .from('jobs')
+        .update({ 
           status: 'saving', 
           updated_at: new Date().toISOString() 
-        }).eq('id', job.id)
+        })
+        .eq('id', job.id)
+        .in('status', ['running', 'submitted']) // Only claim if still in these states
+        .select('id, status')
+      
+      // If no rows were updated, another request already claimed this job
+      if (claimError || !claimResult || claimResult.length === 0) {
+        console.log('[Poll] Job already claimed by another request', { 
+          jobId: job.id, 
+          currentStatus: job.status,
+          claimError: claimError?.message 
+        })
+        return NextResponse.json({ status: 'succeeded', step: 'done' })
       }
 
       const raw = responseData?.outputs ?? []
-      const urls: string[] = Array.from(new Set(Array.isArray(raw)
-        ? raw.flatMap((v: any) => {
-            if (!v) return []
-            if (typeof v === 'string') return [v]
-            if (v.url && typeof v.url === 'string') return [v.url]
+      // SeaDream only returns one image, so take only the first one
+      const urls: string[] = Array.isArray(raw) && raw.length > 0
+        ? (() => {
+            const firstOutput = raw[0]
+            if (typeof firstOutput === 'string') return [firstOutput]
+            if (firstOutput?.url && typeof firstOutput.url === 'string') return [firstOutput.url]
             return []
-          })
-        : []))
+          })()
+        : []
       
-      console.log('[Poll] Processing Wave Speed outputs', {
+      console.log('[Poll] Processing SeaDream output (single image)', {
         jobId: job.id,
         rawOutputsCount: raw.length,
-        uniqueUrlsCount: urls.length,
+        singleUrl: urls[0] || 'none',
         outputs: raw
       })
       
@@ -196,17 +211,43 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         return NextResponse.json({ status: 'succeeded', step: 'done' })
       }
 
-      // Additional safety: double-check job status right before processing
-      const { data: finalJobCheck } = await admin
-        .from('jobs')
-        .select('status')
-        .eq('id', job.id)
-        .single()
+      // No need for additional status check since we atomically transitioned to 'saving'
       
-      if (finalJobCheck?.status === 'succeeded') {
-        console.log('[Poll] Job completed by another request during processing', { jobId: job.id })
-        return NextResponse.json({ status: 'succeeded', step: 'done' })
+      // Early URL deduplication check - prevent downloading same remote URL multiple times
+      if (urls.length > 0) {
+        const remoteUrl = urls[0]
+        
+        // Check if this exact remote URL was already processed for this row
+        const { data: existingRemoteUrl } = await admin
+          .from('generated_images')
+          .select('id, output_url')
+          .eq('row_id', job.row_id)
+          .limit(10) // Get recent images to check
+        
+        // Check if any existing image has the same remote URL pattern
+        const isDuplicate = existingRemoteUrl?.some(img => {
+          // Extract filename from both URLs for comparison
+          const existingFilename = img.output_url.split('/').pop()?.split('?')[0]
+          const newFilename = remoteUrl.split('/').pop()?.split('?')[0]
+          return existingFilename && newFilename && existingFilename.includes(newFilename.split('-')[0])
+        })
+        
+        if (isDuplicate) {
+          console.log('[Poll] Remote URL already processed for this row', { 
+            jobId: job.id, 
+            rowId: job.row_id,
+            remoteUrl,
+            existingImages: existingRemoteUrl?.length || 0
+          })
+          // Mark job as succeeded and return
+          await admin.from('jobs').update({ 
+            status: 'succeeded', 
+            updated_at: new Date().toISOString() 
+          }).eq('id', job.id)
+          return NextResponse.json({ status: 'succeeded', step: 'done' })
+        }
       }
+      
       const inserts = []
       
       for (const u of urls) {
@@ -223,16 +264,35 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
       }
       
       if (inserts.length) {
-        try {
-          await admin.from('generated_images').insert(inserts)
-        } catch (error: any) {
-          // Handle unique constraint violation gracefully
-          if (error?.code === '23505' && error?.constraint === 'unique_job_output_url') {
-            console.log('[Poll] Duplicate images prevented for job', { jobId: job.id })
-            // Continue to mark job as succeeded since images were already saved
-          } else {
-            // Re-throw other database errors
-            throw error
+        // Final safety check: verify job is still in 'saving' status before inserting
+        const { data: finalStatusCheck } = await admin
+          .from('jobs')
+          .select('status')
+          .eq('id', job.id)
+          .single()
+        
+        if (finalStatusCheck?.status !== 'saving') {
+          console.log('[Poll] Job status changed during processing, skipping insert', { 
+            jobId: job.id, 
+            expectedStatus: 'saving',
+            actualStatus: finalStatusCheck?.status 
+          })
+        } else {
+          try {
+            await admin.from('generated_images').insert(inserts)
+            console.log('[Poll] Successfully saved image for job', { 
+              jobId: job.id, 
+              imageCount: inserts.length 
+            })
+          } catch (error: any) {
+            // Handle unique constraint violation gracefully
+            if (error?.code === '23505' && error?.constraint === 'unique_job_output_url') {
+              console.log('[Poll] Duplicate images prevented for job', { jobId: job.id })
+              // Continue to mark job as succeeded since images were already saved
+            } else {
+              // Re-throw other database errors
+              throw error
+            }
           }
         }
       }

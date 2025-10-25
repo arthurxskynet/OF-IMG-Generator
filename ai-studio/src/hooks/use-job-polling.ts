@@ -79,6 +79,10 @@ export function useJobPolling(onJobComplete?: (jobId: string, status: JobStatus 
           (state.status === 'submitted' && timeSinceLastUpdate > 1500)
 
         if (!shouldPoll) continue
+        
+        // Additional safety: don't poll if we just polled very recently (within 500ms)
+        // This prevents rapid-fire polling that can cause race conditions
+        if (timeSinceLastUpdate < 500) continue
 
         try {
           const result = await pollJob(jobId)
