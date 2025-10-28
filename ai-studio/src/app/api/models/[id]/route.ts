@@ -27,7 +27,9 @@ const UpdateModelSchema = z.object({
   default_prompt: z.string().min(3).optional(),
   default_ref_headshot_url: z.string().optional(),
   requests_default: z.number().int().min(1).max(50).optional(),
-  size: z.string().optional()
+  size: z.string().optional(),
+  output_width: z.number().int().min(1024).max(4096).optional(),
+  output_height: z.number().int().min(1024).max(4096).optional()
 });
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {

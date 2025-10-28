@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo, memo } from 'react'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -20,6 +20,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Progress } from '@/components/ui/progress'
 import { Spinner } from '@/components/ui/spinner'
 import { Checkbox } from '@/components/ui/checkbox'
+import { DimensionControls } from '@/components/dimension-controls'
 
 interface ModelWorkspaceProps {
   model: Model
@@ -51,6 +52,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   const { toast } = useToast()
   const supabase = createClient()
   const [rows, setRows] = useState(initialRows)
+  const [currentModel, setCurrentModel] = useState(model)
   
   // Memoized sorted rows to prevent unnecessary re-sorting
   const sortedRows = useMemo(() => {
@@ -97,6 +99,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     imageIndex: number;
   }>({ isOpen: false, rowId: null, imageIndex: 0 })
   
+  // Local prompt state for each row to prevent re-renders on typing
+  const [localPrompts, setLocalPrompts] = useState<Record<string, string>>({})
+  
   // Initialize favorites state from data when component loads
   useEffect(() => {
     const initialFavorites: Record<string, boolean> = {}
@@ -110,6 +115,53 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     })
     setFavoritesState(initialFavorites)
   }, [rows])
+
+  // Initialize local prompts from row data
+  useEffect(() => {
+    const initialPrompts: Record<string, string> = {}
+    rows.forEach(row => {
+      const promptValue = row.prompt_override || model.default_prompt || ''
+      initialPrompts[row.id] = promptValue
+    })
+    setLocalPrompts(prev => ({ ...prev, ...initialPrompts }))
+  }, [rows, model.default_prompt])
+
+  // Get current prompt value for a row (local state takes precedence)
+  const getCurrentPrompt = useCallback((rowId: string): string => {
+    return localPrompts[rowId] ?? rows.find(r => r.id === rowId)?.prompt_override ?? model.default_prompt ?? ''
+  }, [localPrompts, rows, model.default_prompt])
+
+  // Handle prompt change (only local state update - no API calls)
+  const handlePromptChange = useCallback((rowId: string, value: string) => {
+    setLocalPrompts(prev => ({ ...prev, [rowId]: value }))
+  }, [])
+
+  // Handle prompt blur (save to API when user is done editing)
+  const handlePromptBlur = useCallback(async (rowId: string, value: string) => {
+    try {
+      await fetch(`/api/rows/${rowId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt_override: value || undefined
+        })
+      })
+      
+      // Update rows state after successful save
+      setRows(prev => prev.map(row => 
+        row.id === rowId 
+          ? { ...row, prompt_override: value || undefined }
+          : row
+      ))
+    } catch (error) {
+      console.error('Failed to update prompt:', error)
+      // Revert local state on error
+      setLocalPrompts(prev => ({
+        ...prev,
+        [rowId]: rows.find(r => r.id === rowId)?.prompt_override ?? model.default_prompt ?? ''
+      }))
+    }
+  }, [rows, model.default_prompt])
   
   // Helper function to get current favorite status (prioritizes UI state over data state)
   const getCurrentFavoriteStatus = (imageId: string, dataStatus?: boolean) => {
@@ -283,69 +335,36 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     }
   }, [rowStates])
 
-  // Prefetch signed URLs when rows change - now with bounded concurrency
+  // Lazy load signed URLs only when images become visible
   useEffect(() => {
-    const buildPrefetchQueue = () => {
-      const tasks: Array<() => Promise<void>> = []
-
-      const enqueue = (path: string, rowId?: string) => {
-        if (!path) return
-        tasks.push(async () => {
-          try {
-            await getImageUrl(path, rowId)
-          } catch (error) {
-            console.error('Failed prefetching signed URL', { path, error })
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const img = entry.target as HTMLImageElement
+            const path = img.dataset.imagePath
+            const rowId = img.dataset.rowId
+            
+            if (path && rowId) {
+              getImageUrl(path, rowId).catch(() => {})
+            }
           }
         })
+      },
+      {
+        rootMargin: '50px', // Start loading 50px before image becomes visible
+        threshold: 0.1
       }
+    )
 
-      for (const row of rows) {
-        const rowId = row.id
+    // Observe all image elements with data attributes
+    const imageElements = document.querySelectorAll('[data-image-path]')
+    imageElements.forEach((el) => observer.observe(el))
 
-        if (row.ref_image_urls && row.ref_image_urls.length > 0) {
-          for (const refPath of row.ref_image_urls) {
-            enqueue(refPath, rowId)
-          }
-        } else if (model.default_ref_headshot_url) {
-          enqueue(model.default_ref_headshot_url, rowId)
-        }
-
-        if (row.target_image_url) {
-          enqueue(row.target_image_url, rowId)
-        }
-
-        const images = (row as any).generated_images || []
-        for (const img of images) {
-          enqueue(img.output_url, rowId)
-        }
-      }
-
-      return tasks
+    return () => {
+      observer.disconnect()
     }
-
-    const runWithConcurrency = async (tasks: Array<() => Promise<void>>, concurrency: number) => {
-      if (tasks.length === 0 || concurrency <= 0) return
-
-      const queue = [...tasks]
-      const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
-        while (queue.length > 0) {
-          const next = queue.shift()
-          if (!next) return
-          await next()
-        }
-      })
-
-      await Promise.all(workers)
-    }
-
-    const prefetch = async () => {
-      const tasks = buildPrefetchQueue()
-      await runWithConcurrency(tasks, 5)
-    }
-
-    prefetch().catch(() => {})
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, model.id])
+  }, [rows, getImageUrl])
 
   // On mount: resume active jobs and setup realtime
   useEffect(() => {
@@ -1177,33 +1196,6 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     }
   }
 
-  // Handle prompt update
-  const handlePromptUpdate = async (rowId: string, prompt: string) => {
-    try {
-      // Optimistically update the local state first
-      setRows(prev => prev.map(row => 
-        row.id === rowId 
-          ? { ...row, prompt_override: prompt || undefined }
-          : row
-      ))
-
-      await fetch(`/api/rows/${rowId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt_override: prompt || undefined
-        })
-      })
-    } catch (error) {
-      console.error('Failed to update prompt:', error)
-      // Revert the optimistic update on error
-      setRows(prev => prev.map(row => 
-        row.id === rowId 
-          ? { ...row, prompt_override: rows.find(r => r.id === rowId)?.prompt_override }
-          : row
-      ))
-    }
-  }
 
   // AI Prompt Generation (using queue system)
   const handleAiPromptGeneration = async (rowId: string) => {
@@ -1313,7 +1305,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
 
         if (status === 'completed' && generatedPrompt) {
           // Update the prompt immediately (automatic replacement)
-          await handlePromptUpdate(rowId, generatedPrompt)
+          setLocalPrompts(prev => ({ ...prev, [rowId]: generatedPrompt }))
+          await handlePromptBlur(rowId, generatedPrompt)
           
           toast({
             title: 'AI prompt generated',
@@ -1366,7 +1359,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   // Removed generation count: provider does not support count parameter
 
   // Handle generation
-  const handleGenerate = async (rowId: string, useAiPrompt: boolean = false) => {
+  const handleGenerate = useCallback(async (rowId: string, useAiPrompt: boolean = false) => {
     const row = rows.find(r => r.id === rowId)
     if (!row?.target_image_url) {
       toast({
@@ -1414,10 +1407,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         [rowId]: { ...getRowState(rowId), isGenerating: false }
       }))
     }
-  }
+  }, [rows, getRowState, setRowStates, toast, createJobs, startPolling])
 
   // Remove row
-  const handleRemoveRow = async (rowId: string) => {
+  const handleRemoveRow = useCallback(async (rowId: string) => {
     try {
       await fetch(`/api/rows/${rowId}`, { method: 'DELETE' })
       setRows(prev => prev.filter(r => r.id !== rowId))
@@ -1441,10 +1434,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         variant: 'destructive'
       })
     }
-  }
+  }, [setRows, setRowStates, setDeletedRowIds, toast])
 
   // Toggle favorite status for a generated image
-  const handleToggleFavorite = async (imageId: string, currentStatus: boolean | undefined) => {
+  const handleToggleFavorite = useCallback(async (imageId: string, currentStatus: boolean | undefined) => {
     try {
       // Handle case where currentStatus might be undefined (default to false)
       const newStatus = currentStatus === true ? false : true
@@ -1512,7 +1505,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         variant: 'destructive'
       })
     }
-  }
+  }, [setFavoritesState, setRows, toast])
 
   // Helper functions for download selection
   const getAllImageIds = (): string[] => {
@@ -1805,6 +1798,14 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         </CardContent>
       </Card>
 
+      {/* Dimension Controls */}
+      <DimensionControls 
+        model={currentModel} 
+        onUpdate={(updatedModel) => {
+          setCurrentModel(updatedModel)
+          console.log('Model dimensions updated:', updatedModel)
+        }} 
+      />
 
       {/* Add Row Button */}
       <div className="flex justify-between items-center">
@@ -2002,6 +2003,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                           src={rowState.signedUrls[refUrl]}
                                           alt={`Reference image ${index + 1}`}
                                           size={64}
+                                          dataImagePath={refUrl}
+                                          dataRowId={row.id}
                                           className="transition-transform group-hover:scale-[1.02]"
                                         />
                                       </div>
@@ -2033,6 +2036,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                         src={rowState.signedUrls[model.default_ref_headshot_url]}
                                         alt="Default reference image"
                                         size={64}
+                                        dataImagePath={model.default_ref_headshot_url}
+                                        dataRowId={row.id}
                                         className="transition-transform group-hover:scale-[1.02]"
                                       />
                                     </div>
@@ -2226,6 +2231,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                       src={rowState.signedUrls[row.target_image_url]}
                                       alt="Target image"
                                       size={88}
+                                      dataImagePath={row.target_image_url}
+                                      dataRowId={row.id}
                                       className={`transition-all duration-200 ${
                                         dragOverRowId === row.id 
                                           ? 'ring-2 ring-primary ring-offset-2' 
@@ -2338,22 +2345,15 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                         <Dialog>
                           <div className="flex flex-col gap-1">
                             <Textarea
-                              value={row.prompt_override || model.default_prompt || ''}
+                              value={getCurrentPrompt(row.id)}
                               placeholder="Enter prompt..."
                               className="min-h-[80px] md:min-h-[88px] resize-y bg-muted/60 w-[16rem] md:w-[18rem] lg:w-[20rem] xl:w-[22rem] select-text shrink-0"
-                              onChange={(e) => {
-                                // Update local state immediately for responsive UI
-                                setRows(prev => prev.map(r => 
-                                  r.id === row.id 
-                                    ? { ...r, prompt_override: e.target.value }
-                                    : r
-                                ))
-                              }}
-                              onBlur={(e) => handlePromptUpdate(row.id, e.target.value)}
+                              onChange={(e) => handlePromptChange(row.id, e.target.value)}
+                              onBlur={(e) => handlePromptBlur(row.id, e.target.value)}
                               onKeyDown={(e) => {
                                 if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                                   const target = e.target as HTMLTextAreaElement
-                                  handlePromptUpdate(row.id, target.value)
+                                  handlePromptBlur(row.id, target.value)
                                   handleGenerate(row.id)
                                 }
                               }}
@@ -2383,17 +2383,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                             </DialogHeader>
                             <div className="space-y-2">
                               <Textarea
-                                value={row.prompt_override || model.default_prompt || ''}
+                                value={getCurrentPrompt(row.id)}
                                 className="min-h-[40vh] w-full resize-y"
-                                onChange={(e) => {
-                                  // Update local state immediately for responsive UI
-                                  setRows(prev => prev.map(r => 
-                                    r.id === row.id 
-                                      ? { ...r, prompt_override: e.target.value }
-                                      : r
-                                  ))
-                                }}
-                                onBlur={(e) => handlePromptUpdate(row.id, e.target.value)}
+                                onChange={(e) => handlePromptChange(row.id, e.target.value)}
+                                onBlur={(e) => handlePromptBlur(row.id, e.target.value)}
                               />
                             </div>
                           </DialogContent>
@@ -2488,6 +2481,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                       alt="Generated image"
                                       size={96}
                                       className="flex-shrink-0 snap-start"
+                                      dataImagePath={image.output_url}
+                                      dataRowId={row.id}
                                     />
                                     {/* Favorite button overlay - always visible in top-left */}
                                     {(() => {
@@ -2538,6 +2533,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                       className={`flex-shrink-0 snap-start transition-opacity duration-200 ${
                                         selectedImageIds.has(image.id) ? 'opacity-80' : ''
                                       }`}
+                                      dataImagePath={image.output_url}
+                                      dataRowId={row.id}
                                     />
                                     {/* Favorite button overlay - always visible in top-left */}
                                     {(() => {
@@ -2648,99 +2645,90 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         </Card>
       )}
 
-      {/* Single controlled Dialog for image navigation */}
-      {sortedRows.map((row) => {
-        const images = (row as any).generated_images || []
-        const rowState = rowStates[row.id]
-        
-        if (!rowState || images.length === 0) return null
-        
-        return (
-          <Dialog 
-            key={`dialog-${row.id}`}
-            open={dialogState.isOpen && dialogState.rowId === row.id} 
-            onOpenChange={(open) => {
-              if (!open) {
-                setDialogState({ isOpen: false, rowId: null, imageIndex: 0 })
-              }
-            }}
-          >
-            <DialogContent className="max-w-5xl">
-              <DialogHeader>
-                <DialogTitle>
-                  Generated Image {dialogState.imageIndex + 1} of {images.length}
-                </DialogTitle>
-              </DialogHeader>
-              
-              {/* Favorites button - top-left overlay */}
-              {(() => {
-                const currentImage = images[dialogState.imageIndex]
-                if (!currentImage) return null
+      {/* Single dynamic Dialog for image navigation */}
+      <Dialog 
+        open={dialogState.isOpen} 
+        onOpenChange={(open) => {
+          if (!open) {
+            setDialogState({ isOpen: false, rowId: null, imageIndex: 0 })
+          }
+        }}
+      >
+        <DialogContent className="max-w-5xl">
+          {dialogState.rowId && (() => {
+            const currentRow = rows.find(row => row.id === dialogState.rowId)
+            if (!currentRow) return null
+            
+            const images = (currentRow as any).generated_images || []
+            const rowState = rowStates[dialogState.rowId]
+            
+            if (!rowState || images.length === 0) return null
+            
+            const currentImage = images[dialogState.imageIndex]
+            if (!currentImage) return null
+            
+            return (
+              <>
+                <DialogHeader>
+                  <DialogTitle>
+                    Generated Image {dialogState.imageIndex + 1} of {images.length}
+                  </DialogTitle>
+                </DialogHeader>
                 
-                const isFavorited = getCurrentFavoriteStatus(currentImage.id, currentImage.is_favorited)
+                {/* Favorites button - top-left overlay */}
+                <button 
+                  onClick={() => handleToggleFavorite(currentImage.id, getCurrentFavoriteStatus(currentImage.id, currentImage.is_favorited))}
+                  className="absolute top-4 left-4 z-50 p-2 rounded-full bg-black/50 hover:bg-black/70 transition-colors"
+                  title={getCurrentFavoriteStatus(currentImage.id, currentImage.is_favorited) ? 'Remove from favorites' : 'Add to favorites'}
+                >
+                  <Star 
+                    className={`w-5 h-5 ${getCurrentFavoriteStatus(currentImage.id, currentImage.is_favorited) ? 'fill-yellow-400 text-yellow-400' : 'text-white hover:text-yellow-300'}`} 
+                  />
+                </button>
                 
-                return (
-                  <button 
-                    onClick={() => handleToggleFavorite(currentImage.id, isFavorited)}
-                    className="absolute top-4 left-4 z-50 p-2 rounded-full bg-black/50 hover:bg-black/70 transition-colors"
-                    title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
-                  >
-                    <Star 
-                      className={`w-5 h-5 ${isFavorited ? 'fill-yellow-400 text-yellow-400' : 'text-white hover:text-yellow-300'}`} 
+                {/* Image container with navigation arrows */}
+                <div className="relative w-full min-h-[400px]">
+                  {/* Left arrow */}
+                  {dialogState.imageIndex > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => handleNavigateImage('prev')}
+                      className="absolute left-4 top-1/2 -translate-y-1/2 z-40 h-12 w-12 rounded-full bg-black/50 hover:bg-black/70 text-white hover:text-white"
+                    >
+                      <ChevronLeft className="h-6 w-6" />
+                    </Button>
+                  )}
+                  
+                  {/* Image - centered using flexbox */}
+                  <div className="flex items-center justify-center h-full min-h-[400px]">
+                    <Image
+                      src={rowState.signedUrls[currentImage.output_url] || ''}
+                      alt="Generated image"
+                      width={1920}
+                      height={1920}
+                      className="max-w-full max-h-[80vh] object-contain rounded-lg"
+                      loading="lazy"
                     />
-                  </button>
-                )
-              })()}
-              
-              {/* Image container with navigation arrows */}
-              <div className="relative w-full min-h-[400px]">
-                {/* Left arrow */}
-                {dialogState.imageIndex > 0 && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => handleNavigateImage('prev')}
-                    className="absolute left-4 top-1/2 -translate-y-1/2 z-40 h-12 w-12 rounded-full bg-black/50 hover:bg-black/70 text-white hover:text-white"
-                  >
-                    <ChevronLeft className="h-6 w-6" />
-                  </Button>
-                )}
-                
-                {/* Image - centered using flexbox */}
-                <div className="flex items-center justify-center h-full min-h-[400px]">
-                  {(() => {
-                    const currentImage = images[dialogState.imageIndex]
-                    if (!currentImage) return null
-                    
-                    return (
-                      <Image
-                        src={rowState.signedUrls[currentImage.output_url] || ''}
-                        alt="Generated image"
-                        width={1920}
-                        height={1920}
-                        className="max-w-full max-h-[80vh] object-contain rounded-lg"
-                        loading="lazy"
-                      />
-                    )
-                  })()}
+                  </div>
+                  
+                  {/* Right arrow */}
+                  {dialogState.imageIndex < images.length - 1 && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => handleNavigateImage('next')}
+                      className="absolute right-4 top-1/2 -translate-y-1/2 z-40 h-12 w-12 rounded-full bg-black/50 hover:bg-black/70 text-white hover:text-white"
+                    >
+                      <ChevronRight className="h-6 w-6" />
+                    </Button>
+                  )}
                 </div>
-                
-                {/* Right arrow */}
-                {dialogState.imageIndex < images.length - 1 && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => handleNavigateImage('next')}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 z-40 h-12 w-12 rounded-full bg-black/50 hover:bg-black/70 text-white hover:text-white"
-                  >
-                    <ChevronRight className="h-6 w-6" />
-                  </Button>
-                )}
-              </div>
-            </DialogContent>
-          </Dialog>
-        )
-      })}
+              </>
+            )
+          })()}
+        </DialogContent>
+      </Dialog>
 
       {/* Delete Confirmation Dialog */}
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>

@@ -112,7 +112,8 @@ export async function POST(req: NextRequest) {
           refPaths: string[]
           targetPath: string
           prompt: string
-          size?: string
+          width: number
+          height: number
         }
 
         // Check if this job is waiting for AI prompt generation
@@ -211,10 +212,19 @@ export async function POST(req: NextRequest) {
         // Build prompt (already hinted in creation if multiple desired)
         const finalPrompt = payload.prompt
 
-        // Always use 4096x4096 for best results
-        const finalSize = '4096*4096'
-        console.log('[Dispatch] using fixed size', { 
+        // Extract dimensions from payload
+        const width = payload.width || 4096
+        const height = payload.height || 4096
+        
+        // Validate dimensions are within WaveSpeed API limits
+        const clampedWidth = Math.max(1024, Math.min(4096, width))
+        const clampedHeight = Math.max(1024, Math.min(4096, height))
+        
+        const finalSize = `${clampedWidth}*${clampedHeight}`
+        console.log('[Dispatch] using model dimensions', { 
           jobId: job.id, 
+          width: clampedWidth,
+          height: clampedHeight,
           size: finalSize
         })
 

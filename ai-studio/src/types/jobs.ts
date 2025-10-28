@@ -28,7 +28,8 @@ export interface Job {
     refPaths: string[]
     targetPath: string
     prompt: string
-    size: string
+    width: number
+    height: number
   }
   error?: string
   created_at: string
@@ -67,6 +68,8 @@ export interface Model {
   default_prompt?: string
   default_ref_headshot_url?: string
   size: string
+  output_width: number
+  output_height: number
   requests_default: number
   created_at: string
   updated_at: string

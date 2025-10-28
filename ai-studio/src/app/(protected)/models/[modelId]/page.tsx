@@ -111,7 +111,9 @@ const Page = async ({ params, searchParams }: PageProps) => {
                 <div className="flex items-center gap-2">
                   <div className="h-2 w-2 rounded-full bg-blue-500" />
                   <span className="text-muted-foreground" suppressHydrationWarning>
-                    <span className="font-semibold text-foreground" suppressHydrationWarning>{model.size ?? 'Unknown'}</span> model size
+                    <span className="font-semibold text-foreground" suppressHydrationWarning>
+                      {model.output_width || 4096} × {model.output_height || 4096}px
+                    </span> output size
                   </span>
                 </div>
                 <div className="flex items-center gap-2">

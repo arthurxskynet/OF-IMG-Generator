@@ -22,7 +22,8 @@ export async function POST(req: NextRequest) {
     if (er2 || !model) return NextResponse.json({ error: 'Model not found' }, { status: 404 })
 
     const basePrompt = row.prompt_override ?? model.default_prompt
-    const size = model.size
+    const outputWidth = model.output_width || 4096
+    const outputHeight = model.output_height || 4096
     
     // Build reference images array - use row refs if available, otherwise fallback to model default
     const refImages = row.ref_image_urls && row.ref_image_urls.length > 0 
@@ -78,7 +79,8 @@ export async function POST(req: NextRequest) {
       refPaths: refImages,
       targetPath: row.target_image_url,
       prompt: finalPrompt, // Will be updated when AI prompt completes
-      size
+      width: outputWidth,
+      height: outputHeight
     }
 
     // Insert a single queued job (provider will handle single-output)

@@ -8,9 +8,11 @@ interface ThumbProps {
   alt: string;
   size?: number;
   className?: string;
+  dataImagePath?: string;
+  dataRowId?: string;
 }
 
-const Thumb = ({ src, alt, size = 96, className }: ThumbProps) => {
+const Thumb = ({ src, alt, size = 96, className, dataImagePath, dataRowId }: ThumbProps) => {
   return (
     <div
       className={cn(
@@ -18,6 +20,8 @@ const Thumb = ({ src, alt, size = 96, className }: ThumbProps) => {
         className,
       )}
       style={{ width: size, height: size }}
+      data-image-path={dataImagePath}
+      data-row-id={dataRowId}
     >
       {src ? (
         <Image

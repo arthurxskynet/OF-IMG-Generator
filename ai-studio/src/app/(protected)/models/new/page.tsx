@@ -13,11 +13,14 @@ import { uploadImage, validateFile } from "@/lib/client-upload";
 import { useToast } from "@/hooks/use-toast";
 import { createClient } from "@/lib/supabase-browser";
 import dynamic from "next/dynamic";
+import { getDimensionPresets } from "@/lib/utils";
 
 const schema = z.object({
   name: z.string().min(2, "Name must be at least 2 characters"),
   default_prompt: z.string().min(3, "Default prompt must be at least 3 characters"),
   requests_default: z.number().int().min(1).max(50),
+  output_width: z.number().int().min(1024).max(4096),
+  output_height: z.number().int().min(1024).max(4096)
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -26,15 +29,19 @@ const Page = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [uploadedHeadshot, setUploadedHeadshot] = useState<string | null>(null);
   const [headshotPreview, setHeadshotPreview] = useState<string | null>(null);
+  const [selectedPreset, setSelectedPreset] = useState<{width: number, height: number} | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const supabase = createClient();
+  const presets = getDimensionPresets();
 
-  const { register, handleSubmit, formState: { errors } } = useForm<FormValues>({ 
+  const { register, handleSubmit, formState: { errors }, setValue } = useForm<FormValues>({ 
     resolver: zodResolver(schema),
     defaultValues: {
       requests_default: 6,
-      default_prompt: "Take the face and hair from the person in the first image and perfectly put it on the person in the second image, keep everything else the same."
+      default_prompt: "Take the face and hair from the person in the first image and perfectly put it on the person in the second image, keep everything else the same.",
+      output_width: 4096,
+      output_height: 4096
     }
   });
 
@@ -190,6 +197,78 @@ const Page = () => {
               <p className="text-xs text-muted-foreground mt-1">
                 Number of images to generate per request (1-50)
               </p>
+            </div>
+
+            <div>
+              <Label>Output Dimensions</Label>
+              <div className="space-y-3 mt-2">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="output_width" className="text-xs">Width (px)</Label>
+                    <Input 
+                      id="output_width"
+                      type="number" 
+                      min="1024" 
+                      max="4096"
+                      step="64"
+                      placeholder="4096"
+                      {...register("output_width", { valueAsNumber: true })} 
+                    />
+                    {errors.output_width && <p className="text-xs text-red-600">{errors.output_width.message}</p>}
+                  </div>
+                  <div>
+                    <Label htmlFor="output_height" className="text-xs">Height (px)</Label>
+                    <Input 
+                      id="output_height"
+                      type="number" 
+                      min="1024" 
+                      max="4096"
+                      step="64"
+                      placeholder="4096"
+                      {...register("output_height", { valueAsNumber: true })} 
+                    />
+                    {errors.output_height && <p className="text-xs text-red-600">{errors.output_height.message}</p>}
+                  </div>
+                </div>
+                
+                <div className="p-3 bg-muted/30 rounded-lg">
+                  <div className="text-sm font-medium mb-2">Current: {selectedPreset ? `${selectedPreset.width} × ${selectedPreset.height}px` : '4096 × 4096px'}</div>
+                  <div className="text-xs text-muted-foreground">
+                    Total pixels: {selectedPreset ? (selectedPreset.width * selectedPreset.height).toLocaleString() : '16,777,216'}
+                  </div>
+                </div>
+                
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground">Quick Presets</Label>
+                  <div className="space-y-2">
+                    {presets.map((category) => (
+                      <div key={category.label}>
+                        <div className="text-xs text-muted-foreground font-medium mb-1">
+                          {category.label}
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {category.presets.map((preset) => (
+                            <Button
+                              key={`${preset.width}x${preset.height}`}
+                              type="button"
+                              variant={selectedPreset?.width === preset.width && selectedPreset?.height === preset.height ? "default" : "outline"}
+                              size="sm"
+                              onClick={() => {
+                                setSelectedPreset({ width: preset.width, height: preset.height })
+                                setValue("output_width", preset.width)
+                                setValue("output_height", preset.height)
+                              }}
+                              className="text-xs h-6 px-2 transition-all duration-200 hover:scale-105"
+                            >
+                              {preset.label}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
 
             <Button type="submit" disabled={isLoading || !uploadedHeadshot}>

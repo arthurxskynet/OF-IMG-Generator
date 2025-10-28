@@ -33,6 +33,8 @@ export function ExampleUsage() {
           default_prompt: 'A professional headshot',
           default_ref_headshot_url: 'refs/default-ref.jpg',
           size: '2227*3183',
+          output_width: 4096,
+          output_height: 4096,
           requests_default: 6,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()

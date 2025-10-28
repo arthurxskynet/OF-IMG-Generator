@@ -25,6 +25,8 @@ const Page = async () => {
       default_ref_headshot_url, 
       requests_default, 
       size,
+      output_width,
+      output_height,
       created_at,
       model_rows (
         id,

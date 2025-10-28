@@ -10,7 +10,9 @@ const CreateModelSchema = z.object({
   default_prompt: z.string().min(3, "Default prompt must be at least 3 characters"),
   default_ref_headshot_path: z.string().min(1, "Headshot image is required"),
   requests_default: z.number().int().min(1).max(50).default(6),
-  size: z.string().default("2227*3183")
+  size: z.string().default("2227*3183"),
+  output_width: z.number().int().min(1024).max(4096).default(4096),
+  output_height: z.number().int().min(1024).max(4096).default(4096)
 });
 
 export async function GET() {
@@ -28,7 +30,7 @@ export async function GET() {
     // Fetch models accessible to the user (RLS handles permissions)
     const { data: models, error } = await supabase
       .from("models")
-      .select("id, name, default_prompt, default_ref_headshot_url, requests_default, size, created_at")
+      .select("id, name, default_prompt, default_ref_headshot_url, requests_default, size, output_width, output_height, created_at")
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -79,6 +81,8 @@ export async function POST(req: NextRequest) {
         default_ref_headshot_url: validatedData.default_ref_headshot_path,
         requests_default: validatedData.requests_default,
         size: validatedData.size,
+        output_width: validatedData.output_width,
+        output_height: validatedData.output_height,
         owner_id: user.id,
         team_id: null // Set to null to ensure owner can always access via RLS policy
       })
