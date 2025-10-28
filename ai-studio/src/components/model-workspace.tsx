@@ -349,7 +349,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
 
           const signedUrls = { ...current.signedUrls }
 
-          paths.forEach(path => {
+          paths.forEach((path: string) => {
             if (Object.prototype.hasOwnProperty.call(urlMap, path)) {
               signedUrls[path] = urlMap[path]
             }
