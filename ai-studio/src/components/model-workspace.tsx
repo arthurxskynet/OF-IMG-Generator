@@ -403,6 +403,48 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       }))
     }
   }, [rows, model.default_prompt])
+
+  // Reset prompt back to the model default
+  const handleResetPrompt = useCallback(async (rowId: string) => {
+    const previousPrompt = getCurrentPrompt(rowId)
+    const defaultPrompt = model.default_prompt ?? ''
+
+    setLocalPrompts(prev => ({
+      ...prev,
+      [rowId]: defaultPrompt
+    }))
+
+    try {
+      await fetch(`/api/rows/${rowId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt_override: undefined })
+      })
+
+      setRows(prev => prev.map(row =>
+        row.id === rowId
+          ? { ...row, prompt_override: undefined }
+          : row
+      ))
+
+      toast({
+        title: 'Prompt reset',
+        description: 'Prompt restored to the model default.'
+      })
+    } catch (error) {
+      console.error('Failed to reset prompt:', error)
+      setLocalPrompts(prev => ({
+        ...prev,
+        [rowId]: previousPrompt
+      }))
+
+      toast({
+        title: 'Failed to reset prompt',
+        description: 'Please try again.',
+        variant: 'destructive'
+      })
+    }
+  }, [getCurrentPrompt, model.default_prompt, toast])
   
   // Helper function to get current favorite status (prioritizes UI state over data state)
   const getCurrentFavoriteStatus = (imageId: string, dataStatus?: boolean) => {
