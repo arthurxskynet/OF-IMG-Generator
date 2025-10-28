@@ -62,8 +62,10 @@ const dedupeRows = (rows: ModelRowWithImages[]) => {
   return Array.from(seen.values());
 };
 
+type GenericSupabaseClient = SupabaseClient<any, any, any, any, any>;
+
 export async function fetchModelRowsPage(
-  supabase: SupabaseClient<Record<string, unknown>, "public", Record<string, unknown>>,
+  supabase: GenericSupabaseClient,
   modelId: string,
   options: FetchModelRowsOptions = {}
 ): Promise<ModelRowsPage | null> {
