@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -14,7 +14,7 @@ import { useToast } from '@/hooks/use-toast'
 import { useJobPolling } from '@/hooks/use-job-polling'
 import { uploadImage, validateFile } from '@/lib/client-upload'
 import { createClient } from '@/lib/supabase-browser'
-import { Plus, Upload, X, Sparkles, Folder, CheckCircle, XCircle, Wand2, Star, Download, Check, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Plus, Upload, X, Sparkles, Folder, CheckCircle, XCircle, Wand2, Star, Download, Check, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Progress } from '@/components/ui/progress'
@@ -52,6 +52,16 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   const supabase = createClient()
   const [rows, setRows] = useState(initialRows)
   
+  // Memoized sorted rows to prevent unnecessary re-sorting
+  const sortedRows = useMemo(() => {
+    const sortOrder = sort === 'oldest' ? 1 : -1
+    return [...rows].sort((a: any, b: any) => {
+      const dateA = new Date(a.created_at).getTime()
+      const dateB = new Date(b.created_at).getTime()
+      return (dateA - dateB) * sortOrder
+    })
+  }, [rows, sort])
+  
   // Debug: Log model info
   console.log('ModelWorkspace received model:', { id: model.id, name: model.name, owner_id: model.owner_id })
   const [rowStates, setRowStates] = useState<Record<string, RowState>>({})
@@ -72,6 +82,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   const [isSelectionMode, setIsSelectionMode] = useState(false)
   const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set())
   const [isDownloading, setIsDownloading] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+  
+  // Delete confirmation dialog state
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   
   // Favorites state for immediate UI updates
   const [favoritesState, setFavoritesState] = useState<Record<string, boolean>>({})
@@ -1617,6 +1631,66 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     }
   }
 
+  const handleDeleteSelected = async () => {
+    if (selectedImageIds.size === 0) {
+      toast({
+        title: 'No images selected',
+        description: 'Please select at least one image to delete',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    setIsDeleting(true)
+    try {
+      const response = await fetch('/api/images/batch-delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          imageIds: Array.from(selectedImageIds)
+        })
+      })
+
+      const result = await response.json()
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to delete images')
+      }
+
+      // Update local state to remove deleted images from rows
+      setRows(prevRows => 
+        prevRows.map(row => ({
+          ...row,
+          generated_images: (row as any).generated_images?.filter(
+            (img: GeneratedImage) => !selectedImageIds.has(img.id)
+          ) || []
+        }))
+      )
+
+      toast({
+        title: 'Images deleted successfully',
+        description: `Deleted ${result.summary.imagesDeleted} image${result.summary.imagesDeleted === 1 ? '' : 's'}`
+      })
+
+      // Clear selections after deletion
+      setSelectedImageIds(new Set())
+      setIsSelectionMode(false)
+
+    } catch (error) {
+      console.error('Delete failed:', error)
+      toast({
+        title: 'Delete failed',
+        description: error instanceof Error ? error.message : 'Could not delete images. Please try again.',
+        variant: 'destructive'
+      })
+    } finally {
+      setIsDeleting(false)
+      setDeleteDialogOpen(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Status Summary with Folder Drop Zone */}
@@ -1801,25 +1875,46 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                               </span>
                             </div>
                             {selectedImageIds.size > 0 && (
-                              <Button
-                                variant="default"
-                                size="sm"
-                                onClick={handleDownloadSelected}
-                                disabled={isDownloading}
-                                className="h-6 px-2 text-xs whitespace-nowrap"
-                              >
-                                {isDownloading ? (
-                                  <>
-                                    <Spinner size="sm" />
-                                    <span className="ml-1">Downloading...</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Download className="w-3 h-3 mr-1" />
-                                    Download
-                                  </>
-                                )}
-                              </Button>
+                              <>
+                                <Button
+                                  variant="default"
+                                  size="sm"
+                                  onClick={handleDownloadSelected}
+                                  disabled={isDownloading || isDeleting}
+                                  className="h-6 px-2 text-xs whitespace-nowrap"
+                                >
+                                  {isDownloading ? (
+                                    <>
+                                      <Spinner size="sm" />
+                                      <span className="ml-1">Downloading...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Download className="w-3 h-3 mr-1" />
+                                      Download
+                                    </>
+                                  )}
+                                </Button>
+                                <Button
+                                  variant="destructive"
+                                  size="sm"
+                                  onClick={() => setDeleteDialogOpen(true)}
+                                  disabled={isDownloading || isDeleting}
+                                  className="h-6 px-2 text-xs whitespace-nowrap"
+                                >
+                                  {isDeleting ? (
+                                    <>
+                                      <Spinner size="sm" />
+                                      <span className="ml-1">Deleting...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Trash2 className="w-3 h-3 mr-1" />
+                                      Delete
+                                    </>
+                                  )}
+                                </Button>
+                              </>
                             )}
                             <Button
                               variant="outline"
@@ -1841,7 +1936,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rows.map((row) => {
+                {sortedRows.map((row) => {
                   // Handle skeleton rows with loading state
                   if ((row as any).isSkeleton) {
                     return (
@@ -2554,7 +2649,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       )}
 
       {/* Single controlled Dialog for image navigation */}
-      {rows.map((row) => {
+      {sortedRows.map((row) => {
         const images = (row as any).generated_images || []
         const rowState = rowStates[row.id]
         
@@ -2646,6 +2741,47 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
           </Dialog>
         )
       })}
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Selected Images</DialogTitle>
+          </DialogHeader>
+          <div className="py-4">
+            <p className="text-sm text-muted-foreground mb-4">
+              Are you sure you want to delete {selectedImageIds.size} selected image{selectedImageIds.size === 1 ? '' : 's'}? 
+              This action cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setDeleteDialogOpen(false)}
+                disabled={isDeleting}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={handleDeleteSelected}
+                disabled={isDeleting}
+              >
+                {isDeleting ? (
+                  <>
+                    <Spinner size="sm" />
+                    <span className="ml-2">Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Delete
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

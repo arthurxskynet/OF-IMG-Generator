@@ -36,6 +36,7 @@ export async function GET(_: NextRequest, { params }: { params: Promise<{ rowId:
         )
       `)
       .eq("id", rowId)
+      .order('created_at', { referencedTable: 'generated_images', ascending: true })
       .single();
 
     if (error || !row) {

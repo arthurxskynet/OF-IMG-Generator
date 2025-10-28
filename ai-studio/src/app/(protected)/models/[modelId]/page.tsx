@@ -3,6 +3,20 @@ import { ModelWorkspaceWrapper } from "@/components/model-workspace-wrapper";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { SortFilter } from "@/components/sort-filter";
+import { GeneratedImage } from "@/types/jobs";
+
+// Extended type for model rows with generated images
+interface ModelRowWithImages {
+  id: string;
+  model_id: string;
+  ref_image_urls?: string[];
+  target_image_url?: string;
+  prompt_override?: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  generated_images?: GeneratedImage[];
+}
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -43,6 +57,7 @@ const Page = async ({ params, searchParams }: PageProps) => {
       )
     `)
     .eq("id", modelId)
+    .order('created_at', { referencedTable: 'model_rows', ascending: sort === 'oldest' })
     .single();
 
   if (modelError || !model) {
@@ -52,13 +67,26 @@ const Page = async ({ params, searchParams }: PageProps) => {
     return notFound();
   }
 
-  // Sort the model rows based on the sort parameter
+  // Sort the model rows and their images based on the sort parameter
+  // Note: Database-level ordering is now handled in the query above, 
+  // but keeping this as defensive measure for edge cases
   if (model.model_rows) {
     const sortOrder = sort === 'oldest' ? 1 : -1;
-    model.model_rows.sort((a: any, b: any) => {
+    model.model_rows.sort((a: ModelRowWithImages, b: ModelRowWithImages) => {
       const dateA = new Date(a.created_at).getTime();
       const dateB = new Date(b.created_at).getTime();
       return (dateA - dateB) * sortOrder;
+    });
+    
+    // Sort images within each row (oldest to newest, left to right)
+    model.model_rows.forEach((row: ModelRowWithImages) => {
+      if (row.generated_images && Array.isArray(row.generated_images)) {
+        row.generated_images.sort((a: GeneratedImage, b: GeneratedImage) => {
+          const dateA = new Date(a.created_at).getTime();
+          const dateB = new Date(b.created_at).getTime();
+          return dateA - dateB; // Always ascending (oldest first)
+        });
+      }
     });
   }
 
