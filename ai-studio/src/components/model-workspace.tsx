@@ -323,7 +323,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       addPath(rowId, row.target_image_url)
 
       if (row.ref_image_urls && row.ref_image_urls.length > 0) {
-        row.ref_image_urls.forEach(path => addPath(rowId, path))
+        for (const path of row.ref_image_urls) {
+          addPath(rowId, path)
+        }
       } else if ((row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url) {
         addPath(rowId, model.default_ref_headshot_url)
       }
@@ -349,11 +351,11 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
 
           const signedUrls = { ...current.signedUrls }
 
-          paths.forEach((path: string) => {
+          for (const path of paths) {
             if (Object.prototype.hasOwnProperty.call(urlMap, path)) {
               signedUrls[path] = urlMap[path]
             }
-          })
+          }
 
           next[rowId] = { ...current, signedUrls }
         })
@@ -467,7 +469,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       const { row } = await res.json()
       setRows(prev => prev.map(r => (r.id === rowId ? row : r)))
       const images = (row as any).generated_images || []
-      const paths = images.map((img: GeneratedImage) => img.output_url).filter(Boolean)
+      const paths = images
+        .map((img: GeneratedImage) => img.output_url)
+        .filter((value: string | null | undefined): value is string => typeof value === 'string' && value.length > 0)
       if (paths.length > 0) {
         const urlMap = await batchGetSignedUrls(paths)
         setRowStates(prev => {
@@ -481,11 +485,11 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
           }
 
           const signedUrls = { ...current.signedUrls }
-          paths.forEach((path: string) => {
+          for (const path of paths) {
             if (Object.prototype.hasOwnProperty.call(urlMap, path)) {
               signedUrls[path] = urlMap[path]
             }
-          })
+          }
 
           return {
             ...prev,
