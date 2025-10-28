@@ -46,6 +46,41 @@ interface BulkUploadItem {
   error?: string
 }
 
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0
+
+const sanitizePathList = (paths: unknown): string[] => {
+  if (!Array.isArray(paths)) {
+    return []
+  }
+
+  const result: string[] = []
+  for (const value of paths) {
+    if (typeof value !== 'string') continue
+    const trimmed = value.trim()
+    if (trimmed.length > 0) {
+      result.push(trimmed)
+    }
+  }
+
+  return result
+}
+
+type ModelRowWithImages = ModelRow & { generated_images?: unknown }
+
+const isGeneratedImage = (value: unknown): value is GeneratedImage => {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<GeneratedImage>
+  return typeof candidate.id === 'string' && typeof candidate.output_url === 'string'
+}
+
+const extractGeneratedImages = (row?: ModelRow | ModelRowWithImages | null): GeneratedImage[] => {
+  if (!row) return []
+  const maybeImages = (row as ModelRowWithImages).generated_images
+  if (!Array.isArray(maybeImages)) return []
+  return maybeImages.filter(isGeneratedImage)
+}
+
 export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspaceProps) {
   const { toast } = useToast()
   const supabase = createClient()
@@ -105,12 +140,12 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   useEffect(() => {
     const initialFavorites: Record<string, boolean> = {}
     rows.forEach(row => {
-      const images = (row as any).generated_images || []
-      images.forEach((img: any) => {
+      const images = extractGeneratedImages(row)
+      for (const image of images) {
         // Initialize all images, defaulting to false if undefined
-        const isFav = img.is_favorited === true
-        initialFavorites[img.id] = isFav
-      })
+        const isFav = image.is_favorited === true
+        initialFavorites[image.id] = isFav
+      }
     })
     setFavoritesState(initialFavorites)
   }, [rows])
@@ -183,7 +218,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     const currentRow = rows.find(row => row.id === dialogState.rowId)
     if (!currentRow) return
     
-    const images = (currentRow as any).generated_images || []
+    const images = extractGeneratedImages(currentRow)
     const newIndex = direction === 'prev' 
       ? Math.max(0, dialogState.imageIndex - 1)
       : Math.min(images.length - 1, dialogState.imageIndex + 1)
@@ -217,7 +252,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       const currentRow = rows.find(row => row.id === dialogState.rowId)
       if (!currentRow) return
       
-      const images = (currentRow as any).generated_images || []
+      const images = extractGeneratedImages(currentRow)
       const currentRowState = rowStates[dialogState.rowId]
       if (!currentRowState) return
       
@@ -302,31 +337,35 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     const uniquePaths = new Set<string>()
     const rowPathMap = new Map<string, Set<string>>()
 
-    const addPath = (rowId: string, path?: string | null) => {
-      if (!path) return
+    const addPath = (rowId: string, path: unknown) => {
+      if (!isNonEmptyString(path)) return
+      const storagePath = path.trim()
       const rowState = rowStatesRef.current[rowId]
-      if (rowState && Object.prototype.hasOwnProperty.call(rowState.signedUrls, path)) {
+      if (rowState && Object.prototype.hasOwnProperty.call(rowState.signedUrls, storagePath)) {
         return
       }
-      uniquePaths.add(path)
+      uniquePaths.add(storagePath)
       if (!rowPathMap.has(rowId)) {
         rowPathMap.set(rowId, new Set())
       }
-      rowPathMap.get(rowId)!.add(path)
+      rowPathMap.get(rowId)!.add(storagePath)
     }
 
     targetRows.forEach(row => {
       const rowId = row.id
-      const images = (row as any).generated_images || []
+      const images = extractGeneratedImages(row)
 
-      images.forEach((image: GeneratedImage) => addPath(rowId, image.output_url))
+      for (const image of images) {
+        addPath(rowId, image.output_url)
+      }
       addPath(rowId, row.target_image_url)
 
-      if (row.ref_image_urls && row.ref_image_urls.length > 0) {
-        for (const path of row.ref_image_urls) {
+      const explicitRefPaths = sanitizePathList(row.ref_image_urls)
+      if (explicitRefPaths.length > 0) {
+        for (const path of explicitRefPaths) {
           addPath(rowId, path)
         }
-      } else if ((row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url) {
+      } else if ((row.ref_image_urls === null || row.ref_image_urls === undefined) && isNonEmptyString(model.default_ref_headshot_url)) {
         addPath(rowId, model.default_ref_headshot_url)
       }
     })
@@ -468,12 +507,14 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       if (!res.ok) return
       const { row } = await res.json()
       setRows(prev => prev.map(r => (r.id === rowId ? row : r)))
-      const images = (row as any).generated_images || []
-      const paths = images
-        .map((img: GeneratedImage) => img.output_url)
-        .filter((value: string | null | undefined): value is string => typeof value === 'string' && value.length > 0)
-      if (paths.length > 0) {
-        const urlMap = await batchGetSignedUrls(paths)
+      const images = extractGeneratedImages(row)
+      const sanitizedOutputPaths = images
+        .map(img => img.output_url)
+        .filter(isNonEmptyString)
+        .map(path => path.trim())
+      const uniquePaths = [...new Set<string>(sanitizedOutputPaths)]
+      if (uniquePaths.length > 0) {
+        const urlMap = await batchGetSignedUrls(uniquePaths)
         setRowStates(prev => {
           const current = prev[rowId] ?? {
             id: rowId,
@@ -485,7 +526,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
           }
 
           const signedUrls = { ...current.signedUrls }
-          for (const path of paths) {
+          for (const path of uniquePaths) {
             if (Object.prototype.hasOwnProperty.call(urlMap, path)) {
               signedUrls[path] = urlMap[path]
             }
@@ -1251,11 +1292,12 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       // Build reference images array using same logic as direct API route
       // If ref_image_urls is explicitly set (even if empty), use it
       // If ref_image_urls is null/undefined, fallback to model default
-      const refImages = row.ref_image_urls !== null && row.ref_image_urls !== undefined
-        ? row.ref_image_urls  // Use row's ref images (could be empty array if user removed all refs)
-        : model.default_ref_headshot_url 
-          ? [model.default_ref_headshot_url]  // Fallback to model default
-          : []  // No references at all
+      const hasExplicitRefs = row.ref_image_urls !== null && row.ref_image_urls !== undefined
+      const refImages = hasExplicitRefs
+        ? sanitizePathList(row.ref_image_urls) // Use row's ref images (could be empty array if user removed all refs)
+        : isNonEmptyString(model.default_ref_headshot_url)
+          ? [model.default_ref_headshot_url.trim()] // Fallback to model default
+          : [] // No references at all
 
       console.log('[Frontend] Reference images logic:', {
         rowRefImageUrls: row.ref_image_urls,
@@ -1265,17 +1307,17 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       })
 
       // Convert storage paths to signed URLs for Grok API access
-      const allPaths = [...refImages]
-      if (row.target_image_url) {
-        allPaths.push(row.target_image_url)
-      }
+      const targetStoragePath = isNonEmptyString(row.target_image_url) ? row.target_image_url.trim() : undefined
+      const uniquePaths = Array.from(new Set(targetStoragePath ? [...refImages, targetStoragePath] : refImages))
 
-      const signedMap = allPaths.length > 0 ? await batchGetSignedUrls(allPaths) : {}
+      const signedMap = uniquePaths.length > 0 ? await batchGetSignedUrls(uniquePaths) : {}
 
       const refSignedUrls = refImages
         .map(path => signedMap[path])
-        .filter((url): url is string => typeof url === 'string' && url.length > 0)
-      const targetSignedUrl = row.target_image_url ? signedMap[row.target_image_url] : undefined
+        .filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
+        .map(url => url.trim())
+      const targetSignedUrlRaw = targetStoragePath ? signedMap[targetStoragePath] : undefined
+      const targetSignedUrl = typeof targetSignedUrlRaw === 'string' ? targetSignedUrlRaw.trim() : undefined
 
       if (!targetSignedUrl) {
         throw new Error('Failed to sign target image URL')
@@ -1552,10 +1594,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   const getAllImageIds = (): string[] => {
     const allIds: string[] = []
     rows.forEach(row => {
-      const images = (row as any).generated_images || []
-      images.forEach((image: GeneratedImage) => {
+      const images = extractGeneratedImages(row)
+      for (const image of images) {
         allIds.push(image.id)
-      })
+      }
     })
     return allIds
   }
@@ -1605,8 +1647,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         let signedUrl = ''
         
         for (const row of rows) {
-          const images = (row as any).generated_images || []
-          const foundImage = images.find((img: GeneratedImage) => img.id === imageId)
+          const images = extractGeneratedImages(row)
+          const foundImage = images.find(img => img.id === imageId)
           if (foundImage) {
             image = foundImage
             signedUrl = rowStates[row.id]?.signedUrls[foundImage.output_url] || ''
@@ -2021,7 +2063,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                   }
 
                   const rowState = getRowState(row.id)
-                  const images = (row as any).generated_images || []
+                  const images = extractGeneratedImages(row)
                   const displayStatus = getLiveStatusForRow(row.id, row.status)
                   const displayProgress = statusToProgress(displayStatus)
                   const live = Object.values(pollingState).find(s => s.rowId === row.id && s.polling)
@@ -2700,7 +2742,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
             const currentRow = rows.find(row => row.id === dialogState.rowId)
             if (!currentRow) return null
             
-            const images = (currentRow as any).generated_images || []
+            const images = extractGeneratedImages(currentRow)
             const rowState = rowStates[dialogState.rowId]
             
             if (!rowState || images.length === 0) return null
