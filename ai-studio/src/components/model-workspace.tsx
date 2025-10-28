@@ -1689,6 +1689,15 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     }
   }, [rows, getRowState, setRowStates, toast, createJobs, startPolling])
 
+  const handleRegenerate = useCallback(async (rowId: string) => {
+    const rowState = getRowState(rowId)
+    if (rowState.isGenerating || rowState.isGeneratingPrompt) {
+      return
+    }
+
+    await handleGenerate(rowId)
+  }, [getRowState, handleGenerate])
+
   // Remove row
   const handleRemoveRow = useCallback(async (rowId: string) => {
     try {
