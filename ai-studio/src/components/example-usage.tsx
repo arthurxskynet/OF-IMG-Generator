@@ -10,11 +10,13 @@ import { useState, useEffect } from 'react'
 import { ModelWorkspace } from './model-workspace'
 import { Toaster } from '@/hooks/use-toast'
 import { Model, ModelRow } from '@/types/jobs'
+import { DEFAULT_IMAGE_LIMIT, DEFAULT_ROW_LIMIT, ModelRowsPage } from '@/types/model-api'
 
 export function ExampleUsage() {
   const [model, setModel] = useState<Model | null>(null)
   const [rows, setRows] = useState<ModelRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [initialPage, setInitialPage] = useState<ModelRowsPage | null>(null)
 
   // Fetch model and rows data
   useEffect(() => {
@@ -52,8 +54,30 @@ export function ExampleUsage() {
           }
         ]
 
+        const examplePage: ModelRowsPage = {
+          model: exampleModel,
+          rows: exampleRows,
+          counts: {
+            totalRows: exampleRows.length,
+            totalImages: exampleRows.reduce(
+              (total, row) => total + (row.generated_images?.length ?? 0),
+              0
+            )
+          },
+          pagination: {
+            rowLimit: DEFAULT_ROW_LIMIT,
+            rowOffset: 0,
+            imageLimit: DEFAULT_IMAGE_LIMIT,
+            sort: 'newest',
+            rowsFetched: exampleRows.length,
+            nextRowOffset: exampleRows.length,
+            hasMoreRows: false
+          }
+        }
+
         setModel(exampleModel)
         setRows(exampleRows)
+        setInitialPage(examplePage)
       } catch (error) {
         console.error('Failed to fetch data:', error)
       } finally {
@@ -69,7 +93,7 @@ export function ExampleUsage() {
     return <div className="p-8">Loading...</div>
   }
 
-  if (!model) {
+  if (!model || !initialPage) {
     return <div className="p-8">Model not found</div>
   }
 
@@ -78,6 +102,7 @@ export function ExampleUsage() {
       <ModelWorkspace
         model={model}
         rows={rows}
+        initialPage={initialPage}
       />
       <Toaster />
     </div>
