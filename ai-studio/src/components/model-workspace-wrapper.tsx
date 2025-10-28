@@ -1,14 +1,20 @@
 'use client'
 
 import { ModelWorkspace } from './model-workspace'
-import { Model, ModelRow } from '@/types/jobs'
+import { ModelRowsPage } from '@/types/model-api'
 
 interface ModelWorkspaceWrapperProps {
-  model: Model
-  rows: ModelRow[]
+  initialPage: ModelRowsPage
   sort?: string
 }
 
-export function ModelWorkspaceWrapper({ model, rows, sort }: ModelWorkspaceWrapperProps) {
-  return <ModelWorkspace model={model} rows={rows} sort={sort} />
+export function ModelWorkspaceWrapper({ initialPage, sort }: ModelWorkspaceWrapperProps) {
+  return (
+    <ModelWorkspace
+      model={initialPage.model}
+      rows={initialPage.rows}
+      sort={sort}
+      initialPage={initialPage}
+    />
+  )
 }

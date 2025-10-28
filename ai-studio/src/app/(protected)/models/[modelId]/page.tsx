@@ -3,20 +3,8 @@ import { ModelWorkspaceWrapper } from "@/components/model-workspace-wrapper";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { SortFilter } from "@/components/sort-filter";
-import { GeneratedImage } from "@/types/jobs";
-
-// Extended type for model rows with generated images
-interface ModelRowWithImages {
-  id: string;
-  model_id: string;
-  ref_image_urls?: string[];
-  target_image_url?: string;
-  prompt_override?: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-  generated_images?: GeneratedImage[];
-}
+import { fetchModelRowsPage } from "@/lib/model-data";
+import { DEFAULT_IMAGE_LIMIT, DEFAULT_ROW_LIMIT } from "@/types/model-api";
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -36,59 +24,19 @@ const Page = async ({ params, searchParams }: PageProps) => {
     return notFound();
   }
 
-  // Fetch model with its rows and generated images
-  const { data: model, error: modelError } = await supabase
-    .from("models")
-    .select(`
-      *,
-      model_rows (
-        id,
-        ref_image_urls,
-        target_image_url,
-        prompt_override,
-        status,
-        created_at,
-        generated_images (
-          id,
-          output_url,
-          is_favorited,
-          created_at
-        )
-      )
-    `)
-    .eq("id", modelId)
-    .order('created_at', { referencedTable: 'model_rows', ascending: sort === 'oldest' })
-    .single();
+  const initialPage = await fetchModelRowsPage(supabase, modelId, {
+    sort,
+    rowLimit: DEFAULT_ROW_LIMIT,
+    rowOffset: 0,
+    imageLimit: DEFAULT_IMAGE_LIMIT
+  });
 
-  if (modelError || !model) {
-    console.error("Model fetch error:", modelError);
-    console.error("Model ID:", modelId);
-    console.error("User ID:", user.id);
+  if (!initialPage) {
+    console.error("Model fetch error:", { modelId, userId: user.id });
     return notFound();
   }
 
-  // Sort the model rows and their images based on the sort parameter
-  // Note: Database-level ordering is now handled in the query above, 
-  // but keeping this as defensive measure for edge cases
-  if (model.model_rows) {
-    const sortOrder = sort === 'oldest' ? 1 : -1;
-    model.model_rows.sort((a: ModelRowWithImages, b: ModelRowWithImages) => {
-      const dateA = new Date(a.created_at).getTime();
-      const dateB = new Date(b.created_at).getTime();
-      return (dateA - dateB) * sortOrder;
-    });
-    
-    // Sort images within each row (oldest to newest, left to right)
-    model.model_rows.forEach((row: ModelRowWithImages) => {
-      if (row.generated_images && Array.isArray(row.generated_images)) {
-        row.generated_images.sort((a: GeneratedImage, b: GeneratedImage) => {
-          const dateA = new Date(a.created_at).getTime();
-          const dateB = new Date(b.created_at).getTime();
-          return dateA - dateB; // Always ascending (oldest first)
-        });
-      }
-    });
-  }
+  const { model, counts } = initialPage;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-muted/20">
@@ -105,7 +53,13 @@ const Page = async ({ params, searchParams }: PageProps) => {
                 <div className="flex items-center gap-2">
                   <div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
                   <span className="text-muted-foreground" suppressHydrationWarning>
-                    <span className="font-semibold text-foreground" suppressHydrationWarning>{model.model_rows?.length ?? 0}</span> generation rows
+                    <span className="font-semibold text-foreground" suppressHydrationWarning>{counts.totalRows}</span> generation rows
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-purple-500" />
+                  <span className="text-muted-foreground" suppressHydrationWarning>
+                    <span className="font-semibold text-foreground" suppressHydrationWarning>{counts.totalImages}</span> generated images
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -141,7 +95,7 @@ const Page = async ({ params, searchParams }: PageProps) => {
             </div>
           </div>
         }>
-          <ModelWorkspaceWrapper model={model} rows={model.model_rows || []} sort={sort} />
+          <ModelWorkspaceWrapper initialPage={initialPage} sort={sort} />
         </Suspense>
       </div>
     </div>

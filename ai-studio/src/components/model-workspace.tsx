@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect, useMemo, memo } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import useSWRInfinite from 'swr/infinite'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -21,12 +22,16 @@ import { Progress } from '@/components/ui/progress'
 import { Spinner } from '@/components/ui/spinner'
 import { Checkbox } from '@/components/ui/checkbox'
 import { DimensionControls } from '@/components/dimension-controls'
+import { DEFAULT_IMAGE_LIMIT, DEFAULT_ROW_LIMIT, ModelRowsPage } from '@/types/model-api'
 
 interface ModelWorkspaceProps {
   model: Model
-  rows: ModelRow[]
+  rows: WorkspaceRow[]
   sort?: string
+  initialPage: ModelRowsPage
 }
+
+type WorkspaceRow = ModelRow & { generated_images?: GeneratedImage[]; isSkeleton?: boolean }
 
 interface RowState {
   id: string
@@ -48,21 +53,149 @@ interface BulkUploadItem {
 // Simple client-side cache for signed URLs
 const urlCache = new Map<string, { url: string; expires: number }>()
 
-export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspaceProps) {
+export function ModelWorkspace({ model: initialModel, rows: initialRows, sort, initialPage }: ModelWorkspaceProps) {
   const { toast } = useToast()
   const supabase = createClient()
-  const [rows, setRows] = useState(initialRows)
-  const [currentModel, setCurrentModel] = useState(model)
+  const [rows, setRows] = useState<WorkspaceRow[]>(initialRows)
+  const [currentModel, setCurrentModel] = useState(initialModel)
+  const [counts, setCounts] = useState(initialPage.counts)
+  const [pagination, setPagination] = useState(initialPage.pagination)
+  const model = currentModel
+
+  const resolvedSort = sort === 'oldest' ? 'oldest' : 'newest'
+  const rowLimit = pagination?.rowLimit ?? DEFAULT_ROW_LIMIT
+  const imageLimit = pagination?.imageLimit ?? DEFAULT_IMAGE_LIMIT
+
+  const fetchPage = useCallback(async (url: string) => {
+    const response = await fetch(url, { cache: 'no-store' })
+    if (!response.ok) {
+      throw new Error('Failed to fetch model page')
+    }
+    return response.json() as Promise<ModelRowsPage>
+  }, [])
+
+  const getKey = useCallback((pageIndex: number, previousPageData: ModelRowsPage | null) => {
+    if (previousPageData && !previousPageData.pagination.hasMoreRows) {
+      return null
+    }
+
+    const offset = pageIndex * rowLimit
+    const params = new URLSearchParams({
+      sort: resolvedSort,
+      rowLimit: String(rowLimit),
+      rowOffset: String(offset),
+      imageLimit: String(imageLimit)
+    })
+
+    return `/api/models/${model.id}?${params.toString()}`
+  }, [imageLimit, model.id, resolvedSort, rowLimit])
+
+  const { data: pages, size, setSize, isValidating, error: paginationError, mutate } = useSWRInfinite<ModelRowsPage>(
+    getKey,
+    fetchPage,
+    {
+      fallbackData: [initialPage],
+      revalidateFirstPage: false
+    }
+  )
+
+  const loadMoreRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!pages) return
+
+    const aggregated: ModelRow[] = []
+    const seenIds = new Set<string>()
+
+    pages.forEach(page => {
+      if (!page) return
+      page.rows.forEach((row: any) => {
+        if (!row?.id || seenIds.has(row.id)) return
+        seenIds.add(row.id)
+        aggregated.push(row)
+      })
+    })
+
+    setRows(prev => {
+      const skeletons = prev.filter((row: any) => row?.isSkeleton)
+      const merged = new Map<string, ModelRow | any>()
+
+      aggregated.forEach(row => {
+        merged.set(row.id, row)
+      })
+
+      skeletons.forEach(row => {
+        if (!merged.has(row.id)) {
+          merged.set(row.id, row)
+        }
+      })
+
+      return Array.from(merged.values())
+    })
+
+    const lastPage = pages[pages.length - 1]
+    if (lastPage?.counts) {
+      setCounts(lastPage.counts)
+    }
+    if (pages[0]?.model) {
+      setCurrentModel(pages[0].model as Model)
+    }
+    if (lastPage?.pagination) {
+      setPagination(lastPage.pagination)
+    }
+  }, [pages])
+
+  useEffect(() => {
+    if (paginationError) {
+      console.error('Failed to paginate model rows:', paginationError)
+    }
+  }, [paginationError])
   
   // Memoized sorted rows to prevent unnecessary re-sorting
   const sortedRows = useMemo(() => {
-    const sortOrder = sort === 'oldest' ? 1 : -1
+    const sortOrder = resolvedSort === 'oldest' ? 1 : -1
     return [...rows].sort((a: any, b: any) => {
       const dateA = new Date(a.created_at).getTime()
       const dateB = new Date(b.created_at).getTime()
       return (dateA - dateB) * sortOrder
     })
-  }, [rows, sort])
+  }, [rows, resolvedSort])
+
+  const actualRowCount = useMemo(() => rows.filter(row => !(row as any)?.isSkeleton).length, [rows])
+
+  const hasMoreRows = useMemo(() => {
+    if (pages && pages.length > 0) {
+      const lastPage = pages[pages.length - 1]
+      if (lastPage) {
+        return lastPage.pagination.hasMoreRows
+      }
+    }
+    return (counts?.totalRows ?? actualRowCount) > actualRowCount
+  }, [actualRowCount, counts?.totalRows, pages])
+
+  const isLoadingMore = isValidating && size > (pages?.length ?? 0)
+
+  const handleLoadMore = useCallback(() => {
+    if (!hasMoreRows) return
+    setSize(prev => prev + 1)
+  }, [hasMoreRows, setSize])
+
+  useEffect(() => {
+    const node = loadMoreRef.current
+    if (!node) return
+    if (!hasMoreRows) return
+
+    const observer = new IntersectionObserver(entries => {
+      const entry = entries[0]
+      if (entry?.isIntersecting && !isValidating) {
+        setSize(prev => prev + 1)
+      }
+    }, { rootMargin: '400px' })
+
+    observer.observe(node)
+
+    return () => observer.disconnect()
+  }, [hasMoreRows, isValidating, setSize])
   
   // Debug: Log model info
   console.log('ModelWorkspace received model:', { id: model.id, name: model.name, owner_id: model.owner_id })
@@ -438,23 +571,13 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   const isActiveStatus = (s: string) => ['queued','submitted','running','saving'].includes(s)
 
   // Refresh row data after generation
-  const refreshRowData = async () => {
+  const refreshRowData = useCallback(async () => {
     try {
-      const url = new URL(`/api/models/${model.id}`, window.location.origin)
-      const currentSort = new URLSearchParams(window.location.search).get('sort')
-      if (currentSort) {
-        url.searchParams.set('sort', currentSort)
-      }
-      
-      const response = await fetch(url.toString(), { cache: 'no-store' })
-      if (response.ok) {
-        const { model: updatedModel } = await response.json()
-        setRows(updatedModel.model_rows || [])
-      }
+      await mutate()
     } catch (error) {
       console.error('Failed to refresh row data:', error)
     }
-  }
+  }, [mutate])
 
   // Refresh a single row and prefetch its image URLs; clear loading flag
   const refreshSingleRow = async (rowId: string) => {
@@ -462,10 +585,24 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       const res = await fetch(`/api/rows/${rowId}`, { cache: 'no-store' })
       if (!res.ok) return
       const { row } = await res.json()
-      setRows(prev => prev.map(r => (r.id === rowId ? row : r)))
+      let previousImageCount = 0
+      setRows(prev => prev.map(r => {
+        if (r.id === rowId) {
+          previousImageCount = ((r as any)?.generated_images?.length ?? 0)
+          return row
+        }
+        return r
+      }))
       const images = (row as any).generated_images || []
       for (const img of images) {
         await getImageUrl(img.output_url, rowId)
+      }
+      const newImageCount = images.length
+      if (newImageCount !== previousImageCount) {
+        setCounts(prev => ({
+          ...prev,
+          totalImages: Math.max(0, prev.totalImages + (newImageCount - previousImageCount))
+        }))
       }
     } catch (e) {
       // noop
@@ -519,10 +656,14 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       }
 
       const { row } = await response.json()
-      
+
       // Replace skeleton with real row data
       setRows(prev => prev.map(r => r.id === tempId ? row : r))
-      
+      setCounts(prev => ({
+        ...prev,
+        totalRows: prev.totalRows + 1
+      }))
+
       toast({
         title: 'Row added',
         description: 'New row created. Upload a target image to get started.'
@@ -1413,7 +1554,19 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   const handleRemoveRow = useCallback(async (rowId: string) => {
     try {
       await fetch(`/api/rows/${rowId}`, { method: 'DELETE' })
-      setRows(prev => prev.filter(r => r.id !== rowId))
+      let removedImages = 0
+      setRows(prev => prev.filter(r => {
+        if (r.id === rowId) {
+          removedImages = ((r as any)?.generated_images?.length ?? 0)
+          return false
+        }
+        return true
+      }))
+      setCounts(prev => ({
+        ...prev,
+        totalRows: Math.max(0, prev.totalRows - 1),
+        totalImages: Math.max(0, prev.totalImages - removedImages)
+      }))
       setRowStates(prev => {
         const { [rowId]: _removed, ...rest } = prev
         return rest
@@ -2633,7 +2786,24 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         </CardContent>
       </Card>
 
-      {rows.length === 0 && (
+      {(rows.length > 0 || hasMoreRows) && (
+        <div className="flex flex-col items-center gap-2 py-6">
+          {hasMoreRows ? (
+            <Button
+              variant="outline"
+              onClick={handleLoadMore}
+              disabled={isLoadingMore}
+            >
+              {isLoadingMore ? 'Loading more rows…' : 'Load more rows'}
+            </Button>
+          ) : (
+            <p className="text-sm text-muted-foreground">All rows loaded</p>
+          )}
+          <div ref={loadMoreRef} className="h-1 w-full" />
+        </div>
+      )}
+
+      {counts.totalRows === 0 && (
         <Card>
           <CardContent className="p-8 text-center">
             <p className="text-muted-foreground mb-4">No rows yet. Add your first row to start generating images.</p>
