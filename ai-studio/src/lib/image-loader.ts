@@ -1,6 +1,6 @@
 'use client'
 
-import { getSignedUrl } from './jobs'
+import { getSignedUrls } from './jobs'
 
 // Global cache for signed URLs with expiration
 interface CachedUrl {
@@ -32,12 +32,16 @@ export async function getCachedSignedUrl(path: string): Promise<string> {
   }
   
   // Create new request and cache the promise to prevent duplicates
-  const promise = getSignedUrl(path).then(response => {
-    const url = response.url
-    urlCache.set(path, {
-      url,
-      expires: Date.now() + CACHE_DURATION
-    })
+  const promise = getSignedUrls([path]).then(response => {
+    const url = response[path] || ''
+    if (url) {
+      urlCache.set(path, {
+        url,
+        expires: Date.now() + CACHE_DURATION
+      })
+    } else {
+      urlCache.delete(path)
+    }
     return url
   }).catch(error => {
     // Remove failed promise from cache
@@ -60,21 +64,70 @@ export async function getCachedSignedUrl(path: string): Promise<string> {
  * Returns a map of path -> url
  */
 export async function batchGetSignedUrls(paths: string[]): Promise<Record<string, string>> {
-  const uniquePaths = [...new Set(paths)]
+  const uniquePaths = [...new Set(paths.filter(Boolean))]
   const results: Record<string, string> = {}
-  
-  // Process all URLs in parallel
-  const promises = uniquePaths.map(async (path) => {
-    try {
-      const url = await getCachedSignedUrl(path)
-      results[path] = url
-    } catch (error) {
-      console.error(`Failed to get signed URL for ${path}:`, error)
-      results[path] = ''
+
+  const pendingPromises: Promise<void>[] = []
+  const pathsToFetch: string[] = []
+
+  for (const path of uniquePaths) {
+    const cached = urlCache.get(path)
+
+    if (cached && cached.expires > Date.now()) {
+      results[path] = cached.url
+      continue
     }
-  })
-  
-  await Promise.all(promises)
+
+    if (cached?.promise) {
+      const promise = cached.promise.then(url => {
+        results[path] = url
+      }).catch(() => {
+        results[path] = ''
+      })
+      pendingPromises.push(promise)
+      continue
+    }
+
+    pathsToFetch.push(path)
+  }
+
+  if (pathsToFetch.length > 0) {
+    const fetchPromise = getSignedUrls(pathsToFetch)
+
+    for (const path of pathsToFetch) {
+      const promise = fetchPromise.then(map => {
+        const url = map[path] || ''
+        if (url) {
+          urlCache.set(path, {
+            url,
+            expires: Date.now() + CACHE_DURATION
+          })
+        } else {
+          urlCache.delete(path)
+        }
+        results[path] = url
+        return url
+      }).catch(error => {
+        urlCache.delete(path)
+        results[path] = ''
+        console.error(`Failed to get signed URL for ${path}:`, error)
+        throw error
+      })
+
+      urlCache.set(path, {
+        url: '',
+        expires: 0,
+        promise
+      })
+
+      pendingPromises.push(promise.then(() => undefined).catch(() => undefined))
+    }
+  }
+
+  if (pendingPromises.length > 0) {
+    await Promise.allSettled(pendingPromises)
+  }
+
   return results
 }
 

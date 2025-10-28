@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect, useMemo, memo } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -8,7 +8,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { Thumb } from '@/components/ui/thumb'
-import { createJobs, getSignedUrl, getStatusColor, getStatusLabel, fetchActiveJobs } from '@/lib/jobs'
+import { createJobs, getStatusColor, getStatusLabel, fetchActiveJobs } from '@/lib/jobs'
+import { batchGetSignedUrls } from '@/lib/image-loader'
 import { Model, ModelRow, GeneratedImage } from '@/types/jobs'
 import { useToast } from '@/hooks/use-toast'
 import { useJobPolling } from '@/hooks/use-job-polling'
@@ -45,9 +46,6 @@ interface BulkUploadItem {
   error?: string
 }
 
-// Simple client-side cache for signed URLs
-const urlCache = new Map<string, { url: string; expires: number }>()
-
 export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspaceProps) {
   const { toast } = useToast()
   const supabase = createClient()
@@ -67,6 +65,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   // Debug: Log model info
   console.log('ModelWorkspace received model:', { id: model.id, name: model.name, owner_id: model.owner_id })
   const [rowStates, setRowStates] = useState<Record<string, RowState>>({})
+  const rowStatesRef = useRef<Record<string, RowState>>({})
   const [, setDeletedRowIds] = useState<Set<string>>(new Set())
   const fileInputRefs = useRef<Record<string, HTMLInputElement>>({})
   
@@ -125,6 +124,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     })
     setLocalPrompts(prev => ({ ...prev, ...initialPrompts }))
   }, [rows, model.default_prompt])
+
+  useEffect(() => {
+    rowStatesRef.current = rowStates
+  }, [rowStates])
 
   // Get current prompt value for a row (local state takes precedence)
   const getCurrentPrompt = useCallback((rowId: string): string => {
@@ -276,7 +279,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
           isGenerating: false,
           isGeneratingPrompt: false,
           signedUrls: {},
-          isLoadingResults: false
+          isLoadingResults: false,
+          isUploadingTarget: false
         }
       }))
       return {
@@ -284,87 +288,86 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         isGenerating: false,
         isGeneratingPrompt: false,
         signedUrls: {},
-        isLoadingResults: false
+        isLoadingResults: false,
+        isUploadingTarget: false
       }
     }
     return rowStates[rowId]
   }
 
   // Function to get signed URL for an image path with caching
-  const getImageUrl = useCallback(async (path: string, rowId?: string) => {
-    // Check cache first
-    const cached = urlCache.get(path)
-    if (cached && cached.expires > Date.now()) {
-      // Update local state if we have a rowId
-      if (rowId) {
-        setRowStates(prev => ({
-          ...prev,
-          [rowId]: {
-            ...prev[rowId],
-            signedUrls: { ...prev[rowId]?.signedUrls, [path]: cached.url }
-          }
-        }))
+  const primeSignedUrlsForRows = useCallback(async (targetRows: ModelRow[]) => {
+    if (!targetRows.length) return
+
+    const uniquePaths = new Set<string>()
+    const rowPathMap = new Map<string, Set<string>>()
+
+    const addPath = (rowId: string, path?: string | null) => {
+      if (!path) return
+      const rowState = rowStatesRef.current[rowId]
+      if (rowState && Object.prototype.hasOwnProperty.call(rowState.signedUrls, path)) {
+        return
       }
-      return cached.url
+      uniquePaths.add(path)
+      if (!rowPathMap.has(rowId)) {
+        rowPathMap.set(rowId, new Set())
+      }
+      rowPathMap.get(rowId)!.add(path)
     }
-    
-    // Check local state as fallback
-    const rowState = rowId ? getRowState(rowId) : null
-    if (rowState?.signedUrls[path]) return rowState.signedUrls[path]
-    
+
+    targetRows.forEach(row => {
+      const rowId = row.id
+      const images = (row as any).generated_images || []
+
+      images.forEach((image: GeneratedImage) => addPath(rowId, image.output_url))
+      addPath(rowId, row.target_image_url)
+
+      if (row.ref_image_urls && row.ref_image_urls.length > 0) {
+        row.ref_image_urls.forEach(path => addPath(rowId, path))
+      } else if ((row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url) {
+        addPath(rowId, model.default_ref_headshot_url)
+      }
+    })
+
+    if (uniquePaths.size === 0) return
+
     try {
-      const { url } = await getSignedUrl(path)
-      
-      // Cache the URL (expires in 3.5 hours to be safe)
-      urlCache.set(path, { url, expires: Date.now() + (3.5 * 60 * 60 * 1000) })
-      
-      // Update local state
-      if (rowId) {
-        setRowStates(prev => ({
-          ...prev,
-          [rowId]: {
-            ...prev[rowId],
-            signedUrls: { ...prev[rowId]?.signedUrls, [path]: url }
-          }
-        }))
-      }
-      return url
-    } catch (error) {
-      console.error('Failed to get signed URL:', error)
-      return ''
-    }
-  }, [rowStates])
+      const urlMap = await batchGetSignedUrls([...uniquePaths])
 
-  // Lazy load signed URLs only when images become visible
-  useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            const img = entry.target as HTMLImageElement
-            const path = img.dataset.imagePath
-            const rowId = img.dataset.rowId
-            
-            if (path && rowId) {
-              getImageUrl(path, rowId).catch(() => {})
+      setRowStates(prev => {
+        const next = { ...prev }
+
+        rowPathMap.forEach((paths, rowId) => {
+          const current = next[rowId] ?? {
+            id: rowId,
+            isGenerating: false,
+            isGeneratingPrompt: false,
+            signedUrls: {},
+            isLoadingResults: false,
+            isUploadingTarget: false
+          }
+
+          const signedUrls = { ...current.signedUrls }
+
+          paths.forEach(path => {
+            if (Object.prototype.hasOwnProperty.call(urlMap, path)) {
+              signedUrls[path] = urlMap[path]
             }
-          }
+          })
+
+          next[rowId] = { ...current, signedUrls }
         })
-      },
-      {
-        rootMargin: '50px', // Start loading 50px before image becomes visible
-        threshold: 0.1
-      }
-    )
 
-    // Observe all image elements with data attributes
-    const imageElements = document.querySelectorAll('[data-image-path]')
-    imageElements.forEach((el) => observer.observe(el))
-
-    return () => {
-      observer.disconnect()
+        return next
+      })
+    } catch (error) {
+      console.error('Failed to batch load signed URLs:', error)
     }
-  }, [rows, getImageUrl])
+  }, [model.default_ref_headshot_url])
+
+  useEffect(() => {
+    primeSignedUrlsForRows(rows)
+  }, [rows, primeSignedUrlsForRows])
 
   // On mount: resume active jobs and setup realtime
   useEffect(() => {
@@ -464,8 +467,31 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       const { row } = await res.json()
       setRows(prev => prev.map(r => (r.id === rowId ? row : r)))
       const images = (row as any).generated_images || []
-      for (const img of images) {
-        await getImageUrl(img.output_url, rowId)
+      const paths = images.map((img: GeneratedImage) => img.output_url).filter(Boolean)
+      if (paths.length > 0) {
+        const urlMap = await batchGetSignedUrls(paths)
+        setRowStates(prev => {
+          const current = prev[rowId] ?? {
+            id: rowId,
+            isGenerating: false,
+            isGeneratingPrompt: false,
+            signedUrls: {},
+            isLoadingResults: false,
+            isUploadingTarget: false
+          }
+
+          const signedUrls = { ...current.signedUrls }
+          paths.forEach(path => {
+            if (Object.prototype.hasOwnProperty.call(urlMap, path)) {
+              signedUrls[path] = urlMap[path]
+            }
+          })
+
+          return {
+            ...prev,
+            [rowId]: { ...current, signedUrls }
+          }
+        })
       }
     } catch (e) {
       // noop
@@ -1235,10 +1261,21 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       })
 
       // Convert storage paths to signed URLs for Grok API access
-      const refSignedUrls = await Promise.all(
-        refImages.map(path => getSignedUrl(path).then(r => r.url))
-      )
-      const targetSignedUrl = await getSignedUrl(row.target_image_url).then(r => r.url)
+      const allPaths = [...refImages]
+      if (row.target_image_url) {
+        allPaths.push(row.target_image_url)
+      }
+
+      const signedMap = allPaths.length > 0 ? await batchGetSignedUrls(allPaths) : {}
+
+      const refSignedUrls = refImages
+        .map(path => signedMap[path])
+        .filter((url): url is string => typeof url === 'string' && url.length > 0)
+      const targetSignedUrl = row.target_image_url ? signedMap[row.target_image_url] : undefined
+
+      if (!targetSignedUrl) {
+        throw new Error('Failed to sign target image URL')
+      }
 
       console.log('[Frontend] After URL signing:', {
         refSignedUrls: refSignedUrls,
