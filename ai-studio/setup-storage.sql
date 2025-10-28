@@ -14,6 +14,10 @@ INSERT INTO storage.buckets (id, name, public) VALUES
   ('outputs', 'outputs', false)
 ON CONFLICT (id) DO NOTHING;
 
+INSERT INTO storage.buckets (id, name, public) VALUES
+  ('library', 'library', false)
+ON CONFLICT (id) DO NOTHING;
+
 -- Storage policies
 DROP POLICY IF EXISTS "allow authenticated uploads" ON storage.objects;
 CREATE POLICY "allow authenticated uploads" ON storage.objects

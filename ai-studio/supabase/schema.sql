@@ -53,6 +53,17 @@ create table if not exists public.model_rows (
   created_at timestamptz default now()
 );
 
+create table if not exists public.model_library_assets (
+  id uuid primary key default uuid_generate_v4(),
+  model_id uuid not null references public.models(id) on delete cascade,
+  created_by uuid not null references auth.users(id) on delete cascade,
+  bucket text not null,
+  object_path text not null,
+  label text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
 -- Jobs: each API call to SeeDream-v4/edit
 create table if not exists public.jobs (
   id uuid primary key default uuid_generate_v4(),
@@ -86,6 +97,8 @@ create table if not exists public.generated_images (
 create index if not exists idx_team_members_user on public.team_members(user_id);
 create index if not exists idx_models_team on public.models(team_id);
 create index if not exists idx_rows_model on public.model_rows(model_id);
+create index if not exists idx_library_model on public.model_library_assets(model_id);
+create index if not exists idx_library_created_by on public.model_library_assets(created_by);
 create index if not exists idx_jobs_row on public.jobs(row_id);
 create index if not exists idx_jobs_team on public.jobs(team_id);
 create index if not exists idx_images_job on public.generated_images(job_id);
@@ -97,6 +110,7 @@ alter table public.teams enable row level security;
 alter table public.team_members enable row level security;
 alter table public.models enable row level security;
 alter table public.model_rows enable row level security;
+alter table public.model_library_assets enable row level security;
 alter table public.jobs enable row level security;
 alter table public.generated_images enable row level security;
 
@@ -169,6 +183,23 @@ create policy "update rows if member" on public.model_rows
   for update using (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))));
 drop policy if exists "delete rows if member" on public.model_rows;
 create policy "delete rows if member" on public.model_rows
+  for delete using (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))));
+
+-- model_library_assets
+drop policy if exists "read assets if member" on public.model_library_assets;
+create policy "read assets if member" on public.model_library_assets
+  for select using (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))));
+
+drop policy if exists "insert assets if member" on public.model_library_assets;
+create policy "insert assets if member" on public.model_library_assets
+  for insert with check (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))));
+
+drop policy if exists "update assets if member" on public.model_library_assets;
+create policy "update assets if member" on public.model_library_assets
+  for update using (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))));
+
+drop policy if exists "delete assets if member" on public.model_library_assets;
+create policy "delete assets if member" on public.model_library_assets
   for delete using (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))));
 
 -- jobs

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect, useMemo, memo } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -9,12 +9,14 @@ import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { Thumb } from '@/components/ui/thumb'
 import { createJobs, getSignedUrl, getStatusColor, getStatusLabel, fetchActiveJobs } from '@/lib/jobs'
+import { useModelLibrary } from '@/lib/model-library'
 import { Model, ModelRow, GeneratedImage } from '@/types/jobs'
+import type { ModelLibraryAsset } from '@/types/library'
 import { useToast } from '@/hooks/use-toast'
 import { useJobPolling } from '@/hooks/use-job-polling'
 import { uploadImage, validateFile } from '@/lib/client-upload'
 import { createClient } from '@/lib/supabase-browser'
-import { Plus, Upload, X, Sparkles, Folder, CheckCircle, XCircle, Wand2, Star, Download, Check, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
+import { Plus, Upload, X, Sparkles, Folder, CheckCircle, XCircle, Wand2, Star, Download, Check, ChevronLeft, ChevronRight, Trash2, RefreshCw } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Progress } from '@/components/ui/progress'
@@ -48,12 +50,35 @@ interface BulkUploadItem {
 // Simple client-side cache for signed URLs
 const urlCache = new Map<string, { url: string; expires: number }>()
 
+const LIBRARY_DRAG_TYPE = 'application/x-model-library-asset' as const
+
+interface LibraryDragPayload {
+  assetId: string
+  bucket: string
+  objectPath: string
+  label?: string | null
+}
+
 export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspaceProps) {
   const { toast } = useToast()
   const supabase = createClient()
   const [rows, setRows] = useState(initialRows)
   const [currentModel, setCurrentModel] = useState(model)
-  
+  const {
+    assets: libraryAssets,
+    isLoading: isLibraryLoading,
+    error: libraryError,
+    refresh: refreshLibrary,
+    createAsset: createLibraryAsset,
+    deleteAsset: deleteLibraryAsset,
+    copyAssetToTargets,
+  } = useModelLibrary(model.id)
+  const [librarySignedUrls, setLibrarySignedUrls] = useState<Record<string, string>>({})
+  const libraryFileInputRef = useRef<HTMLInputElement | null>(null)
+  const [isLibraryUploading, setIsLibraryUploading] = useState(false)
+  const [isLibraryDragOver, setIsLibraryDragOver] = useState(false)
+  const [activeLibraryDragId, setActiveLibraryDragId] = useState<string | null>(null)
+
   // Memoized sorted rows to prevent unnecessary re-sorting
   const sortedRows = useMemo(() => {
     const sortOrder = sort === 'oldest' ? 1 : -1
@@ -69,7 +94,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   const [rowStates, setRowStates] = useState<Record<string, RowState>>({})
   const [, setDeletedRowIds] = useState<Set<string>>(new Set())
   const fileInputRefs = useRef<Record<string, HTMLInputElement>>({})
-  
+
   // Folder drop state
   const [isFolderDropActive, setIsFolderDropActive] = useState(false)
   const [bulkUploadState, setBulkUploadState] = useState<BulkUploadItem[]>([])
@@ -79,6 +104,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   const [dragOverRowId, setDragOverRowId] = useState<string | null>(null)
   const [, setIsDragOverTarget] = useState(false)
   const [isGlobalDragActive, setIsGlobalDragActive] = useState(false)
+  const [dragOverRefRowId, setDragOverRefRowId] = useState<string | null>(null)
 
   // Download selection state
   const [isSelectionMode, setIsSelectionMode] = useState(false)
@@ -125,6 +151,28 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     })
     setLocalPrompts(prev => ({ ...prev, ...initialPrompts }))
   }, [rows, model.default_prompt])
+
+  useEffect(() => {
+    if (libraryError) {
+      toast({
+        title: 'Library unavailable',
+        description: libraryError,
+        variant: 'destructive'
+      })
+    }
+  }, [libraryError, toast])
+
+  useEffect(() => {
+    setLibrarySignedUrls(prev => {
+      const next: Record<string, string> = {}
+      libraryAssets.forEach(asset => {
+        if (asset.object_path && prev[asset.object_path]) {
+          next[asset.object_path] = prev[asset.object_path]
+        }
+      })
+      return next
+    })
+  }, [libraryAssets])
 
   // Get current prompt value for a row (local state takes precedence)
   const getCurrentPrompt = useCallback((rowId: string): string => {
@@ -304,20 +352,23 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
             signedUrls: { ...prev[rowId]?.signedUrls, [path]: cached.url }
           }
         }))
+      } else {
+        setLibrarySignedUrls(prev => ({ ...prev, [path]: cached.url }))
       }
       return cached.url
     }
-    
+
     // Check local state as fallback
     const rowState = rowId ? getRowState(rowId) : null
     if (rowState?.signedUrls[path]) return rowState.signedUrls[path]
-    
+    if (!rowId && librarySignedUrls[path]) return librarySignedUrls[path]
+
     try {
       const { url } = await getSignedUrl(path)
-      
+
       // Cache the URL (expires in 3.5 hours to be safe)
       urlCache.set(path, { url, expires: Date.now() + (3.5 * 60 * 60 * 1000) })
-      
+
       // Update local state
       if (rowId) {
         setRowStates(prev => ({
@@ -327,13 +378,15 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
             signedUrls: { ...prev[rowId]?.signedUrls, [path]: url }
           }
         }))
+      } else {
+        setLibrarySignedUrls(prev => ({ ...prev, [path]: url }))
       }
       return url
     } catch (error) {
       console.error('Failed to get signed URL:', error)
       return ''
     }
-  }, [rowStates])
+  }, [rowStates, librarySignedUrls])
 
   // Lazy load signed URLs only when images become visible
   useEffect(() => {
@@ -344,9 +397,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
             const img = entry.target as HTMLImageElement
             const path = img.dataset.imagePath
             const rowId = img.dataset.rowId
-            
-            if (path && rowId) {
-              getImageUrl(path, rowId).catch(() => {})
+
+            if (path) {
+              getImageUrl(path, rowId || undefined).catch(() => {})
             }
           }
         })
@@ -364,7 +417,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     return () => {
       observer.disconnect()
     }
-  }, [rows, getImageUrl])
+  }, [rows, libraryAssets, getImageUrl])
 
   // On mount: resume active jobs and setup realtime
   useEffect(() => {
@@ -600,25 +653,363 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     }
   }
 
+  const handleReferenceImageUpload = async (rowId: string, files: File[]): Promise<boolean> => {
+    if (!files.length) return false
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Not authenticated')
+
+      const uploadPromises = files.map(file => {
+        validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 10)
+        return retryWithBackoff(async () => {
+          await refreshAuth()
+          return uploadImage(file, 'refs', user.id)
+        }, 3, 1000)
+      })
+
+      const results = await Promise.all(uploadPromises)
+      const row = rows.find(r => r.id === rowId)
+      const existingRefs = row?.ref_image_urls || []
+      const appendedRefs = [...existingRefs, ...results.map(r => r.objectPath)]
+      const newRefs = Array.from(new Set(appendedRefs))
+      let updatedRow: ModelRow | null = null
+
+      await retryWithBackoff(async () => {
+        const { data: { session } } = await supabase.auth.getSession()
+        const response = await fetch(`/api/rows/${rowId}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(session?.access_token ? { 'Authorization': `Bearer ${session.access_token}` } : {})
+          },
+          body: JSON.stringify({ ref_image_urls: newRefs })
+        })
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          throw new Error(`Failed to update row: ${response.status} ${errorText}`)
+        }
+
+        const { row: nextRow } = await response.json()
+        updatedRow = nextRow
+      }, 3, 1000)
+
+      if (updatedRow) {
+        setRows(prev => prev.map(r => r.id === rowId ? updatedRow! : r))
+      } else {
+        setRows(prev => prev.map(r => r.id === rowId ? { ...r, ref_image_urls: newRefs } : r))
+      }
+
+      const newPaths = results
+        .map(r => r.objectPath)
+        .filter(path => !existingRefs.includes(path))
+
+      await Promise.all(newPaths.map(path => getImageUrl(path, rowId)))
+
+      toast({ title: `Added ${files.length} reference image${files.length === 1 ? '' : 's'}` })
+      return true
+    } catch (err) {
+      toast({
+        title: 'Ref upload failed',
+        description: err instanceof Error ? err.message : 'Error',
+        variant: 'destructive'
+      })
+      return false
+    }
+  }
+
+  const hasImageFiles = (event: React.DragEvent) =>
+    Array.from(event.dataTransfer.items || []).some(item => item.kind === 'file' && item.type.startsWith('image/'))
+
+  const isLibraryDrag = (event: React.DragEvent) =>
+    Array.from(event.dataTransfer.types || []).includes(LIBRARY_DRAG_TYPE)
+
+  const getLibraryDragData = (event: React.DragEvent): LibraryDragPayload | null => {
+    try {
+      const raw = event.dataTransfer.getData(LIBRARY_DRAG_TYPE)
+      if (!raw) return null
+      const parsed = JSON.parse(raw) as LibraryDragPayload
+      if (!parsed.assetId || !parsed.bucket || !parsed.objectPath) {
+        return null
+      }
+      return parsed
+    } catch (error) {
+      console.warn('Failed to parse library drag payload:', error)
+      return null
+    }
+  }
+
+  const handleLibraryTargetDrop = async (rowId: string, payload: LibraryDragPayload) => {
+    const initialRowState = rowStates[rowId] ?? getRowState(rowId)
+    setRowStates(prev => ({
+      ...prev,
+      [rowId]: { ...initialRowState, isUploadingTarget: true }
+    }))
+
+    try {
+      await refreshAuth().catch(() => {})
+      const { objectPath } = await copyAssetToTargets(payload.assetId)
+      const { data: { session } } = await supabase.auth.getSession()
+
+      const response = await fetch(`/api/rows/${rowId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+        },
+        body: JSON.stringify({ target_image_url: objectPath })
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Failed to update row: ${response.status} ${errorText}`)
+      }
+
+      const { row } = await response.json()
+      setRows(prev => prev.map(r => r.id === rowId ? row : r))
+      await getImageUrl(objectPath, rowId)
+
+      toast({
+        title: 'Target image updated',
+        description: payload.label ? `Copied ${payload.label}` : 'Library image copied to target slot.'
+      })
+    } catch (error) {
+      toast({
+        title: 'Failed to use library asset',
+        description: error instanceof Error ? error.message : 'Unable to copy library asset.',
+        variant: 'destructive'
+      })
+    } finally {
+      setRowStates(prev => ({
+        ...prev,
+        [rowId]: { ...(prev[rowId] ?? initialRowState), isUploadingTarget: false }
+      }))
+    }
+  }
+
+  const handleLibraryReferenceDrop = async (rowId: string, payload: LibraryDragPayload) => {
+    const row = rows.find(r => r.id === rowId)
+    if (!row) return
+
+    const existingRefs = row.ref_image_urls || []
+    if (existingRefs.includes(payload.objectPath)) {
+      toast({
+        title: 'Reference already added',
+        description: 'This library image is already attached to the row.',
+      })
+      return
+    }
+
+    const newRefs = [...existingRefs, payload.objectPath]
+
+    try {
+      await refreshAuth().catch(() => {})
+      const { data: { session } } = await supabase.auth.getSession()
+      const response = await fetch(`/api/rows/${rowId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+        },
+        body: JSON.stringify({ ref_image_urls: newRefs })
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Failed to update row: ${response.status} ${errorText}`)
+      }
+
+      const { row: updatedRow } = await response.json()
+      setRows(prev => prev.map(r => r.id === rowId ? updatedRow : r))
+      await getImageUrl(payload.objectPath, rowId)
+
+      toast({
+        title: 'Reference added',
+        description: payload.label ? `Added ${payload.label}` : 'Library image added to references.'
+      })
+    } catch (error) {
+      toast({
+        title: 'Failed to add reference',
+        description: error instanceof Error ? error.message : 'Unable to add library image to row.',
+        variant: 'destructive'
+      })
+    }
+  }
+
+  const handleLibraryUpload = async (files: File[]) => {
+    if (!files.length) return
+
+    setIsLibraryUploading(true)
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Not authenticated')
+
+      const uploaded: ModelLibraryAsset[] = []
+
+      for (const file of files) {
+        validateFile(file, ['image/jpeg', 'image/png', 'image/webp', 'image/gif'], 10)
+        const uploadResult = await uploadImage(file, 'library', user.id)
+        const asset = await createLibraryAsset({
+          bucket: uploadResult.bucket,
+          objectPath: uploadResult.objectPath,
+          label: file.name
+        })
+        uploaded.push(asset)
+        await getImageUrl(asset.object_path)
+      }
+
+      if (uploaded.length > 0) {
+        toast({
+          title: uploaded.length === 1 ? 'Library image added' : `${uploaded.length} library images added`,
+          description: 'Drag assets onto targets or references to use them.'
+        })
+      }
+    } catch (error) {
+      toast({
+        title: 'Library upload failed',
+        description: error instanceof Error ? error.message : 'Unable to upload to library.',
+        variant: 'destructive'
+      })
+    } finally {
+      setIsLibraryUploading(false)
+      setIsLibraryDragOver(false)
+      if (libraryFileInputRef.current) {
+        libraryFileInputRef.current.value = ''
+      }
+    }
+  }
+
+  const handleDeleteLibraryAsset = async (asset: ModelLibraryAsset) => {
+    try {
+      await deleteLibraryAsset(asset.id)
+      setLibrarySignedUrls(prev => {
+        const next = { ...prev }
+        delete next[asset.object_path]
+        return next
+      })
+      toast({
+        title: 'Library asset removed',
+        description: asset.label ? `Deleted ${asset.label}` : 'Asset removed from library.'
+      })
+    } catch (error) {
+      toast({
+        title: 'Delete failed',
+        description: error instanceof Error ? error.message : 'Unable to delete library asset.',
+        variant: 'destructive'
+      })
+    }
+  }
+
+  const handleLibraryDrop = async (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setIsLibraryDragOver(false)
+
+    if (isLibraryUploading) {
+      toast({
+        title: 'Upload in progress',
+        description: 'Please wait for the current upload to finish before adding more assets.',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    if (!event.dataTransfer?.files?.length) return
+
+    const imageFiles = Array.from(event.dataTransfer.files).filter(file => file.type.startsWith('image/'))
+    if (!imageFiles.length) return
+
+    await handleLibraryUpload(imageFiles)
+  }
+
+  const handleLibraryAreaDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (isLibraryDrag(event)) {
+      event.dataTransfer.dropEffect = 'none'
+      return
+    }
+
+    if (isLibraryUploading) {
+      event.dataTransfer.dropEffect = 'none'
+      return
+    }
+
+    if (!hasImageFiles(event)) {
+      event.dataTransfer.dropEffect = 'none'
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+    setIsLibraryDragOver(true)
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  const handleLibraryAreaDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+      setIsLibraryDragOver(false)
+    }
+  }
+
+  const handleRefDragOver = (event: React.DragEvent, rowId: string) => {
+    if (!isLibraryDrag(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    setDragOverRefRowId(rowId)
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  const handleRefDragLeave = (event: React.DragEvent, rowId: string) => {
+    if (!isLibraryDrag(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+      setDragOverRefRowId(prev => (prev === rowId ? null : prev))
+    }
+  }
+
+  const handleRefDrop = (event: React.DragEvent, rowId: string) => {
+    if (isLibraryDrag(event)) {
+      event.preventDefault()
+      event.stopPropagation()
+      setDragOverRefRowId(null)
+      setActiveLibraryDragId(null)
+      const payload = getLibraryDragData(event)
+      if (!payload) return
+      handleLibraryReferenceDrop(rowId, payload)
+      return
+    }
+
+    const files = Array.from(event.dataTransfer.files || []).filter(file => file.type.startsWith('image/'))
+    if (!files.length) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    handleReferenceImageUpload(rowId, files).catch(() => {})
+  }
+
   // Handle drag and drop for target images
   const handleTargetDragOver = (e: React.DragEvent, rowId: string) => {
     e.preventDefault()
     e.stopPropagation()
-    
+
     const rowState = getRowState(rowId)
-    
-    // Don't allow drag and drop if already uploading
+
     if (rowState.isUploadingTarget) {
       e.dataTransfer.dropEffect = 'none'
       return
     }
-    
-    // Check if we have valid image files
-    const hasValidFiles = Array.from(e.dataTransfer.items).some(item => 
-      item.kind === 'file' && item.type.startsWith('image/')
-    )
-    
-    if (hasValidFiles) {
+
+    if (isLibraryDrag(e)) {
+      setDragOverRowId(rowId)
+      e.dataTransfer.dropEffect = 'copy'
+      return
+    }
+
+    if (hasImageFiles(e)) {
       setDragOverRowId(rowId)
       setIsDragOverTarget(true)
       e.dataTransfer.dropEffect = 'copy'
@@ -641,9 +1032,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   const handleTargetDrop = (e: React.DragEvent, rowId: string) => {
     e.preventDefault()
     e.stopPropagation()
-    
+
     const rowState = getRowState(rowId)
-    
+
     // Don't allow drop if already uploading
     if (rowState.isUploadingTarget) {
       toast({
@@ -653,15 +1044,23 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       })
       return
     }
-    
+
+    const libraryPayload = getLibraryDragData(e)
+
     // Clear drag state
     setDragOverRowId(null)
     setIsDragOverTarget(false)
     setIsGlobalDragActive(false)
-    
+    setActiveLibraryDragId(null)
+
+    if (libraryPayload) {
+      handleLibraryTargetDrop(rowId, libraryPayload)
+      return
+    }
+
     const files = Array.from(e.dataTransfer.files)
     const imageFile = files.find(file => file.type.startsWith('image/'))
-    
+
     if (imageFile) {
       handleTargetImageUpload(imageFile, rowId)
     } else {
@@ -675,14 +1074,18 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
 
   // Global drag handlers for the table
   const handleTableDragOver = (e: React.DragEvent) => {
+    if (isLibraryDrag(e)) {
+      e.preventDefault()
+      e.stopPropagation()
+      setIsGlobalDragActive(false)
+      e.dataTransfer.dropEffect = 'copy'
+      return
+    }
+
     e.preventDefault()
     e.stopPropagation()
-    
-    const hasValidFiles = Array.from(e.dataTransfer.items).some(item => 
-      item.kind === 'file' && item.type.startsWith('image/')
-    )
-    
-    if (hasValidFiles) {
+
+    if (hasImageFiles(e)) {
       setIsGlobalDragActive(true)
       e.dataTransfer.dropEffect = 'copy'
     } else {
@@ -1798,8 +2201,141 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         </CardContent>
       </Card>
 
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold">Model Library</div>
+              <div className="text-xs text-muted-foreground">Upload once, then drag assets onto targets or references.</div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                ref={libraryFileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={async (event) => {
+                  const files = Array.from(event.target.files || [])
+                  if (!files.length) return
+                  await handleLibraryUpload(files)
+                }}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => libraryFileInputRef.current?.click()}
+                disabled={isLibraryUploading}
+                className="h-8 px-3 text-xs"
+              >
+                {isLibraryUploading ? (
+                  <div className="flex items-center gap-2">
+                    <Spinner size="sm" />
+                    <span>Uploading…</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <Upload className="h-3 w-3" />
+                    <span>Upload</span>
+                  </div>
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => refreshLibrary()}
+                disabled={isLibraryLoading}
+                aria-label="Refresh library"
+              >
+                {isLibraryLoading ? <Spinner size="sm" /> : <RefreshCw className="h-4 w-4" />}
+              </Button>
+            </div>
+          </div>
+
+          <div
+            className={`flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-4 text-center text-xs transition-colors ${isLibraryDragOver ? 'border-primary bg-primary/10 text-primary' : 'border-muted-foreground/25 text-muted-foreground hover:border-muted-foreground/50'}`}
+            onDragOver={handleLibraryAreaDragOver}
+            onDragLeave={handleLibraryAreaDragLeave}
+            onDrop={handleLibraryDrop}
+          >
+            {isLibraryUploading ? (
+              <div className="flex flex-col items-center gap-2">
+                <Spinner size="sm" />
+                <span className="font-medium">Uploading…</span>
+              </div>
+            ) : (
+              <div>
+                <div className="font-medium text-muted-foreground">Drag images here</div>
+                <div>or use the upload button</div>
+              </div>
+            )}
+          </div>
+
+          <div className="max-h-64 overflow-y-auto">
+            {isLibraryLoading && !libraryAssets.length ? (
+              <div className="flex items-center justify-center gap-2 py-6 text-xs text-muted-foreground">
+                <Spinner size="sm" />
+                <span>Loading library…</span>
+              </div>
+            ) : libraryAssets.length ? (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+                {libraryAssets.map((asset) => (
+                  <div
+                    key={asset.id}
+                    className={`group relative rounded-2xl border border-muted-foreground/10 bg-background/60 p-2 transition-colors ${activeLibraryDragId === asset.id ? 'ring-2 ring-primary' : 'hover:border-muted-foreground/40'}`}
+                  >
+                    <Thumb
+                      src={librarySignedUrls[asset.object_path]}
+                      alt={asset.label || 'Library asset'}
+                      size={96}
+                      className="cursor-grab"
+                      dataImagePath={asset.object_path}
+                      draggable
+                      onDragStart={(event) => {
+                        setActiveLibraryDragId(asset.id)
+                        event.dataTransfer.effectAllowed = 'copy'
+                        event.dataTransfer.setData(LIBRARY_DRAG_TYPE, JSON.stringify({
+                          assetId: asset.id,
+                          bucket: asset.bucket,
+                          objectPath: asset.object_path,
+                          label: asset.label ?? null
+                        }))
+                        event.dataTransfer.setData('text/plain', asset.object_path)
+                      }}
+                      onDragEnd={() => setActiveLibraryDragId(null)}
+                      ariaGrabbed={activeLibraryDragId === asset.id}
+                    />
+                    <div className="mt-2 truncate text-center text-[10px] text-muted-foreground">
+                      {asset.label || asset.object_path.split('/').pop()}
+                    </div>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="absolute right-1 top-1 h-7 w-7 rounded-full bg-background/80 opacity-0 transition-opacity hover:bg-destructive hover:text-destructive-foreground focus:opacity-100 group-hover:opacity-100"
+                      onClick={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        handleDeleteLibraryAsset(asset)
+                      }}
+                      aria-label="Delete library asset"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="py-6 text-center text-xs text-muted-foreground">
+                No library assets yet. Upload images to reuse across rows.
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Dimension Controls */}
-      <DimensionControls 
+      <DimensionControls
         model={currentModel} 
         onUpdate={(updatedModel) => {
           setCurrentModel(updatedModel)
@@ -1990,7 +2526,14 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                     <TableRow key={row.id} aria-busy={isActiveStatus(displayStatus)}>
                       {/* 1. Reference Image */}
                       <TableCell className="align-top">
-                        <div className="space-y-2">
+                        <div
+                          className={`space-y-2 rounded-xl border border-transparent p-2 transition-colors ${
+                            dragOverRefRowId === row.id ? 'border-primary bg-primary/10 shadow-sm' : ''
+                          }`}
+                          onDragOver={(event) => handleRefDragOver(event, row.id)}
+                          onDragLeave={(event) => handleRefDragLeave(event, row.id)}
+                          onDrop={(event) => handleRefDrop(event, row.id)}
+                        >
                           {/* Display reference images */}
                           <div className="flex flex-wrap gap-2">
                             {row.ref_image_urls && row.ref_image_urls.length > 0 ? (
@@ -2076,46 +2619,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                               onChange={async (e) => {
                                 const files = Array.from(e.target.files || [])
                                 if (files.length === 0) return
-                                
+
                                 try {
-                                  const { data: { user } } = await supabase.auth.getUser()
-                                  if (!user) throw new Error('Not authenticated')
-                                  
-                                  // Use retry logic for reference image uploads
-                                  const uploadPromises = files.map(file => {
-                                    validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 10)
-                                    return retryWithBackoff(async () => {
-                                      await refreshAuth()
-                                      return uploadImage(file, 'refs', user.id)
-                                    }, 3, 1000)
-                                  })
-                                  
-                                  const results = await Promise.all(uploadPromises)
-                                  const newRefs = [...(row.ref_image_urls || []), ...results.map(r => r.objectPath)]
-                                  
-                                  // Update row with retry logic
-                                  await retryWithBackoff(async () => {
-                                    const response = await fetch(`/api/rows/${row.id}`, {
-                                      method: 'PATCH',
-                                      headers: { 
-                                        'Content-Type': 'application/json',
-                                        'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
-                                      },
-                                      body: JSON.stringify({ ref_image_urls: newRefs })
-                                    })
-                                    
-                                    if (!response.ok) {
-                                      const errorText = await response.text()
-                                      throw new Error(`Failed to update row: ${response.status} ${errorText}`)
-                                    }
-                                  }, 3, 1000)
-                                  
-                                  refreshRowData()
-                                  toast({ title: `Added ${files.length} reference image${files.length === 1 ? '' : 's'}` })
-                                } catch (err) {
-                                  toast({ title: 'Ref upload failed', description: err instanceof Error ? err.message : 'Error', variant: 'destructive' })
+                                  await handleReferenceImageUpload(row.id, files)
                                 } finally {
-                                  // Clear the input using the ref to avoid null reference error
                                   const input = fileInputRefs.current[`ref-${row.id}`]
                                   if (input) {
                                     input.value = ''
