@@ -31,18 +31,30 @@ export async function pollJob(jobId: string): Promise<PollJobResponse> {
   return res.json()
 }
 
-export async function getSignedUrl(path: string): Promise<{ url: string }> {
-  const res = await fetch(`/api/storage/sign?path=${encodeURIComponent(path)}`, {
-    method: 'GET',
-    cache: 'no-store'
+export async function getSignedUrls(paths: string[]): Promise<Record<string, string>> {
+  const res = await fetch('/api/storage/sign', {
+    method: 'POST',
+    cache: 'no-store',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ paths })
   })
-  
+
   if (!res.ok) {
     const error = await res.text()
     throw new Error(error)
   }
-  
-  return res.json()
+
+  const data = await res.json()
+  return data?.urls ?? data ?? {}
+}
+
+export async function getSignedUrl(path: string): Promise<{ url: string }> {
+  const urls = await getSignedUrls([path])
+  const url = urls[path]
+  if (!url) {
+    throw new Error('Failed to retrieve signed URL')
+  }
+  return { url }
 }
 
 // Utility functions for status handling

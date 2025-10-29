@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect, useMemo, memo } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -8,7 +8,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { Thumb } from '@/components/ui/thumb'
-import { createJobs, getSignedUrl, getStatusColor, getStatusLabel, fetchActiveJobs } from '@/lib/jobs'
+import { createJobs, getStatusColor, getStatusLabel, fetchActiveJobs } from '@/lib/jobs'
+import { batchGetSignedUrls } from '@/lib/image-loader'
 import { Model, ModelRow, GeneratedImage } from '@/types/jobs'
 import { useToast } from '@/hooks/use-toast'
 import { useJobPolling } from '@/hooks/use-job-polling'
@@ -45,8 +46,40 @@ interface BulkUploadItem {
   error?: string
 }
 
-// Simple client-side cache for signed URLs
-const urlCache = new Map<string, { url: string; expires: number }>()
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0
+
+const sanitizePathList = (paths: unknown): string[] => {
+  if (!Array.isArray(paths)) {
+    return []
+  }
+
+  const result: string[] = []
+  for (const value of paths) {
+    if (typeof value !== 'string') continue
+    const trimmed = value.trim()
+    if (trimmed.length > 0) {
+      result.push(trimmed)
+    }
+  }
+
+  return result
+}
+
+type ModelRowWithImages = ModelRow & { generated_images?: unknown }
+
+const isGeneratedImage = (value: unknown): value is GeneratedImage => {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<GeneratedImage>
+  return typeof candidate.id === 'string' && typeof candidate.output_url === 'string'
+}
+
+const extractGeneratedImages = (row?: ModelRow | ModelRowWithImages | null): GeneratedImage[] => {
+  if (!row) return []
+  const maybeImages = (row as ModelRowWithImages).generated_images
+  if (!Array.isArray(maybeImages)) return []
+  return maybeImages.filter(isGeneratedImage)
+}
 
 export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspaceProps) {
   const { toast } = useToast()
@@ -67,6 +100,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   // Debug: Log model info
   console.log('ModelWorkspace received model:', { id: model.id, name: model.name, owner_id: model.owner_id })
   const [rowStates, setRowStates] = useState<Record<string, RowState>>({})
+  const rowStatesRef = useRef<Record<string, RowState>>({})
   const [, setDeletedRowIds] = useState<Set<string>>(new Set())
   const fileInputRefs = useRef<Record<string, HTMLInputElement>>({})
   
@@ -106,12 +140,12 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   useEffect(() => {
     const initialFavorites: Record<string, boolean> = {}
     rows.forEach(row => {
-      const images = (row as any).generated_images || []
-      images.forEach((img: any) => {
+      const images = extractGeneratedImages(row)
+      for (const image of images) {
         // Initialize all images, defaulting to false if undefined
-        const isFav = img.is_favorited === true
-        initialFavorites[img.id] = isFav
-      })
+        const isFav = image.is_favorited === true
+        initialFavorites[image.id] = isFav
+      }
     })
     setFavoritesState(initialFavorites)
   }, [rows])
@@ -125,6 +159,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     })
     setLocalPrompts(prev => ({ ...prev, ...initialPrompts }))
   }, [rows, model.default_prompt])
+
+  useEffect(() => {
+    rowStatesRef.current = rowStates
+  }, [rowStates])
 
   // Get current prompt value for a row (local state takes precedence)
   const getCurrentPrompt = useCallback((rowId: string): string => {
@@ -180,7 +218,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     const currentRow = rows.find(row => row.id === dialogState.rowId)
     if (!currentRow) return
     
-    const images = (currentRow as any).generated_images || []
+    const images = extractGeneratedImages(currentRow)
     const newIndex = direction === 'prev' 
       ? Math.max(0, dialogState.imageIndex - 1)
       : Math.min(images.length - 1, dialogState.imageIndex + 1)
@@ -214,7 +252,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       const currentRow = rows.find(row => row.id === dialogState.rowId)
       if (!currentRow) return
       
-      const images = (currentRow as any).generated_images || []
+      const images = extractGeneratedImages(currentRow)
       const currentRowState = rowStates[dialogState.rowId]
       if (!currentRowState) return
       
@@ -276,7 +314,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
           isGenerating: false,
           isGeneratingPrompt: false,
           signedUrls: {},
-          isLoadingResults: false
+          isLoadingResults: false,
+          isUploadingTarget: false
         }
       }))
       return {
@@ -284,87 +323,92 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         isGenerating: false,
         isGeneratingPrompt: false,
         signedUrls: {},
-        isLoadingResults: false
+        isLoadingResults: false,
+        isUploadingTarget: false
       }
     }
     return rowStates[rowId]
   }
 
   // Function to get signed URL for an image path with caching
-  const getImageUrl = useCallback(async (path: string, rowId?: string) => {
-    // Check cache first
-    const cached = urlCache.get(path)
-    if (cached && cached.expires > Date.now()) {
-      // Update local state if we have a rowId
-      if (rowId) {
-        setRowStates(prev => ({
-          ...prev,
-          [rowId]: {
-            ...prev[rowId],
-            signedUrls: { ...prev[rowId]?.signedUrls, [path]: cached.url }
-          }
-        }))
-      }
-      return cached.url
-    }
-    
-    // Check local state as fallback
-    const rowState = rowId ? getRowState(rowId) : null
-    if (rowState?.signedUrls[path]) return rowState.signedUrls[path]
-    
-    try {
-      const { url } = await getSignedUrl(path)
-      
-      // Cache the URL (expires in 3.5 hours to be safe)
-      urlCache.set(path, { url, expires: Date.now() + (3.5 * 60 * 60 * 1000) })
-      
-      // Update local state
-      if (rowId) {
-        setRowStates(prev => ({
-          ...prev,
-          [rowId]: {
-            ...prev[rowId],
-            signedUrls: { ...prev[rowId]?.signedUrls, [path]: url }
-          }
-        }))
-      }
-      return url
-    } catch (error) {
-      console.error('Failed to get signed URL:', error)
-      return ''
-    }
-  }, [rowStates])
+  const primeSignedUrlsForRows = useCallback(async (targetRows: ModelRow[]) => {
+    if (!targetRows.length) return
 
-  // Lazy load signed URLs only when images become visible
-  useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            const img = entry.target as HTMLImageElement
-            const path = img.dataset.imagePath
-            const rowId = img.dataset.rowId
-            
-            if (path && rowId) {
-              getImageUrl(path, rowId).catch(() => {})
+    const uniquePaths = new Set<string>()
+    const rowPathMap = new Map<string, Set<string>>()
+
+    const addPath = (rowId: string, path: unknown) => {
+      if (!isNonEmptyString(path)) return
+      const storagePath = path.trim()
+      const rowState = rowStatesRef.current[rowId]
+      if (rowState && Object.prototype.hasOwnProperty.call(rowState.signedUrls, storagePath)) {
+        return
+      }
+      uniquePaths.add(storagePath)
+      if (!rowPathMap.has(rowId)) {
+        rowPathMap.set(rowId, new Set())
+      }
+      rowPathMap.get(rowId)!.add(storagePath)
+    }
+
+    targetRows.forEach(row => {
+      const rowId = row.id
+      const images = extractGeneratedImages(row)
+
+      for (const image of images) {
+        addPath(rowId, image.output_url)
+      }
+      addPath(rowId, row.target_image_url)
+
+      const explicitRefPaths = sanitizePathList(row.ref_image_urls)
+      if (explicitRefPaths.length > 0) {
+        for (const path of explicitRefPaths) {
+          addPath(rowId, path)
+        }
+      } else if ((row.ref_image_urls === null || row.ref_image_urls === undefined) && isNonEmptyString(model.default_ref_headshot_url)) {
+        addPath(rowId, model.default_ref_headshot_url)
+      }
+    })
+
+    if (uniquePaths.size === 0) return
+
+    try {
+      const urlMap = await batchGetSignedUrls([...uniquePaths])
+
+      setRowStates(prev => {
+        const next = { ...prev }
+
+        rowPathMap.forEach((paths, rowId) => {
+          const current = next[rowId] ?? {
+            id: rowId,
+            isGenerating: false,
+            isGeneratingPrompt: false,
+            signedUrls: {},
+            isLoadingResults: false,
+            isUploadingTarget: false
+          }
+
+          const signedUrls = { ...current.signedUrls }
+
+          for (const path of paths) {
+            if (Object.prototype.hasOwnProperty.call(urlMap, path)) {
+              signedUrls[path] = urlMap[path]
             }
           }
+
+          next[rowId] = { ...current, signedUrls }
         })
-      },
-      {
-        rootMargin: '50px', // Start loading 50px before image becomes visible
-        threshold: 0.1
-      }
-    )
 
-    // Observe all image elements with data attributes
-    const imageElements = document.querySelectorAll('[data-image-path]')
-    imageElements.forEach((el) => observer.observe(el))
-
-    return () => {
-      observer.disconnect()
+        return next
+      })
+    } catch (error) {
+      console.error('Failed to batch load signed URLs:', error)
     }
-  }, [rows, getImageUrl])
+  }, [model.default_ref_headshot_url])
+
+  useEffect(() => {
+    primeSignedUrlsForRows(rows)
+  }, [rows, primeSignedUrlsForRows])
 
   // On mount: resume active jobs and setup realtime
   useEffect(() => {
@@ -463,9 +507,36 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       if (!res.ok) return
       const { row } = await res.json()
       setRows(prev => prev.map(r => (r.id === rowId ? row : r)))
-      const images = (row as any).generated_images || []
-      for (const img of images) {
-        await getImageUrl(img.output_url, rowId)
+      const images = extractGeneratedImages(row)
+      const sanitizedOutputPaths = images
+        .map(img => img.output_url)
+        .filter(isNonEmptyString)
+        .map(path => path.trim())
+      const uniquePaths = [...new Set<string>(sanitizedOutputPaths)]
+      if (uniquePaths.length > 0) {
+        const urlMap = await batchGetSignedUrls(uniquePaths)
+        setRowStates(prev => {
+          const current = prev[rowId] ?? {
+            id: rowId,
+            isGenerating: false,
+            isGeneratingPrompt: false,
+            signedUrls: {},
+            isLoadingResults: false,
+            isUploadingTarget: false
+          }
+
+          const signedUrls = { ...current.signedUrls }
+          for (const path of uniquePaths) {
+            if (Object.prototype.hasOwnProperty.call(urlMap, path)) {
+              signedUrls[path] = urlMap[path]
+            }
+          }
+
+          return {
+            ...prev,
+            [rowId]: { ...current, signedUrls }
+          }
+        })
       }
     } catch (e) {
       // noop
@@ -1221,11 +1292,12 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       // Build reference images array using same logic as direct API route
       // If ref_image_urls is explicitly set (even if empty), use it
       // If ref_image_urls is null/undefined, fallback to model default
-      const refImages = row.ref_image_urls !== null && row.ref_image_urls !== undefined
-        ? row.ref_image_urls  // Use row's ref images (could be empty array if user removed all refs)
-        : model.default_ref_headshot_url 
-          ? [model.default_ref_headshot_url]  // Fallback to model default
-          : []  // No references at all
+      const hasExplicitRefs = row.ref_image_urls !== null && row.ref_image_urls !== undefined
+      const refImages = hasExplicitRefs
+        ? sanitizePathList(row.ref_image_urls) // Use row's ref images (could be empty array if user removed all refs)
+        : isNonEmptyString(model.default_ref_headshot_url)
+          ? [model.default_ref_headshot_url.trim()] // Fallback to model default
+          : [] // No references at all
 
       console.log('[Frontend] Reference images logic:', {
         rowRefImageUrls: row.ref_image_urls,
@@ -1235,10 +1307,21 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       })
 
       // Convert storage paths to signed URLs for Grok API access
-      const refSignedUrls = await Promise.all(
-        refImages.map(path => getSignedUrl(path).then(r => r.url))
-      )
-      const targetSignedUrl = await getSignedUrl(row.target_image_url).then(r => r.url)
+      const targetStoragePath = isNonEmptyString(row.target_image_url) ? row.target_image_url.trim() : undefined
+      const uniquePaths = Array.from(new Set(targetStoragePath ? [...refImages, targetStoragePath] : refImages))
+
+      const signedMap = uniquePaths.length > 0 ? await batchGetSignedUrls(uniquePaths) : {}
+
+      const refSignedUrls = refImages
+        .map(path => signedMap[path])
+        .filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
+        .map(url => url.trim())
+      const targetSignedUrlRaw = targetStoragePath ? signedMap[targetStoragePath] : undefined
+      const targetSignedUrl = typeof targetSignedUrlRaw === 'string' ? targetSignedUrlRaw.trim() : undefined
+
+      if (!targetSignedUrl) {
+        throw new Error('Failed to sign target image URL')
+      }
 
       console.log('[Frontend] After URL signing:', {
         refSignedUrls: refSignedUrls,
@@ -1511,10 +1594,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   const getAllImageIds = (): string[] => {
     const allIds: string[] = []
     rows.forEach(row => {
-      const images = (row as any).generated_images || []
-      images.forEach((image: GeneratedImage) => {
+      const images = extractGeneratedImages(row)
+      for (const image of images) {
         allIds.push(image.id)
-      })
+      }
     })
     return allIds
   }
@@ -1564,8 +1647,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         let signedUrl = ''
         
         for (const row of rows) {
-          const images = (row as any).generated_images || []
-          const foundImage = images.find((img: GeneratedImage) => img.id === imageId)
+          const images = extractGeneratedImages(row)
+          const foundImage = images.find(img => img.id === imageId)
           if (foundImage) {
             image = foundImage
             signedUrl = rowStates[row.id]?.signedUrls[foundImage.output_url] || ''
@@ -1980,7 +2063,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                   }
 
                   const rowState = getRowState(row.id)
-                  const images = (row as any).generated_images || []
+                  const images = extractGeneratedImages(row)
                   const displayStatus = getLiveStatusForRow(row.id, row.status)
                   const displayProgress = statusToProgress(displayStatus)
                   const live = Object.values(pollingState).find(s => s.rowId === row.id && s.polling)
@@ -2659,7 +2742,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
             const currentRow = rows.find(row => row.id === dialogState.rowId)
             if (!currentRow) return null
             
-            const images = (currentRow as any).generated_images || []
+            const images = extractGeneratedImages(currentRow)
             const rowState = rowStates[dialogState.rowId]
             
             if (!rowState || images.length === 0) return null

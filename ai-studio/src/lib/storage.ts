@@ -10,6 +10,25 @@ export async function signPath(objectPath: string, expiresIn = 14400): Promise<s
   return data.signedUrl
 }
 
+export async function signPaths(objectPaths: string[], expiresIn = 14400): Promise<Record<string, string>> {
+  const uniquePaths = [...new Set(objectPaths.filter(Boolean))]
+  if (uniquePaths.length === 0) {
+    return {}
+  }
+
+  const entries = await Promise.all(uniquePaths.map(async (path) => {
+    try {
+      const signedUrl = await signPath(path, expiresIn)
+      return [path, signedUrl] as const
+    } catch (error) {
+      console.error(`Cannot sign URL for path ${path}:`, error)
+      return [path, ''] as const
+    }
+  }))
+
+  return Object.fromEntries(entries)
+}
+
 /** Download remote image and upload to outputs bucket; return objectPath "outputs/<key>" */
 export async function fetchAndSaveToOutputs(remoteUrl: string, userId: string) {
   const supabase = supabaseAdmin
