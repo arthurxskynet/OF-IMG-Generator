@@ -1,10 +1,9 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect, useMemo, memo } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo, memo, type ReactNode } from 'react'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { Thumb } from '@/components/ui/thumb'
@@ -15,7 +14,6 @@ import { useJobPolling } from '@/hooks/use-job-polling'
 import { uploadImage, validateFile } from '@/lib/client-upload'
 import { createClient } from '@/lib/supabase-browser'
 import { Plus, Upload, X, Sparkles, Folder, CheckCircle, XCircle, Wand2, Star, Download, Check, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Progress } from '@/components/ui/progress'
 import { Spinner } from '@/components/ui/spinner'
@@ -28,6 +26,51 @@ interface ModelWorkspaceProps {
   sort?: string
 }
 
+interface VirtualRowWrapperProps {
+  index: number
+  offset: number
+  onMeasure: (index: number, height: number) => void
+  rowId: string
+  children: ReactNode
+}
+
+const VirtualRowWrapper = memo(({ index, offset, onMeasure, rowId, children }: VirtualRowWrapperProps) => {
+  const rowRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const element = rowRef.current
+    if (!element) return
+
+    const notify = () => {
+      onMeasure(index, element.getBoundingClientRect().height)
+    }
+
+    notify()
+
+    const observer = new ResizeObserver(() => {
+      notify()
+    })
+
+    observer.observe(element)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [index, onMeasure])
+
+  return (
+    <div
+      className="absolute left-0 right-0"
+      style={{ transform: `translateY(${offset}px)` }}
+      data-row-id={rowId}
+    >
+      <div ref={rowRef}>{children}</div>
+    </div>
+  )
+})
+
+VirtualRowWrapper.displayName = 'VirtualRowWrapper'
+
 interface RowState {
   id: string
   isGenerating: boolean
@@ -35,6 +78,7 @@ interface RowState {
   signedUrls: Record<string, string>
   isLoadingResults?: boolean
   isUploadingTarget?: boolean
+  visibleImageLimit?: number
 }
 
 interface BulkUploadItem {
@@ -48,12 +92,17 @@ interface BulkUploadItem {
 // Simple client-side cache for signed URLs
 const urlCache = new Map<string, { url: string; expires: number }>()
 
+const INITIAL_VISIBLE_RESULTS = 8
+const VISIBLE_RESULTS_STEP = 8
+const ESTIMATED_ROW_HEIGHT = 360
+const ROW_GRID_TEMPLATE = '5rem 6rem minmax(18rem, 22rem) 7rem 5rem minmax(0, 1fr) 4rem'
+
 export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspaceProps) {
   const { toast } = useToast()
   const supabase = createClient()
   const [rows, setRows] = useState(initialRows)
   const [currentModel, setCurrentModel] = useState(model)
-  
+
   // Memoized sorted rows to prevent unnecessary re-sorting
   const sortedRows = useMemo(() => {
     const sortOrder = sort === 'oldest' ? 1 : -1
@@ -63,10 +112,202 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       return (dateA - dateB) * sortOrder
     })
   }, [rows, sort])
-  
+
   // Debug: Log model info
   console.log('ModelWorkspace received model:', { id: model.id, name: model.name, owner_id: model.owner_id })
-  const [rowStates, setRowStates] = useState<Record<string, RowState>>({})
+  const createDefaultRowState = useCallback((rowId: string): RowState => ({
+    id: rowId,
+    isGenerating: false,
+    isGeneratingPrompt: false,
+    signedUrls: {},
+    isLoadingResults: false,
+    isUploadingTarget: false,
+    visibleImageLimit: INITIAL_VISIBLE_RESULTS
+  }), [])
+
+  const defaultRowStateMap = useMemo(() => {
+    const map: Record<string, RowState> = {}
+    rows.forEach(row => {
+      map[row.id] = createDefaultRowState(row.id)
+    })
+    return map
+  }, [rows, createDefaultRowState])
+
+  const [rowStates, setRowStates] = useState<Record<string, RowState>>(() => defaultRowStateMap)
+  const defaultRowStateRef = useRef(defaultRowStateMap)
+
+  useEffect(() => {
+    defaultRowStateRef.current = defaultRowStateMap
+    setRowStates(prev => {
+      const next: Record<string, RowState> = {}
+      let changed = false
+
+      Object.entries(defaultRowStateMap).forEach(([rowId, defaultState]) => {
+        const existing = prev[rowId]
+        if (existing) {
+          next[rowId] = {
+            ...defaultState,
+            ...existing,
+            id: rowId,
+            signedUrls: existing.signedUrls || {},
+            visibleImageLimit: existing.visibleImageLimit ?? defaultState.visibleImageLimit
+          }
+        } else {
+          next[rowId] = defaultState
+          changed = true
+        }
+      })
+
+      Object.keys(prev).forEach((rowId) => {
+        if (!defaultRowStateMap[rowId]) {
+          changed = true
+        }
+      })
+
+      if (!changed && Object.keys(prev).length === Object.keys(defaultRowStateMap).length) {
+        return prev
+      }
+
+      return next
+    })
+  }, [defaultRowStateMap])
+
+  const listRef = useRef<HTMLDivElement | null>(null)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportHeight, setViewportHeight] = useState(0)
+  const [rowHeights, setRowHeights] = useState<number[]>(() => new Array(sortedRows.length).fill(ESTIMATED_ROW_HEIGHT))
+
+  useEffect(() => {
+    setRowHeights(prev => {
+      if (prev.length === sortedRows.length) {
+        return prev
+      }
+      const next = new Array(sortedRows.length).fill(ESTIMATED_ROW_HEIGHT)
+      for (let i = 0; i < Math.min(prev.length, next.length); i++) {
+        next[i] = prev[i]
+      }
+      return next
+    })
+  }, [sortedRows.length])
+
+  const rowOffsets = useMemo(() => {
+    const offsets: number[] = new Array(rowHeights.length)
+    let accumulated = 0
+    for (let i = 0; i < rowHeights.length; i++) {
+      offsets[i] = accumulated
+      accumulated += rowHeights[i]
+    }
+    return offsets
+  }, [rowHeights])
+
+  const totalRowHeight = useMemo(() => {
+    return rowHeights.reduce((sum, height) => sum + height, 0)
+  }, [rowHeights])
+
+  useEffect(() => {
+    const element = listRef.current
+    if (!element) return
+
+    const handleScroll = () => {
+      setScrollTop(element.scrollTop)
+    }
+
+    handleScroll()
+    setViewportHeight(element.clientHeight)
+
+    element.addEventListener('scroll', handleScroll)
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.target === element) {
+          setViewportHeight(entry.contentRect.height)
+        }
+      }
+    })
+
+    resizeObserver.observe(element)
+
+    return () => {
+      element.removeEventListener('scroll', handleScroll)
+      resizeObserver.disconnect()
+    }
+  }, [sortedRows.length])
+
+  const findIndexForOffset = useCallback((offset: number) => {
+    if (rowOffsets.length === 0) return 0
+    if (offset <= 0) return 0
+
+    let low = 0
+    let high = rowOffsets.length - 1
+    let ans = 0
+
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2)
+      const value = rowOffsets[mid]
+
+      if (value === offset) {
+        return mid
+      }
+
+      if (value < offset) {
+        ans = mid
+        low = mid + 1
+      } else {
+        high = mid - 1
+      }
+    }
+
+    return Math.min(ans, rowOffsets.length - 1)
+  }, [rowOffsets])
+
+  const overscanCount = 3
+
+  const { startIndex, endIndex } = useMemo(() => {
+    const count = sortedRows.length
+    if (count === 0) {
+      return { startIndex: 0, endIndex: -1 }
+    }
+
+    const maxIndex = count - 1
+
+    if (viewportHeight === 0) {
+      return {
+        startIndex: 0,
+        endIndex: Math.min(maxIndex, overscanCount * 2)
+      }
+    }
+
+    const rawStart = Math.min(maxIndex, findIndexForOffset(scrollTop))
+    const rawEnd = Math.min(maxIndex, findIndexForOffset(scrollTop + viewportHeight))
+    const baseEnd = Math.max(rawEnd, rawStart)
+
+    return {
+      startIndex: Math.max(0, rawStart - overscanCount),
+      endIndex: Math.min(maxIndex, baseEnd + overscanCount)
+    }
+  }, [sortedRows.length, viewportHeight, findIndexForOffset, scrollTop])
+
+  const visibleIndexes = useMemo(() => {
+    if (endIndex < startIndex) {
+      return [] as number[]
+    }
+    const items: number[] = []
+    for (let i = startIndex; i <= endIndex; i++) {
+      items.push(i)
+    }
+    return items
+  }, [startIndex, endIndex])
+
+  const handleRowMeasure = useCallback((index: number, height: number) => {
+    setRowHeights(prev => {
+      if (prev[index] === height) {
+        return prev
+      }
+      const next = [...prev]
+      next[index] = height
+      return next
+    })
+  }, [])
   const [, setDeletedRowIds] = useState<Set<string>>(new Set())
   const fileInputRefs = useRef<Record<string, HTMLInputElement>>({})
   
@@ -162,6 +403,48 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       }))
     }
   }, [rows, model.default_prompt])
+
+  // Reset prompt back to the model default
+  const handleResetPrompt = useCallback(async (rowId: string) => {
+    const previousPrompt = getCurrentPrompt(rowId)
+    const defaultPrompt = model.default_prompt ?? ''
+
+    setLocalPrompts(prev => ({
+      ...prev,
+      [rowId]: defaultPrompt
+    }))
+
+    try {
+      await fetch(`/api/rows/${rowId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt_override: undefined })
+      })
+
+      setRows(prev => prev.map(row =>
+        row.id === rowId
+          ? { ...row, prompt_override: undefined }
+          : row
+      ))
+
+      toast({
+        title: 'Prompt reset',
+        description: 'Prompt restored to the model default.'
+      })
+    } catch (error) {
+      console.error('Failed to reset prompt:', error)
+      setLocalPrompts(prev => ({
+        ...prev,
+        [rowId]: previousPrompt
+      }))
+
+      toast({
+        title: 'Failed to reset prompt',
+        description: 'Please try again.',
+        variant: 'destructive'
+      })
+    }
+  }, [getCurrentPrompt, model.default_prompt, toast])
   
   // Helper function to get current favorite status (prioritizes UI state over data state)
   const getCurrentFavoriteStatus = (imageId: string, dataStatus?: boolean) => {
@@ -267,28 +550,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   })
 
   // Initialize row states
-  const getRowState = (rowId: string): RowState => {
-    if (!rowStates[rowId]) {
-      setRowStates(prev => ({
-        ...prev,
-        [rowId]: {
-          id: rowId,
-          isGenerating: false,
-          isGeneratingPrompt: false,
-          signedUrls: {},
-          isLoadingResults: false
-        }
-      }))
-      return {
-        id: rowId,
-        isGenerating: false,
-        isGeneratingPrompt: false,
-        signedUrls: {},
-        isLoadingResults: false
-      }
-    }
-    return rowStates[rowId]
-  }
+  const getRowState = useCallback((rowId: string): RowState => {
+    return rowStates[rowId] ?? defaultRowStateRef.current[rowId] ?? createDefaultRowState(rowId)
+  }, [rowStates, createDefaultRowState])
 
   // Function to get signed URL for an image path with caching
   const getImageUrl = useCallback(async (path: string, rowId?: string) => {
@@ -333,10 +597,13 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       console.error('Failed to get signed URL:', error)
       return ''
     }
-  }, [rowStates])
+  }, [getRowState])
 
   // Lazy load signed URLs only when images become visible
   useEffect(() => {
+    const root = listRef.current
+    if (!root) return
+
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
@@ -344,7 +611,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
             const img = entry.target as HTMLImageElement
             const path = img.dataset.imagePath
             const rowId = img.dataset.rowId
-            
+
             if (path && rowId) {
               getImageUrl(path, rowId).catch(() => {})
             }
@@ -352,19 +619,19 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         })
       },
       {
-        rootMargin: '50px', // Start loading 50px before image becomes visible
+        root,
+        rootMargin: '50px',
         threshold: 0.1
       }
     )
 
-    // Observe all image elements with data attributes
-    const imageElements = document.querySelectorAll('[data-image-path]')
+    const imageElements = root.querySelectorAll('[data-image-path]')
     imageElements.forEach((el) => observer.observe(el))
 
     return () => {
       observer.disconnect()
     }
-  }, [rows, getImageUrl])
+  }, [visibleIndexes, getImageUrl])
 
   // On mount: resume active jobs and setup realtime
   useEffect(() => {
@@ -599,6 +866,19 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       }))
     }
   }
+
+  const handleRemoveTargetImage = useCallback(async (rowId: string) => {
+    try {
+      await fetch(`/api/rows/${rowId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_image_url: '' })
+      })
+      refreshRowData()
+    } catch (error) {
+      console.error('Failed to remove target image', error)
+    }
+  }, [refreshRowData])
 
   // Handle drag and drop for target images
   const handleTargetDragOver = (e: React.DragEvent, rowId: string) => {
@@ -1409,6 +1689,15 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     }
   }, [rows, getRowState, setRowStates, toast, createJobs, startPolling])
 
+  const handleRegenerate = useCallback(async (rowId: string) => {
+    const rowState = getRowState(rowId)
+    if (rowState.isGenerating || rowState.isGeneratingPrompt) {
+      return
+    }
+
+    await handleGenerate(rowId)
+  }, [getRowState, handleGenerate])
+
   // Remove row
   const handleRemoveRow = useCallback(async (rowId: string) => {
     try {
@@ -1541,6 +1830,22 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       return newSet
     })
   }
+
+  const handleShowMoreResults = useCallback((rowId: string) => {
+    setRowStates(prev => {
+      const current = prev[rowId] ?? defaultRowStateRef.current[rowId] ?? createDefaultRowState(rowId)
+      const nextLimit = (current.visibleImageLimit ?? INITIAL_VISIBLE_RESULTS) + VISIBLE_RESULTS_STEP
+
+      return {
+        ...prev,
+        [rowId]: {
+          ...current,
+          visibleImageLimit: nextLimit,
+          signedUrls: current.signedUrls || {}
+        }
+      }
+    })
+  }, [createDefaultRowState])
 
   const handleDownloadSelected = async () => {
     if (selectedImageIds.size === 0) {
@@ -1816,819 +2121,778 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         </Button>
       </div>
 
-      {/* Rows Table */}
+      {/* Rows List */}
       <Card className={`transition-all duration-200 ${
         isGlobalDragActive ? 'ring-2 ring-primary ring-offset-2 bg-primary/5' : ''
       }`}>
         <CardContent className="p-0">
-          <div 
+          <div
             className="overflow-x-auto"
             onDragOver={handleTableDragOver}
             onDragLeave={handleTableDragLeave}
           >
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-20 align-top">Ref</TableHead>
-                  <TableHead className="w-24 align-top">
-                    <div className="flex flex-col gap-1">
-                      <span>Target</span>
-                      {isGlobalDragActive && (
-                        <span className="text-xs text-primary font-medium">
-                          Drop on target area
-                        </span>
-                      )}
-                    </div>
-                  </TableHead>
-                  <TableHead className="w-[16rem] md:w-[18rem] lg:w-[20rem] xl:w-[22rem] shrink-0 align-top">Prompt</TableHead>
-                  
-                  <TableHead className="w-28 align-top">Generate</TableHead>
-                  <TableHead className="w-20 align-top">Status</TableHead>
-                  <TableHead className="w-full align-top">
-                    <div className="flex items-center justify-between w-full">
-                      <span className={`flex-shrink-0 ${isSelectionMode ? 'text-blue-600 font-medium' : ''}`}>
-                        {isSelectionMode ? 'Select Images' : 'Results'}
+            <div className="min-w-[1120px]">
+              <div
+                className="grid items-start gap-4 px-4 py-3 border-b bg-muted/40 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                style={{ gridTemplateColumns: ROW_GRID_TEMPLATE }}
+                role="row"
+              >
+                <div>Ref</div>
+                <div>
+                  <div className="flex flex-col gap-1">
+                    <span>Target</span>
+                    {isGlobalDragActive && (
+                      <span className="text-xs text-primary font-medium">
+                        Drop on target area
                       </span>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        {!isSelectionMode ? (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setIsSelectionMode(true)
-                              setSelectedImageIds(new Set())
-                            }}
-                            className="h-6 px-2 text-xs whitespace-nowrap"
-                          >
-                            <Check className="w-3 h-3 mr-1" />
-                            Select
-                          </Button>
-                        ) : (
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <div className="flex items-center gap-1">
-                              <Checkbox
-                                checked={selectedImageIds.size > 0}
-                                onCheckedChange={handleSelectAll}
-                                className="h-3 w-3"
-                              />
-                              <span className="text-xs text-muted-foreground whitespace-nowrap">
-                                {selectedImageIds.size > 0 ? `${selectedImageIds.size} selected` : 'Select All'}
-                              </span>
-                            </div>
-                            {selectedImageIds.size > 0 && (
-                              <>
-                                <Button
-                                  variant="default"
-                                  size="sm"
-                                  onClick={handleDownloadSelected}
-                                  disabled={isDownloading || isDeleting}
-                                  className="h-6 px-2 text-xs whitespace-nowrap"
-                                >
-                                  {isDownloading ? (
-                                    <>
-                                      <Spinner size="sm" />
-                                      <span className="ml-1">Downloading...</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Download className="w-3 h-3 mr-1" />
-                                      Download
-                                    </>
-                                  )}
-                                </Button>
-                                <Button
-                                  variant="destructive"
-                                  size="sm"
-                                  onClick={() => setDeleteDialogOpen(true)}
-                                  disabled={isDownloading || isDeleting}
-                                  className="h-6 px-2 text-xs whitespace-nowrap"
-                                >
-                                  {isDeleting ? (
-                                    <>
-                                      <Spinner size="sm" />
-                                      <span className="ml-1">Deleting...</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Trash2 className="w-3 h-3 mr-1" />
-                                      Delete
-                                    </>
-                                  )}
-                                </Button>
-                              </>
-                            )}
+                    )}
+                  </div>
+                </div>
+                <div>Prompt</div>
+                <div>Generate</div>
+                <div>Status</div>
+                <div className="flex items-center justify-between w-full">
+                  <span className={`flex-shrink-0 ${isSelectionMode ? 'text-blue-600 font-medium' : ''}`}>
+                    {isSelectionMode ? 'Select Images' : 'Results'}
+                  </span>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {!isSelectionMode ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setIsSelectionMode(true)
+                          setSelectedImageIds(new Set())
+                        }}
+                        className="h-6 px-2 text-xs whitespace-nowrap"
+                      >
+                        <Check className="w-3 h-3 mr-1" />
+                        Select
+                      </Button>
+                    ) : (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <div className="flex items-center gap-1">
+                          <Checkbox
+                            checked={selectedImageIds.size > 0}
+                            onCheckedChange={handleSelectAll}
+                            className="h-3 w-3"
+                          />
+                          <span className="text-xs text-muted-foreground whitespace-nowrap">
+                            {selectedImageIds.size > 0 ? `${selectedImageIds.size} selected` : 'Select All'}
+                          </span>
+                        </div>
+                        {selectedImageIds.size > 0 && (
+                          <>
                             <Button
-                              variant="outline"
+                              variant="default"
                               size="sm"
-                              onClick={() => {
-                                setIsSelectionMode(false)
-                                setSelectedImageIds(new Set())
-                              }}
+                              onClick={handleDownloadSelected}
+                              disabled={isDownloading || isDeleting}
                               className="h-6 px-2 text-xs whitespace-nowrap"
                             >
-                              Cancel
+                              {isDownloading ? (
+                                <>
+                                  <Spinner size="sm" />
+                                  <span className="ml-1">Downloading...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Download className="w-3 h-3 mr-1" />
+                                  Download
+                                </>
+                              )}
                             </Button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </TableHead>
-                  <TableHead className="w-16 align-top">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {sortedRows.map((row) => {
-                  // Handle skeleton rows with loading state
-                  if ((row as any).isSkeleton) {
-                    return (
-                      <TableRow key={row.id} className="opacity-60">
-                        <TableCell className="align-top">
-                          <div className="space-y-2">
-                            <div className="w-16 h-16 bg-gray-200 rounded animate-pulse"></div>
-                          </div>
-                        </TableCell>
-                        <TableCell className="align-top">
-                          <div className="space-y-2">
-                            <div className="w-16 h-16 bg-gray-200 rounded animate-pulse"></div>
-                          </div>
-                        </TableCell>
-                        <TableCell className="align-top">
-                          <div className="space-y-2">
-                            <div className="h-4 bg-gray-200 rounded animate-pulse w-3/4"></div>
-                            <div className="h-3 bg-gray-200 rounded animate-pulse w-1/2"></div>
-                          </div>
-                        </TableCell>
-                        <TableCell className="align-top">
-                          <div className="space-y-2">
-                            <div className="h-4 bg-gray-200 rounded animate-pulse w-1/4"></div>
-                            <div className="h-2 bg-gray-200 rounded animate-pulse w-full"></div>
-                          </div>
-                        </TableCell>
-                        <TableCell className="align-top">
-                          <div className="space-y-2">
-                            <div className="h-4 bg-gray-200 rounded animate-pulse w-1/3"></div>
-                          </div>
-                        </TableCell>
-                        <TableCell className="align-top">
-                          <div className="flex items-center gap-2">
-                            <Spinner size="sm" />
-                            <span className="text-sm text-muted-foreground">Creating...</span>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    )
-                  }
-
-                  const rowState = getRowState(row.id)
-                  const images = (row as any).generated_images || []
-                  const displayStatus = getLiveStatusForRow(row.id, row.status)
-                  const displayProgress = statusToProgress(displayStatus)
-                  const live = Object.values(pollingState).find(s => s.rowId === row.id && s.polling)
-                  
-                  
-                  return (
-                    <TableRow key={row.id} aria-busy={isActiveStatus(displayStatus)}>
-                      {/* 1. Reference Image */}
-                      <TableCell className="align-top">
-                        <div className="space-y-2">
-                          {/* Display reference images */}
-                          <div className="flex flex-wrap gap-2">
-                            {row.ref_image_urls && row.ref_image_urls.length > 0 ? (
-                              row.ref_image_urls.map((refUrl, index) => (
-                                <Dialog key={index}>
-                                  <div className="relative group">
-                                    <DialogTrigger asChild>
-                                      <div className="cursor-zoom-in">
-                                        <Thumb
-                                          src={rowState.signedUrls[refUrl]}
-                                          alt={`Reference image ${index + 1}`}
-                                          size={64}
-                                          dataImagePath={refUrl}
-                                          dataRowId={row.id}
-                                          className="transition-transform group-hover:scale-[1.02]"
-                                        />
-                                      </div>
-                                    </DialogTrigger>
-                                    <DialogContent className="max-w-4xl">
-                                      <DialogHeader>
-                                        <DialogTitle>Reference Image {index + 1}</DialogTitle>
-                                      </DialogHeader>
-                                      <div className="flex justify-center">
-                                        <Image
-                                          src={rowState.signedUrls[refUrl] || ''}
-                                          alt={`Reference image ${index + 1}`}
-                                          width={1600}
-                                          height={1600}
-                                          className="max-w-full max-h-[80vh] object-contain rounded-lg"
-                                          loading="lazy"
-                                        />
-                                      </div>
-                                    </DialogContent>
-                                  </div>
-                                </Dialog>
-                              ))
-                            ) : (row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url ? (
-                              <Dialog>
-                                <div className="relative group">
-                                  <DialogTrigger asChild>
-                                    <div className="cursor-zoom-in">
-                                      <Thumb
-                                        src={rowState.signedUrls[model.default_ref_headshot_url]}
-                                        alt="Default reference image"
-                                        size={64}
-                                        dataImagePath={model.default_ref_headshot_url}
-                                        dataRowId={row.id}
-                                        className="transition-transform group-hover:scale-[1.02]"
-                                      />
-                                    </div>
-                                  </DialogTrigger>
-                                </div>
-                                <DialogContent className="max-w-4xl">
-                                  <DialogHeader>
-                                    <DialogTitle>Default Reference Image</DialogTitle>
-                                  </DialogHeader>
-                                  <div className="flex justify-center">
-                                    <Image
-                                      src={rowState.signedUrls[model.default_ref_headshot_url] || ''}
-                                      alt="Default reference image"
-                                      width={1600}
-                                      height={1600}
-                                      className="max-w-full max-h-[80vh] object-contain rounded-lg"
-                                      loading="lazy"
-                                    />
-                                  </div>
-                                </DialogContent>
-                              </Dialog>
-                            ) : (
-                              <div className="w-16 h-16 border-2 border-dashed border-gray-300 rounded flex items-center justify-center text-gray-400 text-xs">
-                                No ref
-                              </div>
-                            )}
-                          </div>
-                          
-                          {/* Upload button */}
-                          <div className="flex gap-1">
-                            <input
-                              ref={(el) => { if (el) fileInputRefs.current[`ref-${row.id}`] = el }}
-                              type="file"
-                              accept="image/*"
-                              multiple
-                              onChange={async (e) => {
-                                const files = Array.from(e.target.files || [])
-                                if (files.length === 0) return
-                                
-                                try {
-                                  const { data: { user } } = await supabase.auth.getUser()
-                                  if (!user) throw new Error('Not authenticated')
-                                  
-                                  // Use retry logic for reference image uploads
-                                  const uploadPromises = files.map(file => {
-                                    validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 10)
-                                    return retryWithBackoff(async () => {
-                                      await refreshAuth()
-                                      return uploadImage(file, 'refs', user.id)
-                                    }, 3, 1000)
-                                  })
-                                  
-                                  const results = await Promise.all(uploadPromises)
-                                  const newRefs = [...(row.ref_image_urls || []), ...results.map(r => r.objectPath)]
-                                  
-                                  // Update row with retry logic
-                                  await retryWithBackoff(async () => {
-                                    const response = await fetch(`/api/rows/${row.id}`, {
-                                      method: 'PATCH',
-                                      headers: { 
-                                        'Content-Type': 'application/json',
-                                        'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
-                                      },
-                                      body: JSON.stringify({ ref_image_urls: newRefs })
-                                    })
-                                    
-                                    if (!response.ok) {
-                                      const errorText = await response.text()
-                                      throw new Error(`Failed to update row: ${response.status} ${errorText}`)
-                                    }
-                                  }, 3, 1000)
-                                  
-                                  refreshRowData()
-                                  toast({ title: `Added ${files.length} reference image${files.length === 1 ? '' : 's'}` })
-                                } catch (err) {
-                                  toast({ title: 'Ref upload failed', description: err instanceof Error ? err.message : 'Error', variant: 'destructive' })
-                                } finally {
-                                  // Clear the input using the ref to avoid null reference error
-                                  const input = fileInputRefs.current[`ref-${row.id}`]
-                                  if (input) {
-                                    input.value = ''
-                                  }
-                                }
-                              }}
-                              className="hidden"
-                            />
                             <Button
+                              variant="destructive"
                               size="sm"
-                              variant="outline"
-                              onClick={() => fileInputRefs.current[`ref-${row.id}`]?.click()}
-                              className="text-xs h-8 px-3 w-auto bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700 hover:text-slate-800 transition-colors duration-200"
+                              onClick={() => setDeleteDialogOpen(true)}
+                              disabled={isDownloading || isDeleting}
+                              className="h-6 px-2 text-xs whitespace-nowrap"
                             >
-                              <Plus className="w-3 h-3 mr-1.5" />
-                              Add Ref
+                              {isDeleting ? (
+                                <>
+                                  <Spinner size="sm" />
+                                  <span className="ml-1">Deleting...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Trash2 className="w-3 h-3 mr-1" />
+                                  Delete
+                                </>
+                              )}
                             </Button>
-                            {row.ref_image_urls && row.ref_image_urls.length > 0 && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={async () => {
-                                  await fetch(`/api/rows/${row.id}`, {
-                                    method: 'PATCH',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ ref_image_urls: [] })
-                                  })
-                                  refreshRowData()
-                                }}
-                                className="text-xs h-6 px-2 bg-orange-100 hover:bg-orange-200 border-orange-300 text-orange-700 hover:text-orange-800 transition-colors duration-200"
-                              >
-                                <X className="w-3 h-3 mr-1" />
-                                Clear All
-                              </Button>
-                            )}
-                          </div>
-                          
-                          {/* Remove buttons for reference images */}
-                          {((row.ref_image_urls && row.ref_image_urls.length > 0) || (row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url) && (
-                            <div className="flex flex-wrap gap-1 mt-2">
-                              {/* Remove buttons for row-specific reference images */}
-                              {row.ref_image_urls && row.ref_image_urls.length > 0 && 
-                                row.ref_image_urls.map((refUrl, index) => (
-                                   <Button
-                                     key={`remove-${index}`}
-                                     size="sm"
-                                     variant="destructive"
-                                     onClick={async () => {
-                                       const newRefs = row.ref_image_urls?.filter((_, i) => i !== index) || []
-                                       await fetch(`/api/rows/${row.id}`, {
-                                         method: 'PATCH',
-                                         headers: { 'Content-Type': 'application/json' },
-                                         body: JSON.stringify({ ref_image_urls: newRefs })
-                                       })
-                                       refreshRowData()
-                                     }}
-                                     className="text-xs h-6 px-2 bg-red-500 hover:bg-red-600 text-white border-red-500 hover:border-red-600 transition-colors duration-200 shadow-sm"
-                                     title={`Remove reference image ${index + 1}`}
-                                   >
-                                     <X className="w-3 h-3 mr-1" />
-                                     Remove {index + 1}
-                                   </Button>
-                                ))
-                              }
-                              
-                               {/* Remove button for default reference image (only show when ref_image_urls is null/undefined, not when it's explicitly empty []) */}
-                               {(row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url && (
-                                 <Button
-                                   size="sm"
-                                   variant="destructive"
-                                   onClick={async () => {
-                                     // Set ref_image_urls to empty array to disable default ref
-                                     await fetch(`/api/rows/${row.id}`, {
-                                       method: 'PATCH',
-                                       headers: { 'Content-Type': 'application/json' },
-                                       body: JSON.stringify({ ref_image_urls: [] })
-                                     })
-                                     refreshRowData()
-                                   }}
-                                   className="text-xs px-3 w-auto h-8 flex flex-col items-center justify-center leading-none bg-red-500 hover:bg-red-600 text-white border-red-500 hover:border-red-600 transition-colors duration-200 shadow-sm"
-                                   title="Remove default reference image"
-                                 >
-                                   <div className="flex items-center">
-                                     <X className="w-3 h-3 mr-1.5" />
-                                     Remove
-                                   </div>
-                                   <div>Default</div>
-                                 </Button>
-                               )}
-                            </div>
-                          )}
-                        </div>
-                      </TableCell>
-                      
-                      {/* 2. Target Image (Enhanced Drag & Drop) */}
-                      <TableCell className="align-top">
-                        <div
-                          className={`relative group transition-all duration-200 ${
-                            dragOverRowId === row.id 
-                              ? 'scale-105 shadow-lg' 
-                              : ''
-                          }`}
-                          onDragOver={(e) => handleTargetDragOver(e, row.id)}
-                          onDragLeave={(e) => handleTargetDragLeave(e, row.id)}
-                          onDrop={(e) => handleTargetDrop(e, row.id)}
+                          </>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setIsSelectionMode(false)
+                            setSelectedImageIds(new Set())
+                          }}
+                          className="h-6 px-2 text-xs whitespace-nowrap"
                         >
-                          {row.target_image_url ? (
-                            <Dialog>
-                              <div className="relative group">
-                                <DialogTrigger asChild>
-                                  <div className="cursor-zoom-in">
-                                    <Thumb
-                                      src={rowState.signedUrls[row.target_image_url]}
-                                      alt="Target image"
-                                      size={88}
-                                      dataImagePath={row.target_image_url}
-                                      dataRowId={row.id}
-                                      className={`transition-all duration-200 ${
-                                        dragOverRowId === row.id 
-                                          ? 'ring-2 ring-primary ring-offset-2' 
-                                          : rowState.isUploadingTarget
-                                          ? 'opacity-50'
-                                          : 'group-hover:scale-[1.02]'
-                                      }`}
-                                    />
+                          Cancel
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div>Actions</div>
+              </div>
+
+              <div
+                ref={listRef}
+                className="relative max-h-[70vh] overflow-auto"
+              >
+                <div className="relative" style={{ height: totalRowHeight || (sortedRows.length * ESTIMATED_ROW_HEIGHT) }}>
+                  {visibleIndexes.length === 0 && sortedRows.length === 0 ? (
+                    <div className="px-4 py-6 text-sm text-muted-foreground">
+                      No rows to display.
+                    </div>
+                  ) : (
+                    visibleIndexes.map((index) => {
+                      const row = sortedRows[index]
+                      const offset = rowOffsets[index] ?? index * ESTIMATED_ROW_HEIGHT
+
+                      if (!row) {
+                        return (
+                          <VirtualRowWrapper
+                            key={`placeholder-${index}`}
+                            index={index}
+                            offset={offset}
+                            onMeasure={handleRowMeasure}
+                            rowId={`placeholder-${index}`}
+                          >
+                            <div className="px-4 py-6 border-b bg-muted/40 text-sm text-muted-foreground">
+                              Loading row…
+                            </div>
+                          </VirtualRowWrapper>
+                        )
+                      }
+
+                      if ((row as any).isSkeleton) {
+                        return (
+                          <VirtualRowWrapper
+                            key={row.id}
+                            index={index}
+                            offset={offset}
+                            onMeasure={handleRowMeasure}
+                            rowId={row.id}
+                          >
+                            <div
+                              className="grid gap-4 px-4 py-4 border-b text-muted-foreground"
+                              style={{ gridTemplateColumns: ROW_GRID_TEMPLATE }}
+                            >
+                              <div className="space-y-2">
+                                <div className="w-16 h-16 bg-gray-200 rounded animate-pulse"></div>
+                              </div>
+                              <div className="space-y-2">
+                                <div className="w-16 h-16 bg-gray-200 rounded animate-pulse"></div>
+                              </div>
+                              <div className="space-y-2">
+                                <div className="h-4 bg-gray-200 rounded animate-pulse w-3/4"></div>
+                                <div className="h-3 bg-gray-200 rounded animate-pulse w-1/2"></div>
+                              </div>
+                              <div className="space-y-2">
+                                <div className="h-4 bg-gray-200 rounded animate-pulse w-1/4"></div>
+                                <div className="h-2 bg-gray-200 rounded animate-pulse w-full"></div>
+                              </div>
+                              <div className="space-y-2">
+                                <div className="h-4 bg-gray-200 rounded animate-pulse w-1/3"></div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Spinner size="sm" />
+                                <span className="text-sm text-muted-foreground">Creating...</span>
+                              </div>
+                              <div />
+                            </div>
+                          </VirtualRowWrapper>
+                        )
+                      }
+
+                      const rowState = getRowState(row.id)
+                      const images = (row as any).generated_images || []
+                      const visibleLimit = rowState.visibleImageLimit ?? INITIAL_VISIBLE_RESULTS
+                      const visibleImages = images.slice(0, visibleLimit)
+                      const hasMoreImages = images.length > visibleLimit
+                      const displayStatus = getLiveStatusForRow(row.id, row.status)
+                      const displayProgress = statusToProgress(displayStatus)
+                      const live = Object.values(pollingState).find(s => s.rowId === row.id && s.polling)
+
+                      return (
+                        <VirtualRowWrapper
+                          key={row.id}
+                          index={index}
+                          offset={offset}
+                          onMeasure={handleRowMeasure}
+                          rowId={row.id}
+                        >
+                          <div
+                            className="grid gap-4 px-4 py-4 border-b"
+                            style={{ gridTemplateColumns: ROW_GRID_TEMPLATE }}
+                          >
+                            {/* 1. Reference Image */}
+                            <div className="space-y-2">
+                              <div className="flex flex-wrap gap-2">
+                                {row.ref_image_urls && row.ref_image_urls.length > 0 ? (
+                                  row.ref_image_urls.map((refUrl, index) => (
+                                    <Dialog key={index}>
+                                      <div className="relative group">
+                                        <DialogTrigger asChild>
+                                          <div className="cursor-zoom-in">
+                                            <Thumb
+                                              src={rowState.signedUrls[refUrl]}
+                                              alt={`Reference image ${index + 1}`}
+                                              size={64}
+                                              dataImagePath={refUrl}
+                                              dataRowId={row.id}
+                                              className="transition-transform group-hover:scale-[1.02]"
+                                            />
+                                          </div>
+                                        </DialogTrigger>
+                                        <DialogContent className="max-w-4xl">
+                                          <DialogHeader>
+                                            <DialogTitle>Reference Image {index + 1}</DialogTitle>
+                                          </DialogHeader>
+                                          <div className="flex justify-center">
+                                            <Image
+                                              src={rowState.signedUrls[refUrl] || ''}
+                                              alt={`Reference image ${index + 1}`}
+                                              width={1600}
+                                              height={1600}
+                                              className="max-w-full max-h-[80vh] object-contain rounded-lg"
+                                              loading="lazy"
+                                            />
+                                          </div>
+                                        </DialogContent>
+                                      </div>
+                                    </Dialog>
+                                  ))
+                                ) : model.default_ref_headshot_url ? (
+                                  <Dialog>
+                                    <div className="relative group">
+                                      <DialogTrigger asChild>
+                                        <div className="cursor-zoom-in">
+                                          <Thumb
+                                            src={rowState.signedUrls[model.default_ref_headshot_url]}
+                                            alt="Default reference image"
+                                            size={64}
+                                            dataImagePath={model.default_ref_headshot_url}
+                                            dataRowId={row.id}
+                                            className="transition-transform group-hover:scale-[1.02]"
+                                          />
+                                        </div>
+                                      </DialogTrigger>
+                                      <DialogContent className="max-w-4xl">
+                                        <DialogHeader>
+                                          <DialogTitle>Default Reference Image</DialogTitle>
+                                        </DialogHeader>
+                                        <div className="flex justify-center">
+                                          <Image
+                                            src={rowState.signedUrls[model.default_ref_headshot_url] || ''}
+                                            alt="Default reference image"
+                                            width={1600}
+                                            height={1600}
+                                            className="max-w-full max-h-[80vh] object-contain rounded-lg"
+                                            loading="lazy"
+                                          />
+                                        </div>
+                                      </DialogContent>
+                                    </div>
+                                  </Dialog>
+                                ) : (
+                                  <div className="w-16 h-16 border-2 border-dashed border-gray-300 rounded flex items-center justify-center text-gray-400 text-xs">
+                                    No ref
                                   </div>
-                                </DialogTrigger>
-                                <div className="absolute inset-0 hidden group-hover:flex items-center justify-center bg-black/40 rounded">
-                                  <button
-                                    className="text-white text-[10px] px-1 py-0.5 bg-white/20 rounded"
-                                    onClick={async (e) => {
-                                      e.stopPropagation()
+                                )}
+                              </div>
+
+                              <div className="flex gap-1">
+                                <input
+                                  ref={(el) => { if (el) fileInputRefs.current[`ref-${row.id}`] = el }}
+                                  type="file"
+                                  accept="image/*"
+                                  multiple
+                                  onChange={async (e) => {
+                                    const files = Array.from(e.target.files || [])
+                                    if (files.length === 0) return
+
+                                    try {
+                                      const { data: { user } } = await supabase.auth.getUser()
+                                      if (!user) throw new Error('Not authenticated')
+
+                                      const uploadPromises = files.map(file => {
+                                        validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 10)
+                                        return retryWithBackoff(async () => {
+                                          await refreshAuth()
+                                          return uploadImage(file, 'refs', user.id)
+                                        }, 3, 1000)
+                                      })
+
+                                      const results = await Promise.all(uploadPromises)
+                                      const newRefs = [...(row.ref_image_urls || []), ...results.map(r => r.objectPath)]
+
+                                      await retryWithBackoff(async () => {
+                                        const response = await fetch(`/api/rows/${row.id}`, {
+                                          method: 'PATCH',
+                                          headers: {
+                                            'Content-Type': 'application/json',
+                                            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token || ''}`
+                                          },
+                                          body: JSON.stringify({ ref_image_urls: newRefs })
+                                        })
+
+                                        if (!response.ok) {
+                                          const errorText = await response.text()
+                                          throw new Error(`Failed to update row: ${response.status} ${errorText}`)
+                                        }
+                                      }, 3, 1000)
+
+                                      refreshRowData()
+                                      toast({ title: `Added ${files.length} reference image${files.length === 1 ? '' : 's'}` })
+                                    } catch (err) {
+                                      toast({ title: 'Ref upload failed', description: err instanceof Error ? err.message : 'Error', variant: 'destructive' })
+                                    } finally {
+                                      const input = fileInputRefs.current[`ref-${row.id}`]
+                                      if (input) {
+                                        input.value = ''
+                                      }
+                                    }
+                                  }}
+                                  className="hidden"
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => fileInputRefs.current[`ref-${row.id}`]?.click()}
+                                  className="text-xs h-8 px-3 w-auto bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700 hover:text-slate-800 transition-colors duration-200"
+                                >
+                                  <Plus className="w-3 h-3 mr-1.5" />
+                                  Add Ref
+                                </Button>
+                                {row.ref_image_urls && row.ref_image_urls.length > 0 && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={async () => {
                                       await fetch(`/api/rows/${row.id}`, {
                                         method: 'PATCH',
                                         headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ target_image_url: '' })
+                                        body: JSON.stringify({ ref_image_urls: [] })
                                       })
                                       refreshRowData()
                                     }}
+                                    className="text-xs h-6 px-2 bg-orange-100 hover:bg-orange-200 border-orange-300 text-orange-700 hover:text-orange-800 transition-colors duration-200"
                                   >
-                                    Remove
-                                  </button>
-                                </div>
-                                <DialogContent className="max-w-4xl">
-                                  <DialogHeader>
-                                    <DialogTitle>Target Image</DialogTitle>
-                                  </DialogHeader>
-                                  <div className="flex justify-center">
-                                    <Image
-                                      src={rowState.signedUrls[row.target_image_url] || ''}
-                                      alt="Target image"
-                                      width={1600}
-                                      height={1600}
-                                      className="max-w-full max-h-[80vh] object-contain rounded-lg"
-                                      loading="lazy"
-                                    />
-                                  </div>
-                                </DialogContent>
+                                    <X className="w-3 h-3 mr-1" />
+                                    Clear All
+                                  </Button>
+                                )}
                               </div>
-                            </Dialog>
-                          ) : (
-                            <div 
-                              className={`relative flex h-22 w-22 items-center justify-center rounded-2xl border-2 border-dashed transition-all duration-200 ${
-                                dragOverRowId === row.id
-                                  ? 'border-primary bg-primary/10 text-primary scale-105 shadow-lg'
-                                  : rowState.isUploadingTarget
-                                  ? 'border-blue-500 bg-blue-50 text-blue-600'
-                                  : 'border-muted-foreground/25 bg-muted text-muted-foreground hover:border-muted-foreground/50'
-                              }`}
-                              onClick={() => !rowState.isUploadingTarget && fileInputRefs.current[row.id]?.click()}
-                            >
-                              {rowState.isUploadingTarget ? (
-                                <div className="flex flex-col items-center gap-1">
-                                  <Spinner size="sm" />
-                                  <span className="text-xs font-medium">Uploading...</span>
-                                </div>
-                              ) : dragOverRowId === row.id ? (
-                                <div className="flex flex-col items-center gap-1">
-                                  <Upload className="h-6 w-6 animate-bounce" />
-                                  <span className="text-xs font-medium">Drop image</span>
-                                </div>
-                              ) : (
-                                <div className="flex flex-col items-center gap-1">
-                                  <Upload className="h-5 w-5" />
-                                  <span className="text-xs">Drop or click</span>
+
+                              {((row.ref_image_urls && row.ref_image_urls.length > 0) || (row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url) && (
+                                <div className="flex flex-wrap gap-1 mt-2">
+                                  {row.ref_image_urls && row.ref_image_urls.length > 0 &&
+                                    row.ref_image_urls.map((refUrl, index) => (
+                                      <Button
+                                        key={`remove-${index}`}
+                                        size="sm"
+                                        variant="destructive"
+                                        onClick={async () => {
+                                          const newRefs = row.ref_image_urls?.filter((_, i) => i !== index) || []
+                                          await fetch(`/api/rows/${row.id}`, {
+                                            method: 'PATCH',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ ref_image_urls: newRefs })
+                                          })
+                                          refreshRowData()
+                                        }}
+                                        className="text-xs h-6 px-2 bg-red-500 hover:bg-red-600 text-white border-red-500 hover:border-red-600 transition-colors duration-200 shadow-sm"
+                                        title={`Remove reference image ${index + 1}`}
+                                      >
+                                        <X className="w-3 h-3 mr-1" />
+                                        Remove {index + 1}
+                                      </Button>
+                                    ))
+                                  }
+
+                                  {(row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url && (
+                                    <Button
+                                      size="sm"
+                                      variant="destructive"
+                                      onClick={async () => {
+                                        await fetch(`/api/rows/${row.id}`, {
+                                          method: 'PATCH',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ ref_image_urls: [] })
+                                        })
+                                        refreshRowData()
+                                      }}
+                                      className="text-xs px-3 w-auto h-8 flex flex-col items-center justify-center leading-none bg-red-500 hover:bg-red-600 text-white border-red-500 hover:border-red-600 transition-colors duration-200 shadow-sm"
+                                      title="Remove default reference image"
+                                    >
+                                      <div className="flex items-center">
+                                        <X className="w-3 h-3 mr-1.5" />
+                                        Remove
+                                      </div>
+                                      <div>Default</div>
+                                    </Button>
+                                  )}
                                 </div>
                               )}
                             </div>
-                          )}
-                          
-                          {/* Drag overlay for existing images */}
-                          {row.target_image_url && dragOverRowId === row.id && (
-                            <div className="absolute inset-0 bg-primary/20 border-2 border-primary border-dashed rounded-lg flex items-center justify-center z-10">
-                              <div className="bg-primary text-primary-foreground px-3 py-1 rounded-full text-xs font-medium">
-                                Drop to replace
-                              </div>
-                            </div>
-                          )}
-                          
-                          {/* Upload loading overlay for existing images */}
-                          {row.target_image_url && rowState.isUploadingTarget && (
-                            <div className="absolute inset-0 bg-black/40 rounded-lg flex items-center justify-center z-10">
-                              <div className="bg-white text-black px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2">
-                                <Spinner size="sm" />
-                                Replacing...
-                              </div>
-                            </div>
-                          )}
-                          
-                          <input
-                            ref={(el) => {
-                              if (el) fileInputRefs.current[row.id] = el
-                            }}
-                            type="file"
-                            accept="image/*"
-                            onChange={(e) => {
-                              const file = e.target.files?.[0]
-                              if (file) handleTargetImageUpload(file, row.id)
-                            }}
-                            className="hidden"
-                          />
-                        </div>
-                      </TableCell>
-                      
-                      {/* 3. Prompt Editor */}
-                      <TableCell className="align-top">
-                        <Dialog>
-                          <div className="flex flex-col gap-1">
-                            <Textarea
-                              value={getCurrentPrompt(row.id)}
-                              placeholder="Enter prompt..."
-                              className="min-h-[80px] md:min-h-[88px] resize-y bg-muted/60 w-[16rem] md:w-[18rem] lg:w-[20rem] xl:w-[22rem] select-text shrink-0"
-                              onChange={(e) => handlePromptChange(row.id, e.target.value)}
-                              onBlur={(e) => handlePromptBlur(row.id, e.target.value)}
-                              onKeyDown={(e) => {
-                                if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                                  const target = e.target as HTMLTextAreaElement
-                                  handlePromptBlur(row.id, target.value)
-                                  handleGenerate(row.id)
-                                }
-                              }}
-                            />
-                            <div className="flex gap-1">
-                              <DialogTrigger asChild>
-                                <Button variant="soft" size="sm">Expand</Button>
-                              </DialogTrigger>
-                              <Button 
-                                variant="outline" 
-                                size="sm"
-                                onClick={() => handleAiPromptGeneration(row.id)}
-                                disabled={rowState.isGeneratingPrompt || !hasValidImages(row)}
-                                title="Generate AI prompt from images"
+
+                            {/* 2. Target Image */}
+                            <div className="space-y-2">
+                              <div
+                                className={`relative group transition-all duration-200 ${
+                                  dragOverRowId === row.id
+                                    ? 'scale-105 shadow-lg'
+                                    : ''
+                                }`}
+                                onDragOver={(e) => handleTargetDragOver(e, row.id)}
+                                onDragLeave={(e) => handleTargetDragLeave(e, row.id)}
+                                onDrop={(e) => handleTargetDrop(e, row.id)}
                               >
-                                {rowState.isGeneratingPrompt ? (
-                                  <Spinner size="sm" />
-                                ) : (
-                                  <Wand2 className="w-3.5 h-3.5" />
+                                <input
+                                  ref={(el) => { if (el) fileInputRefs.current[`target-${row.id}`] = el }}
+                                  type="file"
+                                  accept="image/*"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0]
+                                    if (file) handleTargetImageUpload(file, row.id)
+                                  }}
+                                />
+                                <div
+                                  className={`relative flex items-center justify-center w-24 h-24 rounded-xl border-2 border-dashed ${
+                                    dragOverRowId === row.id
+                                      ? 'border-primary bg-primary/10'
+                                      : 'border-muted'
+                                  } bg-muted/40`}
+                                >
+                                  {row.target_image_url ? (
+                                    <Dialog>
+                                      <div className="relative group">
+                                        <DialogTrigger asChild>
+                                          <div className="cursor-zoom-in">
+                                            <Thumb
+                                              src={rowState.signedUrls[row.target_image_url]}
+                                              alt="Target image"
+                                              size={96}
+                                              dataImagePath={row.target_image_url}
+                                              dataRowId={row.id}
+                                              className="rounded-lg"
+                                            />
+                                          </div>
+                                        </DialogTrigger>
+                                        <DialogContent className="max-w-4xl">
+                                          <DialogHeader>
+                                            <DialogTitle>Target Image</DialogTitle>
+                                          </DialogHeader>
+                                          <div className="flex justify-center">
+                                            <Image
+                                              src={rowState.signedUrls[row.target_image_url] || ''}
+                                              alt="Target image"
+                                              width={1600}
+                                              height={1600}
+                                              className="max-w-full max-h-[80vh] object-contain rounded-lg"
+                                              loading="lazy"
+                                            />
+                                          </div>
+                                        </DialogContent>
+                                      </div>
+                                    </Dialog>
+                                  ) : rowState.isUploadingTarget ? (
+                                    <div className="flex flex-col items-center gap-2">
+                                      <Spinner size="sm" />
+                                      <span className="text-xs text-muted-foreground">Uploading…</span>
+                                    </div>
+                                  ) : (
+                                    <div className="flex flex-col items-center text-center gap-1 text-xs text-muted-foreground">
+                                      <Upload className="w-4 h-4" />
+                                      Drop target
+                                    </div>
+                                  )}
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    className="absolute inset-0 opacity-0 cursor-pointer"
+                                    onChange={(e) => {
+                                      const file = e.target.files?.[0]
+                                      if (file) handleTargetImageUpload(file, row.id)
+                                    }}
+                                  />
+                                </div>
+                                {row.target_image_url && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => handleRemoveTargetImage(row.id)}
+                                    className="mt-2 h-6 text-xs"
+                                  >
+                                    <X className="w-3 h-3 mr-1" />
+                                    Remove
+                                  </Button>
                                 )}
-                              </Button>
+                              </div>
                             </div>
-                          </div>
-                          <DialogContent className="max-w-3xl">
-                            <DialogHeader>
-                              <DialogTitle>Edit Prompt</DialogTitle>
-                            </DialogHeader>
+
+                            {/* 3. Prompt */}
                             <div className="space-y-2">
                               <Textarea
                                 value={getCurrentPrompt(row.id)}
-                                className="min-h-[40vh] w-full resize-y"
                                 onChange={(e) => handlePromptChange(row.id, e.target.value)}
                                 onBlur={(e) => handlePromptBlur(row.id, e.target.value)}
+                                placeholder="Enter prompt..."
+                                className="min-h-[120px] resize-y"
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                                    e.preventDefault()
+                                    const target = e.target as HTMLTextAreaElement
+                                    handlePromptBlur(row.id, target.value)
+                                    handleGenerate(row.id)
+                                  }
+                                }}
                               />
-                            </div>
-                          </DialogContent>
-                        </Dialog>
-                      </TableCell>
-                      
-                      
-                      
-                      {/* Generate Button */}
-                      <TableCell className="align-top">
-                        {(() => {
-                          const hasTarget = Boolean(row?.target_image_url)
-                          const disabledReason = !hasTarget
-                            ? 'Upload a target image first'
-                            : ''
-                          const isDisabled = !hasTarget || rowState.isGenerating || isActiveStatus(displayStatus)
-                          return (
-                            <Tooltip open={isDisabled && !!disabledReason ? undefined : false}>
-                              <TooltipTrigger asChild>
+                              <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                                <span>Characters: {getCurrentPrompt(row.id).length}</span>
+                                {row.prompt_override && (
+                                  <Badge variant="outline" className="text-xs">
+                                    Custom Prompt
+                                  </Badge>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <Button
-                                  onClick={() => handleGenerate(row.id)}
-                                  disabled={isDisabled}
                                   size="sm"
-                                  aria-busy={rowState.isGenerating || isActiveStatus(displayStatus)}
-                                  className="gap-2 transition-opacity duration-200"
+                                  variant="secondary"
+                                  onClick={() => handleAiPromptGeneration(row.id)}
+                                  disabled={rowState.isGeneratingPrompt}
+                                  className="h-8"
                                 >
-                                  {isActiveStatus(displayStatus) ? (
+                                  {rowState.isGeneratingPrompt ? (
                                     <>
-                                      <Spinner 
-                                        key={`spinner-${row.id}-${displayStatus}`}
-                                        size="sm"
-                                      />
-                                      {getStatusLabel(displayStatus)}
-                                    </>
-                                  ) : rowState.isGenerating ? (
-                                    <>
-                                      <Spinner 
-                                        key={`spinner-${row.id}-generating`}
-                                        size="sm"
-                                      />
-                                      Generating
+                                      <Spinner size="sm" />
+                                      <span className="ml-2">Generating…</span>
                                     </>
                                   ) : (
                                     <>
-                                      <Sparkles className="h-4 w-4 transition-transform hover:scale-110" />
-                                      Generate
+                                      <Sparkles className="w-4 h-4 mr-2" />
+                                      AI Improve
                                     </>
                                   )}
                                 </Button>
-                              </TooltipTrigger>
-                              {disabledReason && (
-                                <TooltipContent>{disabledReason}</TooltipContent>
-                              )}
-                            </Tooltip>
-                          )
-                        })()}
-                        
-                        
-                        {live?.queuePosition !== undefined && isActiveStatus(displayStatus) && (
-                          <div className="mt-1 text-[10px] text-muted-foreground">{live.queuePosition > 0 ? `#${live.queuePosition} in queue` : 'In progress'}</div>
-                        )}
-                      </TableCell>
-                      
-                      {/* 6. Status */}
-                      <TableCell className="align-top">
-                        <div className="flex flex-col gap-2 min-w-[6.5rem]" aria-live="polite">
-                          <Badge variant={getStatusColor(displayStatus) as any} className="w-fit">
-                            <span className="inline-flex items-center gap-2">
-                              {isActiveStatus(displayStatus) && (
-                                <span className="h-2.5 w-2.5 rounded-full bg-current animate-pulse" />
-                              )}
-                              {getStatusLabel(displayStatus)}
-                            </span>
-                          </Badge>
-                          <Progress value={displayProgress} className="h-1.5" />
-                        </div>
-                      </TableCell>
-                      
-                      {/* 7. Results (Horizontal Single Row Scroll) */}
-                      <TableCell className="align-top">
-                        <div className="flex flex-nowrap gap-2 pb-2 h-[112px] overflow-x-auto overflow-y-hidden overscroll-x-contain -mx-1 px-1 snap-x snap-mandatory">
-                          {images.length > 0 ? (
-                            images.map((image: GeneratedImage, index: number) => (
-                              <div key={image.id} className="relative group">
-                                {!isSelectionMode ? (
-                                  <div 
-                                    className="relative cursor-zoom-in"
-                                    onClick={() => setDialogState({ isOpen: true, rowId: row.id, imageIndex: index })}
-                                  >
-                                    <Thumb
-                                      src={rowState.signedUrls[image.output_url]}
-                                      alt="Generated image"
-                                      size={96}
-                                      className="flex-shrink-0 snap-start"
-                                      dataImagePath={image.output_url}
-                                      dataRowId={row.id}
-                                    />
-                                    {/* Favorite button overlay - always visible in top-left */}
-                                    {(() => {
-                                      const isFavorited = favoritesState[image.id] ?? (image.is_favorited === true)
-                                      
-                                      return (
-                                        <button
-                                          key={`star-${image.id}-${isFavorited}`}
-                                          onClick={(e) => {
-                                            e.stopPropagation()
-                                            handleToggleFavorite(image.id, isFavorited)
-                                          }}
-                                          className={`absolute top-1 left-1 p-1.5 rounded-full transition-all duration-200 z-20 ${
-                                            isFavorited
-                                              ? 'bg-transparent hover:bg-black/20'
-                                              : 'bg-transparent hover:bg-black/20'
-                                          }`}
-                                          title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
-                                          style={{ position: 'absolute', top: '4px', left: '4px', zIndex: 20 }}
-                                        >
-                                          {isFavorited ? (
-                                            // Favorited state - filled yellow star
-                                            <div className="w-4 h-4 flex items-center justify-center relative">
-                                              <Star className="w-4 h-4 text-yellow-400" style={{ fill: 'currentColor' }} />
-                                              <div className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full"></div>
-                                            </div>
-                                          ) : (
-                                            // Not favorited state - outline white star
-                                            <Star className="w-4 h-4 text-white hover:text-yellow-300" />
-                                          )}
-                                        </button>
-                                      )
-                                    })()}
-                                  </div>
-                                ) : (
-                                  <div 
-                                    className={`relative cursor-pointer transition-all duration-200 ${
-                                      selectedImageIds.has(image.id) 
-                                        ? 'ring-2 ring-blue-500 ring-offset-2' 
-                                        : 'hover:ring-1 hover:ring-gray-300'
-                                    }`} 
-                                    onClick={() => handleToggleImageSelection(image.id)}
-                                  >
-                                    <Thumb
-                                      src={rowState.signedUrls[image.output_url]}
-                                      alt="Generated image"
-                                      size={96}
-                                      className={`flex-shrink-0 snap-start transition-opacity duration-200 ${
-                                        selectedImageIds.has(image.id) ? 'opacity-80' : ''
-                                      }`}
-                                      dataImagePath={image.output_url}
-                                      dataRowId={row.id}
-                                    />
-                                    {/* Favorite button overlay - always visible in top-left */}
-                                    {(() => {
-                                      const isFavorited = favoritesState[image.id] ?? (image.is_favorited === true)
-                                      
-                                      return (
-                                        <button
-                                          key={`star-${image.id}-${isFavorited}`}
-                                          onClick={(e) => {
-                                            e.stopPropagation()
-                                            handleToggleFavorite(image.id, isFavorited)
-                                          }}
-                                          className={`absolute top-1 left-1 p-1.5 rounded-full transition-all duration-200 z-20 ${
-                                            isFavorited
-                                              ? 'bg-transparent hover:bg-black/20'
-                                              : 'bg-transparent hover:bg-black/20'
-                                          }`}
-                                          title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
-                                          style={{ position: 'absolute', top: '4px', left: '4px', zIndex: 20 }}
-                                        >
-                                          {isFavorited ? (
-                                            // Favorited state - filled yellow star
-                                            <div className="w-4 h-4 flex items-center justify-center relative">
-                                              <Star className="w-4 h-4 text-yellow-400" style={{ fill: 'currentColor' }} />
-                                              <div className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full"></div>
-                                            </div>
-                                          ) : (
-                                            // Not favorited state - outline white star
-                                            <Star className="w-4 h-4 text-white hover:text-yellow-300" />
-                                          )}
-                                        </button>
-                                      )
-                                    })()}
-                                    {/* Selection checkbox overlay - in bottom-right when in selection mode */}
-                                    {isSelectionMode && (
-                                      <div 
-                                        className="absolute bottom-1 right-1 z-20"
-                                        onClick={(e) => {
-                                          e.stopPropagation()
-                                          e.preventDefault()
-                                          handleToggleImageSelection(image.id)
-                                        }}
-                                        style={{ position: 'absolute', bottom: '4px', right: '4px', zIndex: 20 }}
-                                      >
-                                        <div className="p-1 rounded-full bg-transparent">
-                                          <Checkbox
-                                            checked={selectedImageIds.has(image.id)}
-                                            onCheckedChange={(checked) => {
-                                              handleToggleImageSelection(image.id)
-                                            }}
-                                            className="h-4 w-4"
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              e.preventDefault()
-                                            }}
-                                          />
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleResetPrompt(row.id)}
+                                  className="h-8"
+                                >
+                                  Reset Prompt
+                                </Button>
                               </div>
-                            ))
-                          ) : (isActiveStatus(displayStatus) || rowState.isLoadingResults) ? (
-                            <div className="flex items-center gap-3">
-                              <div className="h-[72px] w-[72px] rounded-xl bg-muted animate-pulse" />
-                              <div className="h-[72px] w-[72px] rounded-xl bg-muted animate-pulse" />
-                              {rowState.isLoadingResults && (
-                                <span className="text-xs text-muted-foreground">Loading images…</span>
+                            </div>
+
+                            {/* 4. Generate */}
+                            <div className="space-y-2">
+                              <Button
+                                size="sm"
+                                onClick={() => handleGenerate(row.id)}
+                                disabled={rowState.isGenerating || rowState.isGeneratingPrompt}
+                                className="w-28"
+                              >
+                                {rowState.isGenerating ? (
+                                  <>
+                                    <Spinner size="sm" />
+                                    <span className="ml-2">Generating…</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Wand2 className="w-4 h-4 mr-2" />
+                                    Generate
+                                  </>
+                                )}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleRegenerate(row.id)}
+                                disabled={isActiveStatus(displayStatus)}
+                                className="w-28"
+                              >
+                                <Sparkles className="w-4 h-4 mr-2" />
+                                Retry
+                              </Button>
+                              <DimensionControls row={row} onChange={(updates) => handleDimensionChange(row.id, updates)} />
+                            </div>
+
+                            {/* 5. Status */}
+                            <div className="space-y-2">
+                              <Badge variant={getStatusColor(displayStatus)}>
+                                {getStatusLabel(displayStatus)}
+                              </Badge>
+                              {isActiveStatus(displayStatus) && (
+                                <div className="flex items-center gap-2">
+                                  <Progress value={displayProgress} className="w-20" />
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => handleCancelJob(row.id)}
+                                  >
+                                    <XCircle className="w-4 h-4 mr-1" />
+                                    Cancel
+                                  </Button>
+                                </div>
+                              )}
+                              {live?.attempts && (
+                                <div className="text-xs text-muted-foreground">
+                                  Attempts: {live.attempts}
+                                </div>
                               )}
                             </div>
-                          ) : (
-                            <div className="flex items-center justify-center h-14 px-4 text-xs text-muted-foreground">
-                              No images yet
+
+                            {/* 6. Results */}
+                            <div className="space-y-3">
+                              {rowState.isLoadingResults && (
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <Spinner size="sm" />
+                                  <span>Refreshing results…</span>
+                                </div>
+                              )}
+                              {(visibleImages.length > 0) ? (
+                                <div className="flex flex-col gap-3">
+                                  <div className="relative">
+                                    <div className="flex items-start gap-3 overflow-x-auto pb-3">
+                                      {visibleImages.map((image: GeneratedImage, imageIndex: number) => (
+                                        <div
+                                          key={image.id}
+                                          className={`relative cursor-pointer transition-all duration-200 ${
+                                            selectedImageIds.has(image.id)
+                                              ? 'ring-2 ring-blue-500 ring-offset-2'
+                                              : 'hover:ring-1 hover:ring-gray-300'
+                                          }`}
+                                          onClick={() => {
+                                            if (isSelectionMode) {
+                                              handleToggleImageSelection(image.id)
+                                            } else {
+                                              setDialogState({ isOpen: true, rowId: row.id, imageIndex })
+                                            }
+                                          }}
+                                        >
+                                          <Thumb
+                                            src={rowState.signedUrls[image.output_url]}
+                                            alt="Generated image"
+                                            size={96}
+                                            className={`flex-shrink-0 snap-start transition-opacity duration-200 ${
+                                              selectedImageIds.has(image.id) ? 'opacity-80' : ''
+                                            }`}
+                                            dataImagePath={image.output_url}
+                                            dataRowId={row.id}
+                                          />
+                                          {(() => {
+                                            const isFavorited = favoritesState[image.id] ?? (image.is_favorited === true)
+                                            return (
+                                              <button
+                                                key={`star-${image.id}-${isFavorited}`}
+                                                onClick={(e) => {
+                                                  e.stopPropagation()
+                                                  handleToggleFavorite(image.id, isFavorited)
+                                                }}
+                                                className={`absolute top-1 left-1 p-1.5 rounded-full transition-all duration-200 z-20 ${
+                                                  isFavorited
+                                                    ? 'bg-transparent hover:bg-black/20'
+                                                    : 'bg-transparent hover:bg-black/20'
+                                                }`}
+                                                title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+                                                style={{ position: 'absolute', top: '4px', left: '4px', zIndex: 20 }}
+                                              >
+                                                {isFavorited ? (
+                                                  <div className="w-4 h-4 flex items-center justify-center relative">
+                                                    <Star className="w-4 h-4 text-yellow-400" style={{ fill: 'currentColor' }} />
+                                                    <div className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full"></div>
+                                                  </div>
+                                                ) : (
+                                                  <Star className="w-4 h-4 text-white hover:text-yellow-300" />
+                                                )}
+                                              </button>
+                                            )
+                                          })()}
+
+                                          {isSelectionMode && (
+                                            <div
+                                              className="absolute bottom-1 right-1 z-20"
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                e.preventDefault()
+                                                handleToggleImageSelection(image.id)
+                                              }}
+                                              style={{ position: 'absolute', bottom: '4px', right: '4px', zIndex: 20 }}
+                                            >
+                                              <div className="p-1 rounded-full bg-transparent">
+                                                <Checkbox
+                                                  checked={selectedImageIds.has(image.id)}
+                                                  onCheckedChange={() => {
+                                                    handleToggleImageSelection(image.id)
+                                                  }}
+                                                  className="h-4 w-4"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    e.preventDefault()
+                                                  }}
+                                                />
+                                              </div>
+                                            </div>
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                  {hasMoreImages && (
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => handleShowMoreResults(row.id)}
+                                      className="self-start text-xs"
+                                    >
+                                      Show more
+                                    </Button>
+                                  )}
+                                </div>
+                              ) : (isActiveStatus(displayStatus) || rowState.isLoadingResults) ? (
+                                <div className="flex items-center gap-3">
+                                  <div className="h-[72px] w-[72px] rounded-xl bg-muted animate-pulse" />
+                                  <div className="h-[72px] w-[72px] rounded-xl bg-muted animate-pulse" />
+                                  {rowState.isLoadingResults && (
+                                    <span className="text-xs text-muted-foreground">Loading images…</span>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="flex items-center justify-center h-14 px-4 text-xs text-muted-foreground">
+                                  No images yet
+                                </div>
+                              )}
                             </div>
-                          )}
-                        </div>
-                      </TableCell>
-                      
-                      {/* 8. Actions */}
-                      <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleRemoveRow(row.id)}
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  )
-                })}
-              </TableBody>
-            </Table>
+
+                            {/* 7. Actions */}
+                            <div className="flex items-start">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleRemoveRow(row.id)}
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </div>
+                        </VirtualRowWrapper>
+                      )
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
