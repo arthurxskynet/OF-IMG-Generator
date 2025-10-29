@@ -9,12 +9,17 @@
 import { useState, useEffect } from 'react'
 import { ModelWorkspace } from './model-workspace'
 import { Toaster } from '@/hooks/use-toast'
-import { Model, ModelRow } from '@/types/jobs'
-import { DEFAULT_IMAGE_LIMIT, DEFAULT_ROW_LIMIT, ModelRowsPage } from '@/types/model-api'
+import { Model } from '@/types/jobs'
+import {
+  DEFAULT_IMAGE_LIMIT,
+  DEFAULT_ROW_LIMIT,
+  ModelRowsPage,
+  ModelRowWithImages
+} from '@/types/model-api'
 
 export function ExampleUsage() {
   const [model, setModel] = useState<Model | null>(null)
-  const [rows, setRows] = useState<ModelRow[]>([])
+  const [rows, setRows] = useState<ModelRowWithImages[]>([])
   const [loading, setLoading] = useState(true)
   const [initialPage, setInitialPage] = useState<ModelRowsPage | null>(null)
 
@@ -42,7 +47,7 @@ export function ExampleUsage() {
           updated_at: new Date().toISOString()
         }
 
-        const exampleRows: ModelRow[] = [
+        const exampleRows: ModelRowWithImages[] = [
           {
             id: 'row-1',
             model_id: 'model-1',
@@ -50,7 +55,8 @@ export function ExampleUsage() {
             prompt_override: 'A smiling professional headshot',
             status: 'idle',
             created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
+            updated_at: new Date().toISOString(),
+            generated_images: []
           }
         ]
 
