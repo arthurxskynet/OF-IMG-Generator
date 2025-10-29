@@ -2,20 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createServer } from "@/lib/supabase-server";
 import { deleteStorageFiles } from "@/lib/storage";
-import { GeneratedImage } from "@/types/jobs";
-
-// Extended type for model rows with generated images
-interface ModelRowWithImages {
-  id: string;
-  model_id: string;
-  ref_image_urls?: string[];
-  target_image_url?: string;
-  prompt_override?: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-  generated_images?: GeneratedImage[];
-}
+import { fetchModelRowsPage } from "@/lib/model-data";
 
 export const runtime = "nodejs";
 
@@ -36,6 +23,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const { id } = await params;
   const { searchParams } = new URL(req.url);
   const sort = searchParams.get('sort');
+  const parseIntParam = (value: string | null) => {
+    if (value === null) return undefined;
+    const parsed = parseInt(value, 10);
+    return Number.isNaN(parsed) ? undefined : parsed;
+  };
+
   const supabase = await createServer();
   const { data: { user } } = await supabase.auth.getUser();
   
@@ -44,79 +37,18 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   }
 
   try {
-    // Fetch model with its rows and latest images
-    const { data: model, error: modelError } = await supabase
-      .from("models")
-      .select(`
-        *,
-        model_rows (
-          id,
-          ref_image_urls,
-          target_image_url,
-          prompt_override,
-          status,
-          created_at,
-          generated_images (
-            id,
-            output_url,
-            is_favorited,
-            created_at
-          )
-        )
-      `)
-      .eq("id", id)
-      .order('created_at', { referencedTable: 'model_rows', ascending: sort === 'oldest' })
-      .single();
+    const page = await fetchModelRowsPage(supabase, id, {
+      sort,
+      rowLimit: parseIntParam(searchParams.get('rowLimit')),
+      rowOffset: parseIntParam(searchParams.get('rowOffset')),
+      imageLimit: parseIntParam(searchParams.get('imageLimit'))
+    });
 
-    // Deduplicate nested arrays defensively (by id/output_url) to avoid UI confusion
-    if (model?.model_rows) {
-      const seenRows = new Set<string>()
-      model.model_rows = (model.model_rows as ModelRowWithImages[]).filter((r: ModelRowWithImages) => {
-        if (!r?.id) return false
-        if (seenRows.has(r.id)) return false
-        seenRows.add(r.id)
-        return true
-      })
-      for (const r of model.model_rows as ModelRowWithImages[]) {
-        if (Array.isArray(r.generated_images)) {
-          const seenImgs = new Set<string>()
-          r.generated_images = r.generated_images.filter((img: GeneratedImage) => {
-            const key = img?.id || img?.output_url
-            if (!key) return false
-            if (seenImgs.has(key)) return false
-            seenImgs.add(key)
-            return true
-          })
-        }
-      }
-
-      // Sort the model rows and their images based on the sort parameter
-      // Note: Database-level ordering is now handled in the query above,
-      // but keeping this as defensive measure for edge cases
-      const sortOrder = sort === 'oldest' ? 1 : -1;
-      model.model_rows.sort((a: ModelRowWithImages, b: ModelRowWithImages) => {
-        const dateA = new Date(a.created_at).getTime();
-        const dateB = new Date(b.created_at).getTime();
-        return (dateA - dateB) * sortOrder;
-      });
-      
-      // Sort images within each row (oldest to newest, left to right)
-      model.model_rows.forEach((row: ModelRowWithImages) => {
-        if (row.generated_images && Array.isArray(row.generated_images)) {
-          row.generated_images.sort((a: GeneratedImage, b: GeneratedImage) => {
-            const dateA = new Date(a.created_at).getTime();
-            const dateB = new Date(b.created_at).getTime();
-            return dateA - dateB; // Always ascending (oldest first)
-          });
-        }
-      });
-    }
-
-    if (modelError || !model) {
+    if (!page) {
       return NextResponse.json({ error: "Model not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ model }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(page, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Model GET error:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
