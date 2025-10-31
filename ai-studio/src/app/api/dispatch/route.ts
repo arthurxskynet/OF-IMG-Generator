@@ -206,6 +206,9 @@ export async function POST(req: NextRequest) {
         console.log('[Dispatch] signed URLs', { 
           jobId: job.id, 
           refUrlsCount: refUrls.length,
+          hasRefPaths: payload.refPaths && payload.refPaths.length > 0,
+          refPathsCount: payload.refPaths?.length || 0,
+          operationType: refUrls.length > 0 ? 'face-swap' : 'target-only',
           duration: Date.now() - signStart 
         })
 

@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabase-admin'
+import { createAndUploadThumbnail } from './thumbnail-generator'
 
 /** objectPath is "bucket/objectKey" */
 export async function signPath(objectPath: string, expiresIn = 14400): Promise<string> {
@@ -10,19 +11,38 @@ export async function signPath(objectPath: string, expiresIn = 14400): Promise<s
   return data.signedUrl
 }
 
-/** Download remote image and upload to outputs bucket; return objectPath "outputs/<key>" */
+/** Download remote image and upload to outputs bucket; return objectPath "outputs/<key>" and thumbnail */
 export async function fetchAndSaveToOutputs(remoteUrl: string, userId: string) {
   const supabase = supabaseAdmin
   const res = await fetch(remoteUrl)
   if (!res.ok) throw new Error('Fetch output failed')
   const buf = Buffer.from(await res.arrayBuffer())
   const key = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`
+  const objectPath = `outputs/${key}`
+  
+  // Upload full resolution image
   const { error } = await supabase.storage.from('outputs').upload(key, buf, {
     contentType: 'image/jpeg',
     upsert: false
   })
   if (error) throw new Error('Upload to outputs failed')
-  return { bucket: 'outputs', objectKey: key, objectPath: `outputs/${key}` }
+  
+  // Generate and upload thumbnail
+  let thumbnailPath: string | undefined
+  try {
+    const thumbnailResult = await createAndUploadThumbnail(remoteUrl, userId, objectPath)
+    thumbnailPath = thumbnailResult.thumbnailPath
+  } catch (thumbnailError) {
+    console.error('[Storage] Failed to generate thumbnail, continuing without it:', thumbnailError)
+    // Don't fail the entire operation if thumbnail generation fails
+  }
+  
+  return { 
+    bucket: 'outputs', 
+    objectKey: key, 
+    objectPath,
+    thumbnailPath 
+  }
 }
 
 /** Delete a single file from storage bucket */

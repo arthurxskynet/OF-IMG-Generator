@@ -259,6 +259,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
           team_id: job.team_id,
           user_id: job.user_id,
           output_url: uploaded.objectPath,
+          thumbnail_url: uploaded.thumbnailPath || null,
           is_upscaled: false
         })
       }

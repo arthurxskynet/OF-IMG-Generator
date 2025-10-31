@@ -13,3 +13,4 @@ ALTER TABLE public.models
 -- Add comment for documentation
 COMMENT ON COLUMN public.models.output_width IS 'Output image width in pixels (1024-4096)';
 COMMENT ON COLUMN public.models.output_height IS 'Output image height in pixels (1024-4096)';
+

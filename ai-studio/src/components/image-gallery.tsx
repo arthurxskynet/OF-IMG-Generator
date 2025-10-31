@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
@@ -8,7 +8,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { GeneratedImage } from '@/types/jobs'
 import { useToast } from '@/hooks/use-toast'
 import { Copy, Maximize2 } from 'lucide-react'
-import { batchGetSignedUrls, preloadImages } from '@/lib/image-loader'
+import { useThumbnailLoader } from '@/hooks/use-thumbnail-loader'
+import { getSignedUrl } from '@/lib/jobs'
 
 interface ImageGalleryProps {
   images: GeneratedImage[]
@@ -17,51 +18,35 @@ interface ImageGalleryProps {
 
 export function ImageGallery({ images }: ImageGalleryProps) {
   const { toast } = useToast()
-  const [signedUrls, setSignedUrls] = useState<Record<string, string>>({})
-  const [loadingImages, setLoadingImages] = useState<Set<string>>(new Set())
-
-  // Optimized prefetch with parallel loading and image preloading
-  useEffect(() => {
-    const prefetch = async () => {
-      if (!images.length) return
-      
-      // Get all unique image paths
-      const imagePaths = images.map(img => img.output_url)
-      const newPaths = imagePaths.filter(path => !signedUrls[path])
-      
-      if (newPaths.length === 0) return
-      
-      try {
-        // Batch fetch all signed URLs in parallel
-        const newUrls = await batchGetSignedUrls(newPaths)
-        
-        // Update state with all URLs at once
-        setSignedUrls(prev => ({ ...prev, ...newUrls }))
-        
-        // Preload images for instant display
-        const validUrls = Object.values(newUrls).filter(url => url)
-        if (validUrls.length > 0) {
-          setLoadingImages(new Set(validUrls))
-          await preloadImages(validUrls)
-          setLoadingImages(new Set())
-        }
-      } catch (error) {
-        console.error('Failed to prefetch images:', error)
-        setLoadingImages(new Set())
-      }
-    }
-    
-    prefetch()
-  }, [images, signedUrls])
+  const { thumbnailUrls, fullUrls, loadFullImage, isLoadingFull } = useThumbnailLoader(images)
+  const [dialogImageId, setDialogImageId] = useState<string | null>(null)
 
   const handleCopyUrl = async (image: GeneratedImage) => {
     try {
-      let url = signedUrls[image.output_url]
+      // For copying, we always want the actual signed Supabase URL (not proxy URL)
+      // Proxy URLs are only for display/optimization - sharing needs direct Supabase URLs
+      let url = ''
+      
+      try {
+        const response = await getSignedUrl(image.output_url)
+        url = response.url
+      } catch (error) {
+        console.error('Failed to get signed URL for copying:', error)
+        toast({
+          title: 'Copy Failed',
+          description: 'Failed to generate image URL',
+          variant: 'destructive'
+        })
+        return
+      }
+      
       if (!url) {
-        // Use the optimized loader for consistency
-        const urls = await batchGetSignedUrls([image.output_url])
-        url = urls[image.output_url]
-        setSignedUrls(prev => ({ ...prev, [image.output_url]: url }))
+        toast({
+          title: 'Copy Failed',
+          description: 'No URL available',
+          variant: 'destructive'
+        })
+        return
       }
       
       await navigator.clipboard.writeText(url)
@@ -77,6 +62,12 @@ export function ImageGallery({ images }: ImageGalleryProps) {
       })
     }
   }
+  
+  const handleDialogOpen = async (imageId: string) => {
+    setDialogImageId(imageId)
+    // Load full resolution when dialog opens
+    await loadFullImage(imageId)
+  }
 
   if (!images || images.length === 0) {
     return (
@@ -90,22 +81,21 @@ export function ImageGallery({ images }: ImageGalleryProps) {
     <TooltipProvider>
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
         {images.map((image) => {
-          const imageUrl = signedUrls[image.output_url]
-          const isLoading = loadingImages.has(imageUrl)
+          const thumbnailUrl = thumbnailUrls[image.id]
+          const isLoading = !thumbnailUrl
           
           return (
             <div key={image.id} className="group relative">
               <div className="aspect-square rounded-lg overflow-hidden bg-muted relative">
-                {imageUrl ? (
+                {thumbnailUrl ? (
                   <Image
-                    src={imageUrl}
+                    src={thumbnailUrl}
                     alt="Generated"
                     fill
                     sizes="(max-width: 640px) 50vw, (max-width: 1024px) 25vw, 16vw"
                     className={`object-cover transition-opacity duration-200 ${
                       isLoading ? 'opacity-50' : 'opacity-100'
                     }`}
-                    unoptimized
                     priority={false}
                   />
                 ) : (
@@ -124,7 +114,7 @@ export function ImageGallery({ images }: ImageGalleryProps) {
               
               {/* Hover overlay */}
               <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center space-x-1">
-                <Dialog>
+                <Dialog onOpenChange={(open) => open && handleDialogOpen(image.id)}>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <DialogTrigger asChild>
@@ -141,14 +131,19 @@ export function ImageGallery({ images }: ImageGalleryProps) {
                       <DialogTitle>Generated Image</DialogTitle>
                     </DialogHeader>
                     <div className="flex justify-center">
-                      <Image
-                        src={signedUrls[image.output_url] || ''}
-                        alt="Generated"
-                        width={1600}
-                        height={1600}
-                        className="max-w-full max-h-[80vh] object-contain rounded-lg"
-                        unoptimized
-                      />
+                      {isLoadingFull(image.id) ? (
+                        <div className="flex items-center justify-center h-[80vh]">
+                          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+                        </div>
+                      ) : (
+                        <Image
+                          src={fullUrls[image.id] || thumbnailUrl || ''}
+                          alt="Generated"
+                          width={1600}
+                          height={1600}
+                          className="max-w-full max-h-[80vh] object-contain rounded-lg"
+                        />
+                      )}
                     </div>
                   </DialogContent>
                 </Dialog>

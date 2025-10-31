@@ -15,6 +15,21 @@ const urlCache = new Map<string, CachedUrl>()
 const CACHE_DURATION = 3.5 * 60 * 60 * 1000
 
 /**
+ * Convert storage path to optimized proxy URL
+ * This uses Next.js Image Optimization to reduce bandwidth costs
+ */
+export function getOptimizedImageUrl(path: string): string {
+  if (!path) return ''
+  
+  // Encode the path as a query parameter
+  const encodedPath = encodeURIComponent(path)
+  
+  // Use the proxy route for Next.js Image Optimization
+  // Next.js will automatically optimize (resize, convert to WebP/AVIF, cache on edge)
+  return `/api/images/proxy?path=${encodedPath}`
+}
+
+/**
  * Get signed URL with intelligent caching and deduplication
  * Prevents multiple requests for the same URL
  */

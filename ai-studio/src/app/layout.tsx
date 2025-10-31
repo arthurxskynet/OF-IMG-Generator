@@ -17,11 +17,7 @@ export const metadata: Metadata = {
   title: "pumpum producer",
   description: "AI-powered image generation platform",
   icons: {
-    icon: [
-      { url: '/favicon.svg', type: 'image/svg+xml' },
-    ],
-    shortcut: '/favicon.svg',
-    apple: '/favicon.svg',
+    icon: '/favicon.svg',
   },
 };
 

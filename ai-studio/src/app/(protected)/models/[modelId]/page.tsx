@@ -51,6 +51,7 @@ const Page = async ({ params, searchParams }: PageProps) => {
         generated_images (
           id,
           output_url,
+          thumbnail_url,
           is_favorited,
           created_at
         )
@@ -61,9 +62,11 @@ const Page = async ({ params, searchParams }: PageProps) => {
     .single();
 
   if (modelError || !model) {
-    console.error("Model fetch error:", modelError);
-    console.error("Model ID:", modelId);
-    console.error("User ID:", user.id);
+    if (process.env.NODE_ENV === 'development') {
+      console.error("Model fetch error:", modelError);
+      console.error("Model ID:", modelId);
+      console.error("User ID:", user.id);
+    }
     return notFound();
   }
 

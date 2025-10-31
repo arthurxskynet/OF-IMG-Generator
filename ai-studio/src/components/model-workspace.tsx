@@ -15,7 +15,7 @@ import { useJobPolling } from '@/hooks/use-job-polling'
 import { useThumbnailLoader } from '@/hooks/use-thumbnail-loader'
 import { uploadImage, validateFile } from '@/lib/client-upload'
 import { createClient } from '@/lib/supabase-browser'
-import { getCachedSignedUrl } from '@/lib/image-loader'
+import { getCachedSignedUrl, getOptimizedImageUrl } from '@/lib/image-loader'
 import { Plus, Upload, X, Sparkles, Folder, CheckCircle, XCircle, Wand2, Star, Download, Check, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
@@ -34,7 +34,7 @@ interface RowState {
   id: string
   isGenerating: boolean
   isGeneratingPrompt: boolean
-  signedUrls: Record<string, string> // Only used for reference images now
+  signedUrls: Record<string, string> // Optimized proxy URLs for display (reference images, target images, generated images)
   isLoadingResults?: boolean
   isUploadingTarget?: boolean
 }
@@ -291,61 +291,30 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     return rowStates[rowId]
   }
 
-  // Function to get signed URL for an image path with caching
+  // Function to get optimized URL for an image path (for display)
+  // Uses Next.js Image Optimization proxy to reduce bandwidth costs
   const getImageUrl = useCallback(async (path: string, rowId?: string) => {
-    // Check cache first
-    const cached = urlCache.get(path)
-    if (cached && cached.expires > Date.now()) {
-      // Update local state if we have a rowId
-      if (rowId) {
-        setRowStates(prev => ({
-          ...prev,
-          [rowId]: {
-            ...prev[rowId] || {
-              id: rowId,
-              isGenerating: false,
-              isGeneratingPrompt: false,
-              signedUrls: {},
-              isLoadingResults: false
-            },
-            signedUrls: { ...prev[rowId]?.signedUrls, [path]: cached.url }
-          }
-        }))
-      }
-      return cached.url
+    // Use optimized proxy URL for display (reduces Supabase bandwidth costs)
+    const optimizedUrl = getOptimizedImageUrl(path)
+    
+    // Update local state if we have a rowId
+    if (rowId) {
+      setRowStates(prev => ({
+        ...prev,
+        [rowId]: {
+          ...prev[rowId] || {
+            id: rowId,
+            isGenerating: false,
+            isGeneratingPrompt: false,
+            signedUrls: {},
+            isLoadingResults: false
+          },
+          signedUrls: { ...prev[rowId]?.signedUrls, [path]: optimizedUrl }
+        }
+      }))
     }
     
-    // Check local state as fallback
-    const rowState = rowId ? getRowState(rowId) : null
-    if (rowState?.signedUrls[path]) return rowState.signedUrls[path]
-    
-    try {
-      const { url } = await getSignedUrl(path)
-      
-      // Cache the URL (expires in 3.5 hours to be safe)
-      urlCache.set(path, { url, expires: Date.now() + (3.5 * 60 * 60 * 1000) })
-      
-      // Update local state
-      if (rowId) {
-        setRowStates(prev => ({
-          ...prev,
-          [rowId]: {
-            ...prev[rowId] || {
-              id: rowId,
-              isGenerating: false,
-              isGeneratingPrompt: false,
-              signedUrls: {},
-              isLoadingResults: false
-            },
-            signedUrls: { ...prev[rowId]?.signedUrls, [path]: url }
-          }
-        }))
-      }
-      return url
-    } catch (error) {
-      console.error('Failed to get signed URL:', error)
-      return ''
-    }
+    return optimizedUrl
   }, [])
 
   // Load full resolution image on demand (for dialog)
@@ -1724,24 +1693,23 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         }
 
         try {
-          // Try to get signed URL from fullUrls hook first (full resolution)
-          let signedUrl = fullUrls[image.id] || ''
-          
-          // If not available in hook, try to get from thumbnailUrls
-          if (!signedUrl) {
-            signedUrl = thumbnailUrls[image.id] || ''
+          // For downloads, we need actual signed Supabase URLs, not proxy URLs
+          // Proxy URLs are only for display - downloads require direct Supabase access
+          const imagePath = image.output_url || image.thumbnail_url || ''
+          if (!imagePath) {
+            console.error(`No image path available for image ${imageId}`)
+            failCount++
+            continue
           }
-          
-          // If still not available, fetch it using the image's output_url or thumbnail_url
-          if (!signedUrl) {
-            const imagePath = image.output_url || image.thumbnail_url || ''
-            if (imagePath) {
-              try {
-                signedUrl = await getCachedSignedUrl(imagePath)
-              } catch (error) {
-                console.error(`Failed to get signed URL for image ${imageId}:`, error)
-              }
-            }
+
+          let signedUrl: string
+          try {
+            // Always fetch actual signed URL for downloads
+            signedUrl = await getCachedSignedUrl(imagePath)
+          } catch (error) {
+            console.error(`Failed to get signed URL for image ${imageId}:`, error)
+            failCount++
+            continue
           }
 
           if (!signedUrl) {

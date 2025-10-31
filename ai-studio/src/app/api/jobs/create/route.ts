@@ -25,15 +25,20 @@ export async function POST(req: NextRequest) {
     const outputWidth = model.output_width || 4096
     const outputHeight = model.output_height || 4096
     
-    // Build reference images array - use row refs if available, otherwise fallback to model default
-    const refImages = row.ref_image_urls && row.ref_image_urls.length > 0 
-      ? row.ref_image_urls 
+    // Build reference images array
+    // If ref_image_urls is explicitly set (even if empty), use it
+    // If ref_image_urls is null/undefined, fallback to model default
+    const refImages = row.ref_image_urls !== null && row.ref_image_urls !== undefined
+      ? row.ref_image_urls  // Use row's ref images (could be empty array if user removed all refs)
       : model.default_ref_headshot_url 
-        ? [model.default_ref_headshot_url] 
-        : []
+        ? [model.default_ref_headshot_url]  // Fallback to model default
+        : []  // No references at all
     
-    if (!refImages || refImages.length === 0 || !row.target_image_url) {
-      return NextResponse.json({ error: 'Missing ref/target' }, { status: 400 })
+    // Validate we have required images (only target image is required)
+    if (!row.target_image_url) {
+      return NextResponse.json({ 
+        error: 'No target image found. Please upload a target image first.' 
+      }, { status: 400 })
     }
 
     const finalPrompt = basePrompt?.trim() ?? ''
@@ -45,11 +50,20 @@ export async function POST(req: NextRequest) {
       try {
         // Sign URLs for the images (600s expiry for external API call)
         const [refUrls, targetUrl] = await Promise.all([
-          refImages.length > 0 
+          refImages && refImages.length > 0 
             ? Promise.all(refImages.map((path: string) => signPath(path, 600)))
             : Promise.resolve([]),
           signPath(row.target_image_url, 600)
         ])
+        
+        console.log('[JobCreate] Reference images logic:', {
+          rowRefImageUrls: row.ref_image_urls,
+          modelDefaultRef: model.default_ref_headshot_url,
+          finalRefImages: refImages,
+          refImagesLength: refImages.length,
+          signedRefUrlsLength: refUrls.length,
+          operationType: refUrls.length > 0 ? 'face-swap' : 'target-only'
+        })
 
         // Enqueue prompt generation with high priority
         promptJobId = await promptQueueService.enqueuePromptGeneration(
@@ -65,7 +79,8 @@ export async function POST(req: NextRequest) {
         console.log('[JobCreate] Enqueued AI prompt generation', { 
           rowId, 
           promptJobId,
-          refImagesCount: refUrls.length 
+          refImagesCount: refUrls.length,
+          operationType: refUrls.length > 0 ? 'face-swap' : 'target-only'
         })
 
       } catch (error) {

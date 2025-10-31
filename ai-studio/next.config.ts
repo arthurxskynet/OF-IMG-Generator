@@ -10,6 +10,11 @@ const nextConfig: NextConfig = {
             pathname: "/storage/v1/object/**",
           },
         ],
+        // Enable image optimization for better performance and cost savings
+        formats: ['image/avif', 'image/webp'],
+        minimumCacheTTL: 12600, // 3.5 hours (slightly less than signed URL expiry)
+        // Allow unoptimized for same-origin API routes (they'll be optimized by Next.js)
+        unoptimized: false,
       }
     : undefined,
   turbopack: {

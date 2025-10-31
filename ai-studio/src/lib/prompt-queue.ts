@@ -80,6 +80,10 @@ export class PromptQueueService {
       throw new Error(`Failed to enqueue prompt generation: ${error.message}`)
     }
 
+    if (!data) {
+      throw new Error('Failed to enqueue prompt generation: No data returned')
+    }
+
     console.log('[PromptQueue] Enqueued prompt generation', { 
       promptJobId: data.id, 
       rowId, 
