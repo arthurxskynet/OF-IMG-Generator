@@ -5,7 +5,8 @@ export const PromptQueueRequestSchema = z.object({
   rowId: z.string().uuid(),
   refUrls: z.array(z.string()).optional(),
   targetUrl: z.string(),
-  priority: z.number().min(1).max(10).default(5) // Higher number = higher priority
+  priority: z.number().min(1).max(10).default(5), // Higher number = higher priority
+  swapMode: z.enum(['face', 'face-hair']).optional().default('face-hair')
 })
 
 export const PromptQueueResponseSchema = z.object({
@@ -28,6 +29,7 @@ export interface PromptGenerationJob {
   retry_count: number
   max_retries: number
   priority: number
+  swap_mode?: 'face' | 'face-hair' // Optional - defaults to 'face-hair' if not present
   created_at: string
   updated_at: string
   started_at?: string

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServer } from '@/lib/supabase-server'
 import { signPath } from '@/lib/storage'
-import { generatePromptWithGrok } from '@/lib/ai-prompt-generator'
+import { generatePromptWithGrok, SwapMode } from '@/lib/ai-prompt-generator'
 import { PromptGenerationRequest, PromptGenerationResponse } from '@/types/ai-prompt'
 
 export async function POST(req: NextRequest) {
@@ -13,7 +13,8 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { rowId }: PromptGenerationRequest = await req.json()
+    const body: PromptGenerationRequest & { swapMode?: SwapMode } = await req.json()
+    const { rowId, swapMode = 'face-hair' } = body
 
     if (!rowId) {
       return NextResponse.json({ error: 'rowId is required' }, { status: 400 })
@@ -84,11 +85,12 @@ export async function POST(req: NextRequest) {
             rowId, 
             refImagesCount: refUrls.length,
             hasTarget: !!targetUrl,
-            operationType: refUrls.length > 0 ? 'face-swap' : 'target-only'
+            operationType: refUrls.length > 0 ? 'face-swap' : 'target-only',
+            swapMode: swapMode
           })
 
-    // Generate prompt using Grok
-    const generatedPrompt = await generatePromptWithGrok(refUrls, targetUrl)
+    // Generate prompt using Grok with swapMode
+    const generatedPrompt = await generatePromptWithGrok(refUrls, targetUrl, swapMode)
 
     const response: PromptGenerationResponse = {
       prompt: generatedPrompt

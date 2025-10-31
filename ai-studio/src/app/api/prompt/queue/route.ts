@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json()
-    const { rowId, refUrls, targetUrl, priority } = PromptQueueRequestSchema.parse(body)
+    const { rowId, refUrls, targetUrl, priority, swapMode } = PromptQueueRequestSchema.parse(body)
 
     // Get the row details to verify ownership and get model info
     const { data: row, error: rowError } = await supabase
@@ -35,14 +35,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Model not found' }, { status: 404 })
     }
 
-    // Enqueue the prompt generation
+    // Enqueue the prompt generation with swapMode
     const promptJobId = await promptQueueService.enqueuePromptGeneration(
       rowId,
       model.id,
       user.id,
       refUrls || [],
       targetUrl,
-      priority
+      priority,
+      swapMode || 'face-hair'
     )
 
     // Get queue stats for estimated wait time

@@ -1,5 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabase-admin'
-import { generatePromptWithGrok } from '@/lib/ai-prompt-generator'
+import { generatePromptWithGrok, SwapMode } from '@/lib/ai-prompt-generator'
 import { 
   PromptGenerationJob, 
   PromptQueueStats, 
@@ -35,21 +35,45 @@ export class PromptQueueService {
     userId: string,
     refUrls: string[],
     targetUrl: string,
-    priority: number = 5
+    priority: number = 5,
+    swapMode: SwapMode = 'face-hair'
   ): Promise<string> {
-    const { data, error } = await supabaseAdmin
+    // Build insert object - swap_mode is optional and will be ignored if column doesn't exist
+    const insertData: any = {
+      row_id: rowId,
+      model_id: modelId,
+      user_id: userId,
+      ref_urls: refUrls.length > 0 ? refUrls : null,
+      target_url: targetUrl,
+      priority,
+      status: 'queued'
+    }
+    
+    // Add swap_mode if column exists (will be ignored by database if column doesn't exist)
+    // Note: To enable swap_mode, run: ALTER TABLE prompt_generation_jobs ADD COLUMN IF NOT EXISTS swap_mode text DEFAULT 'face-hair';
+    insertData.swap_mode = swapMode
+    
+    let { data, error } = await supabaseAdmin
       .from('prompt_generation_jobs')
-      .insert({
-        row_id: rowId,
-        model_id: modelId,
-        user_id: userId,
-        ref_urls: refUrls.length > 0 ? refUrls : null,
-        target_url: targetUrl,
-        priority,
-        status: 'queued'
-      })
+      .insert(insertData)
       .select('id')
       .single()
+
+    // If error is due to missing swap_mode column, retry without it
+    if (error && error.message && error.message.includes('swap_mode')) {
+      console.warn('[PromptQueue] swap_mode column not found, retrying without swap_mode. Add column with: ALTER TABLE prompt_generation_jobs ADD COLUMN IF NOT EXISTS swap_mode text DEFAULT \'face-hair\';')
+      const insertDataWithoutSwapMode = { ...insertData }
+      delete insertDataWithoutSwapMode.swap_mode
+      
+      const retryResult = await supabaseAdmin
+        .from('prompt_generation_jobs')
+        .insert(insertDataWithoutSwapMode)
+        .select('id')
+        .single()
+      
+      data = retryResult.data
+      error = retryResult.error
+    }
 
     if (error) {
       console.error('[PromptQueue] Failed to enqueue prompt generation:', error)
@@ -59,7 +83,8 @@ export class PromptQueueService {
     console.log('[PromptQueue] Enqueued prompt generation', { 
       promptJobId: data.id, 
       rowId, 
-      priority 
+      priority,
+      swapMode
     })
 
     // Trigger processing if not already running
@@ -97,6 +122,184 @@ export class PromptQueueService {
   }
 
   /**
+   * Detect and recover stuck processing jobs
+   * Finds prompt jobs stuck in 'processing' state and either requeues them or marks as failed
+   */
+  private async recoverStuckProcessingJobs(): Promise<void> {
+    try {
+      // Find prompt jobs stuck in 'processing' state (> 30 minutes old)
+      // This handles cases where API calls take longer or worker crashes
+      const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString()
+      
+      const { data: stuckJobs, error } = await supabaseAdmin
+        .from('prompt_generation_jobs')
+        .select('id, row_id, retry_count, max_retries, started_at')
+        .eq('status', 'processing')
+        .lt('started_at', thirtyMinAgo)
+
+      if (error) {
+        console.error('[PromptQueue] Failed to fetch stuck jobs:', error)
+        return
+      }
+
+      if (!stuckJobs || stuckJobs.length === 0) {
+        return // No stuck jobs
+      }
+
+      console.log('[PromptQueue] Found stuck processing jobs', { 
+        count: stuckJobs.length,
+        thresholdMinutes: 30
+      })
+
+      // Process each stuck job
+      for (const job of stuckJobs) {
+        const shouldRetry = job.retry_count < job.max_retries
+
+        if (shouldRetry) {
+          // Reset to queued status for retry
+          const { error: requeueError } = await supabaseAdmin
+            .from('prompt_generation_jobs')
+            .update({
+              status: 'queued',
+              updated_at: new Date().toISOString(),
+              started_at: null
+            })
+            .eq('id', job.id)
+
+          if (requeueError) {
+            console.error(`[PromptQueue] Failed to requeue stuck job ${job.id}:`, requeueError)
+          } else {
+            console.log(`[PromptQueue] Requeued stuck prompt job`, { 
+              jobId: job.id,
+              retryCount: job.retry_count,
+              maxRetries: job.max_retries
+            })
+          }
+        } else {
+          // Max retries exceeded, mark as failed
+          const { error: failError } = await supabaseAdmin
+            .rpc('update_prompt_job_status', {
+              p_job_id: job.id,
+              p_status: 'failed',
+              p_error: 'timeout: stuck in processing state',
+              p_generated_prompt: null
+            })
+
+          if (failError) {
+            console.error(`[PromptQueue] Failed to mark stuck job ${job.id} as failed:`, failError)
+          } else {
+            console.log(`[PromptQueue] Marked stuck prompt job as failed`, { 
+              jobId: job.id,
+              retryCount: job.retry_count,
+              maxRetries: job.max_retries
+            })
+
+            // Update dependent jobs
+            await this.updateDependentJobs(job.id, null, 'Prompt generation failed: timeout')
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[PromptQueue] Error recovering stuck jobs:', error)
+    }
+  }
+
+  /**
+   * Detect and recover stuck queued jobs
+   * Finds prompt jobs stuck in 'queued' state for extended periods and ensures they get processed
+   */
+  private async recoverStuckQueuedJobs(): Promise<void> {
+    try {
+      // Find prompt jobs stuck in 'queued' state (> 1 hour old)
+      // These are jobs that should have been processed but weren't claimed
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+      
+      const { data: stuckQueuedJobs, error } = await supabaseAdmin
+        .from('prompt_generation_jobs')
+        .select('id, row_id, retry_count, max_retries, created_at, priority')
+        .eq('status', 'queued')
+        .lt('created_at', oneHourAgo)
+        .order('priority', { ascending: false })
+        .order('created_at', { ascending: true })
+        .limit(50) // Process in batches to avoid overload
+
+      if (error) {
+        console.error('[PromptQueue] Failed to fetch stuck queued jobs:', error)
+        return
+      }
+
+      if (!stuckQueuedJobs || stuckQueuedJobs.length === 0) {
+        return // No stuck queued jobs
+      }
+
+      console.log('[PromptQueue] Found stuck queued jobs', { 
+        count: stuckQueuedJobs.length,
+        thresholdHours: 1
+      })
+
+      // Boost priority of old queued jobs to ensure they get processed
+      // This helps items that have been waiting for a day
+      for (const job of stuckQueuedJobs) {
+        const newPriority = Math.min(10, (job.priority || 5) + 2)
+        
+        const { error: updateError } = await supabaseAdmin
+          .from('prompt_generation_jobs')
+          .update({
+            priority: newPriority,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', job.id)
+
+        if (updateError) {
+          console.error(`[PromptQueue] Failed to boost priority for stuck queued job ${job.id}:`, updateError)
+        } else {
+          console.log(`[PromptQueue] Boosted priority for stuck queued job`, { 
+            jobId: job.id,
+            oldPriority: job.priority,
+            newPriority
+          })
+        }
+      }
+
+      // For very old jobs (24+ hours), check if they should be failed
+      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+      
+      const { data: veryOldJobs } = await supabaseAdmin
+        .from('prompt_generation_jobs')
+        .select('id, row_id, retry_count, max_retries, created_at')
+        .eq('status', 'queued')
+        .lt('created_at', oneDayAgo)
+
+      if (veryOldJobs && veryOldJobs.length > 0) {
+        console.log('[PromptQueue] Found very old queued jobs (24+ hours)', { 
+          count: veryOldJobs.length 
+        })
+
+        for (const job of veryOldJobs) {
+          // If retries exceeded or no progress in 24 hours, mark as failed
+          await supabaseAdmin
+            .rpc('update_prompt_job_status', {
+              p_job_id: job.id,
+              p_status: 'failed',
+              p_error: 'timeout: stuck in queue for 24+ hours',
+              p_generated_prompt: null
+            })
+
+          // Update dependent jobs
+          await this.updateDependentJobs(job.id, null, 'Prompt generation failed: stuck in queue for 24+ hours')
+          
+          console.log('[PromptQueue] Marked very old queued job as failed', { 
+            jobId: job.id,
+            ageHours: Math.round((Date.now() - new Date(job.created_at).getTime()) / (60 * 60 * 1000))
+          })
+        }
+      }
+    } catch (error) {
+      console.error('[PromptQueue] Error recovering stuck queued jobs:', error)
+    }
+  }
+
+  /**
    * Process queued prompt generation jobs
    */
   private async processQueue(): Promise<void> {
@@ -108,6 +311,12 @@ export class PromptQueueService {
 
     const runPromise = (async () => {
       try {
+        // First, recover any stuck jobs (both processing and queued)
+        await Promise.all([
+          this.recoverStuckProcessingJobs(),
+          this.recoverStuckQueuedJobs()
+        ])
+
         while (true) {
           // Claim up to the batch size at a time (adjust based on API rate limits)
           const { data: claimedJobs, error } = await supabaseAdmin
@@ -152,20 +361,29 @@ export class PromptQueueService {
    * Process a single prompt generation job
    */
   private async processPromptJob(job: PromptGenerationJob): Promise<void> {
-    const { id: jobId, ref_urls, target_url, retry_count, max_retries } = job
+    const { id: jobId, ref_urls, target_url, retry_count, max_retries, swap_mode } = job
 
     try {
+      // Default to 'face-hair' if swap_mode not specified
+      const swapMode: SwapMode = (swap_mode || 'face-hair') as SwapMode
+      
       console.log('[PromptQueue] Processing job', { 
         jobId, 
         retryCount: retry_count,
-        hasRefs: Boolean(ref_urls?.length) 
+        hasRefs: Boolean(ref_urls?.length),
+        swapMode
       })
 
-      // Generate prompt using Grok
-      const generatedPrompt = await generatePromptWithGrok(
-        ref_urls || [], 
-        target_url
-      )
+      // Generate prompt using Grok with timeout protection
+      // Set a timeout of 25 minutes to ensure we don't exceed the 30-minute threshold
+      const timeoutMs = 25 * 60 * 1000 // 25 minutes
+      
+      const generatedPrompt = await Promise.race([
+        generatePromptWithGrok(ref_urls || [], target_url, swapMode),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Prompt generation timeout after 25 minutes')), timeoutMs)
+        )
+      ])
 
       // Update job as completed
       await supabaseAdmin
@@ -184,9 +402,19 @@ export class PromptQueueService {
       })
 
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      const isTimeout = errorMessage.includes('timeout')
+      const isNetworkError = errorMessage.includes('ECONNRESET') || 
+                              errorMessage.includes('ETIMEDOUT') ||
+                              errorMessage.includes('network') ||
+                              errorMessage.includes('fetch')
+      
       console.error('[PromptQueue] Job failed', { 
         jobId, 
-        error: error instanceof Error ? error.message : error 
+        error: errorMessage,
+        isTimeout,
+        isNetworkError,
+        retryCount: retry_count
       })
 
       const shouldRetry = retry_count < max_retries
@@ -194,15 +422,21 @@ export class PromptQueueService {
 
       if (shouldRetry) {
         // Calculate delay with exponential backoff
+        // For network errors or timeouts, use shorter delay to retry faster
+        const baseDelay = isTimeout || isNetworkError 
+          ? this.retryConfig.baseDelayMs * 0.5 // Faster retry for transient errors
+          : this.retryConfig.baseDelayMs
+        
         const delayMs = Math.min(
-          this.retryConfig.baseDelayMs * Math.pow(this.retryConfig.backoffMultiplier, retry_count),
+          baseDelay * Math.pow(this.retryConfig.backoffMultiplier, retry_count),
           this.retryConfig.maxDelayMs
         )
 
         console.log('[PromptQueue] Retrying job', { 
           jobId, 
           retryCount: newRetryCount, 
-          delayMs 
+          delayMs,
+          errorType: isTimeout ? 'timeout' : isNetworkError ? 'network' : 'other'
         })
 
         // Reset to queued status for retry

@@ -5,14 +5,21 @@ const XAI_API_BASE = 'https://api.x.ai/v1'
 const GROK_MODELS = ['grok-4-fast-reasoning', 'grok-4', 'grok-3-mini', 'grok-2-vision-1212', 'grok-2-image-1212']
 // const GROK_VISION_MODEL = GROK_MODELS[0] // Start with the most likely to work
 
-export async function generatePromptWithGrok(refUrls: string[], targetUrl: string): Promise<string> {
+export type SwapMode = 'face' | 'face-hair'
+
+export async function generatePromptWithGrok(
+  refUrls: string[], 
+  targetUrl: string,
+  swapMode: SwapMode = 'face-hair'
+): Promise<string> {
   // Log what we received at the entry point
   console.log('[generatePromptWithGrok] Entry point:', {
     refUrls: refUrls,
     refUrlsLength: refUrls?.length,
     refUrlsType: typeof refUrls,
     targetUrl: targetUrl,
-    targetUrlType: typeof targetUrl
+    targetUrlType: typeof targetUrl,
+    swapMode: swapMode
   })
 
   // Handle target-only processing (no reference images)
@@ -21,7 +28,14 @@ export async function generatePromptWithGrok(refUrls: string[], targetUrl: strin
     return generateTargetOnlyPrompt(targetUrl)
   }
 
-  console.log('[generatePromptWithGrok] Reference images present, using face-swap mode')
+  // Use only the first reference image to avoid confusion
+  const singleRefUrl = refUrls[0]
+  console.log('[generatePromptWithGrok] Reference images present, using face-swap mode', {
+    swapMode,
+    usingSingleRef: true,
+    originalRefCount: refUrls.length
+  })
+
   const apiKey = process.env.XAI_API_KEY
   if (!apiKey) {
     throw new Error('XAI_API_KEY environment variable is not set')
@@ -30,13 +44,13 @@ export async function generatePromptWithGrok(refUrls: string[], targetUrl: strin
   // Try each model in order until one works
   for (const model of GROK_MODELS) {
     try {
-      return await generatePromptWithModel(model, refUrls, targetUrl, apiKey)
+      return await generatePromptWithModel(model, [singleRefUrl], targetUrl, apiKey, swapMode)
     } catch (error) {
       console.warn(`Model ${model} failed, trying next model:`, error instanceof Error ? error.message : error)
       // If this is the last model, use fallback template
       if (model === GROK_MODELS[GROK_MODELS.length - 1]) {
         console.warn('All models failed, using fallback template')
-        return generateFallbackPrompt(refUrls)
+        return generateFallbackPrompt([singleRefUrl], swapMode)
       }
     }
   }
@@ -134,7 +148,13 @@ Example: "Enhance this image with better lighting and improved clarity while kee
   return generatedPrompt
 }
 
-async function generatePromptWithModel(model: string, refUrls: string[], targetUrl: string, apiKey: string): Promise<string> {
+async function generatePromptWithModel(
+  model: string, 
+  refUrls: string[], 
+  targetUrl: string, 
+  apiKey: string,
+  swapMode: SwapMode = 'face-hair'
+): Promise<string> {
         // Check if this model supports vision
         const isVisionModel = model.includes('vision') || model.includes('image') || 
                              ['grok-4-fast-reasoning', 'grok-4', 'grok-3-mini'].includes(model)
@@ -143,21 +163,25 @@ async function generatePromptWithModel(model: string, refUrls: string[], targetU
     throw new Error(`Model ${model} does not support vision capabilities`)
   }
 
-  // Build the system prompt optimized for Seedream v4
-  const systemPrompt = `You write simple face swap instructions for Seedream v4. 
-You will see ${refUrls.length} reference image${refUrls.length > 1 ? 's' : ''} (faces to copy) and 1 target image (body/scene to keep).
-You MUST write ONE sentence that tells Seedream to swap the face from the reference image${refUrls.length > 1 ? 's' : ''} onto the target image.
-You MUST reference both the reference image${refUrls.length > 1 ? 's' : ''} and the target image in your response.
-For reference images: describe clothing or pose to identify the person.
-For target image: only mention simple setting or background, avoid describing the person's appearance.
-Mention face and hair to ensure proper blending. Use simple words. No technical terms. No bullet points or structured format.
-Example: "Take the face and hair from the person in the first image who is wearing blue and perfectly put it on the person in the second image in the bedroom, keep everything else the same."`
+  // Determine swap elements based on mode
+  const swapElements = swapMode === 'face-hair' ? 'face and hair' : 'face'
+  const swapElementsUpper = swapMode === 'face-hair' ? 'Face and hair' : 'Face'
 
-  // Build the user message content optimized for Seedream v4
+  // Build optimized system prompt for Seedream v4 - minimal reference, preserve target exactly
+  const systemPrompt = `You write simple face swap instructions for Seedream v4. 
+You will see 1 reference image (${swapElements} to copy) and 1 target image (scene to keep exactly as is).
+Write ONE concise sentence that swaps the ${swapElements} from the reference image onto the target image.
+Keep the target image EXACTLY the same: poses, angles, composition, lighting, and background.
+For reference: use minimal identifier only (e.g., "first image" or simple color).
+For target: mention only background/setting context, never describe the person's appearance.
+Use simple words. No technical terms. No bullet points.
+Example for ${swapMode === 'face-hair' ? 'face and hair swap' : 'face swap'}: "${swapElementsUpper === 'Face and hair' ? 'Swap the face and hair' : 'Swap the face'} from the person in the first image onto the person in the second image in the bedroom, keep poses, angles, and composition exactly the same."`
+
+  // Build minimal user message - emphasize simplicity and preservation
   const userContent: GrokVisionContent[] = [
     { 
       type: 'text', 
-      text: `Write one simple sentence for face swapping. You have ${refUrls.length + 1} images total. The first ${refUrls.length} image${refUrls.length > 1 ? 's' : ''} ${refUrls.length > 1 ? 'contain the faces to copy' : 'contains the face to copy'}. The last image is the target person. You MUST reference both the reference image${refUrls.length > 1 ? 's' : ''} and the target image in your response. For reference images, use "who is" to describe clothing or pose. For target image, only mention setting or background, not the person's appearance. Mention face and hair for better blending.`
+      text: `Write one simple sentence for ${swapMode === 'face-hair' ? 'face and hair swapping' : 'face swapping'}. You have 2 images: first is reference (${swapElements} to copy), last is target (keep exactly as is). Reference: use minimal identifier. Target: only mention background/setting. Preserve target poses, angles, composition, and lighting exactly.`
     }
   ]
 
@@ -180,8 +204,9 @@ Example: "Take the face and hair from the person in the first image who is weari
     totalImages: userContent.filter(item => item.type === 'image_url').length,
     refImagesCount: refUrls.length,
     hasTarget: !!targetUrl,
-    imageOrder: 'refs first, then target',
-    promptType: 'face-swap'
+    imageOrder: 'ref first, then target',
+    promptType: 'face-swap',
+    swapMode: swapMode
   })
 
   const messages: GrokVisionMessage[] = [
@@ -251,14 +276,16 @@ Example: "Take the face and hair from the person in the first image who is weari
       prompt: generatedPrompt,
       promptLength: generatedPrompt.length,
       refUrlsCount: refUrls.length,
-      hasTarget: !!targetUrl
+      hasTarget: !!targetUrl,
+      swapMode: swapMode
     })
 
     // Validate response content (removed length restriction to avoid unnecessary limits)
     console.log(`${model} starting validation for face-swap prompt`, {
       refUrlsCount: refUrls.length,
       promptLength: generatedPrompt.length,
-      promptPreview: generatedPrompt.substring(0, 100) + (generatedPrompt.length > 100 ? '...' : '')
+      promptPreview: generatedPrompt.substring(0, 100) + (generatedPrompt.length > 100 ? '...' : ''),
+      swapMode: swapMode
     })
 
     // Check for camera jargon that should be avoided
@@ -288,13 +315,17 @@ Example: "Take the face and hair from the person in the first image who is weari
 
 
     // Validate that the prompt contains identifying descriptions (not just generic text)
+    // Check for minimal identifiers: setting description (context like "in bedroom") or clothing/pose
+    const hasSettingContext = /\bin\s+(the\s+)?(bedroom|kitchen|bathroom|office|park|beach|indoor|outdoor|room|setting|background)/i.test(generatedPrompt)
+    const hasIdentifier = generatedPrompt.toLowerCase().includes('who is') || // "who is" descriptions
+                          generatedPrompt.toLowerCase().includes('wearing') || // clothing descriptions
+                          generatedPrompt.toLowerCase().includes('sitting') || // pose descriptions
+                          generatedPrompt.toLowerCase().includes('standing') || // pose descriptions
+                          hasSettingContext // setting context
+    
     const isGeneric = generatedPrompt.toLowerCase().includes('first image') && 
                      generatedPrompt.toLowerCase().includes('second image') &&
-                     !generatedPrompt.toLowerCase().includes('who is') && // No "who is" descriptions
-                     !generatedPrompt.toLowerCase().includes('wearing') && // No clothing descriptions
-                     !generatedPrompt.toLowerCase().includes('sitting') && // No pose descriptions
-                     !generatedPrompt.toLowerCase().includes('standing') && // No pose descriptions
-                     !generatedPrompt.toLowerCase().includes('in') // No setting descriptions
+                     !hasIdentifier
     
     if (isGeneric) {
       console.log(`${model} rejected due to generic prompt without identifying descriptions`)
@@ -318,7 +349,8 @@ Example: "Take the face and hair from the person in the first image who is weari
       promptLength: generatedPrompt.length,
       refImagesCount: refUrls.length,
       promptType: refUrls.length > 0 ? 'face-swap' : 'target-only',
-      validationPassed: true
+      validationPassed: true,
+      swapMode: swapMode
     })
 
     return generatedPrompt
@@ -328,9 +360,8 @@ Example: "Take the face and hair from the person in the first image who is weari
   }
 }
 
-function generateFallbackPrompt(refUrls: string[]): string {
-  // Generate a simple, jargon-free fallback prompt with clear image references
-  const refText = refUrls.length > 1 ? 'first images' : 'first image'
-  const targetText = refUrls.length > 1 ? 'last image' : 'second image'
-  return `Take the face from the person in the ${refText} and put it on the person in the ${targetText}, keep everything else the same.`
+function generateFallbackPrompt(refUrls: string[], swapMode: SwapMode = 'face-hair'): string {
+  // Generate minimal, jargon-free fallback prompt
+  const swapElements = swapMode === 'face-hair' ? 'face and hair' : 'face'
+  return `Swap the ${swapElements} from the person in the first image onto the person in the second image, keep poses, angles, and composition exactly the same.`
 }

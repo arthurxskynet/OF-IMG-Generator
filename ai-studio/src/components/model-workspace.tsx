@@ -12,8 +12,10 @@ import { createJobs, getSignedUrl, getStatusColor, getStatusLabel, fetchActiveJo
 import { Model, ModelRow, GeneratedImage } from '@/types/jobs'
 import { useToast } from '@/hooks/use-toast'
 import { useJobPolling } from '@/hooks/use-job-polling'
+import { useThumbnailLoader } from '@/hooks/use-thumbnail-loader'
 import { uploadImage, validateFile } from '@/lib/client-upload'
 import { createClient } from '@/lib/supabase-browser'
+import { getCachedSignedUrl } from '@/lib/image-loader'
 import { Plus, Upload, X, Sparkles, Folder, CheckCircle, XCircle, Wand2, Star, Download, Check, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
@@ -32,7 +34,7 @@ interface RowState {
   id: string
   isGenerating: boolean
   isGeneratingPrompt: boolean
-  signedUrls: Record<string, string>
+  signedUrls: Record<string, string> // Only used for reference images now
   isLoadingResults?: boolean
   isUploadingTarget?: boolean
 }
@@ -64,8 +66,6 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     })
   }, [rows, sort])
   
-  // Debug: Log model info
-  console.log('ModelWorkspace received model:', { id: model.id, name: model.name, owner_id: model.owner_id })
   const [rowStates, setRowStates] = useState<Record<string, RowState>>({})
   const [, setDeletedRowIds] = useState<Set<string>>(new Set())
   const fileInputRefs = useRef<Record<string, HTMLInputElement>>({})
@@ -91,6 +91,19 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   
   // Favorites state for immediate UI updates
   const [favoritesState, setFavoritesState] = useState<Record<string, boolean>>({})
+  
+  // Collect all images from all rows for thumbnail loading
+  const allImages = useMemo(() => {
+    const images: GeneratedImage[] = []
+    rows.forEach(row => {
+      const rowImages = (row as any).generated_images || []
+      images.push(...rowImages)
+    })
+    return images
+  }, [rows])
+  
+  // Use thumbnail loader hook for all images
+  const { thumbnailUrls, fullUrls, loadFullImage: loadFullImageFromHook } = useThumbnailLoader(allImages)
   
   // Dialog state for image navigation
   const [dialogState, setDialogState] = useState<{
@@ -174,7 +187,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   }
 
   // Navigation handlers for image dialog
-  const handleNavigateImage = (direction: 'prev' | 'next') => {
+  const handleNavigateImage = async (direction: 'prev' | 'next') => {
     if (!dialogState.rowId) return
     
     const currentRow = rows.find(row => row.id === dialogState.rowId)
@@ -186,6 +199,21 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       : Math.min(images.length - 1, dialogState.imageIndex + 1)
     
     setDialogState(prev => ({ ...prev, imageIndex: newIndex }))
+    
+    // Load full resolution for new image and preload adjacent
+    const newImage = images[newIndex]
+    if (newImage) {
+      await loadFullImageFromHook(newImage.id)
+    }
+    
+    // Preload adjacent images
+    const adjacentIndexes = [newIndex - 1, newIndex + 1].filter(i => i >= 0 && i < images.length)
+    adjacentIndexes.forEach(index => {
+      const image = images[index]
+      if (image) {
+        loadFullImageFromHook(image.id).catch(() => {})
+      }
+    })
   }
 
   // Keyboard navigation
@@ -208,32 +236,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [dialogState])
 
-  // Image preloading for smooth navigation
-  useEffect(() => {
-    if (dialogState.isOpen && dialogState.rowId) {
-      const currentRow = rows.find(row => row.id === dialogState.rowId)
-      if (!currentRow) return
-      
-      const images = (currentRow as any).generated_images || []
-      const currentRowState = rowStates[dialogState.rowId]
-      if (!currentRowState) return
-      
-      // Preload adjacent images
-      const adjacentIndexes = [
-        dialogState.imageIndex - 1,
-        dialogState.imageIndex + 1
-      ].filter(i => i >= 0 && i < images.length)
-      
-      adjacentIndexes.forEach(index => {
-        const image = images[index]
-        const imageUrl = currentRowState.signedUrls[image.output_url]
-        if (imageUrl) {
-          const img = new window.Image()
-          img.src = imageUrl
-        }
-      })
-    }
-  }, [dialogState, rowStates, rows])
+
+
+
+
 
   // Job polling hook
   // Debounce refresh to avoid redundant fetches when many jobs complete together
@@ -269,23 +275,18 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   // Initialize row states
   const getRowState = (rowId: string): RowState => {
     if (!rowStates[rowId]) {
-      setRowStates(prev => ({
-        ...prev,
-        [rowId]: {
+      const newState: RowState = {
           id: rowId,
           isGenerating: false,
           isGeneratingPrompt: false,
           signedUrls: {},
           isLoadingResults: false
         }
+      setRowStates(prev => ({
+        ...prev,
+        [rowId]: newState
       }))
-      return {
-        id: rowId,
-        isGenerating: false,
-        isGeneratingPrompt: false,
-        signedUrls: {},
-        isLoadingResults: false
-      }
+      return newState
     }
     return rowStates[rowId]
   }
@@ -300,7 +301,13 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         setRowStates(prev => ({
           ...prev,
           [rowId]: {
-            ...prev[rowId],
+            ...prev[rowId] || {
+              id: rowId,
+              isGenerating: false,
+              isGeneratingPrompt: false,
+              signedUrls: {},
+              isLoadingResults: false
+            },
             signedUrls: { ...prev[rowId]?.signedUrls, [path]: cached.url }
           }
         }))
@@ -323,7 +330,13 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         setRowStates(prev => ({
           ...prev,
           [rowId]: {
-            ...prev[rowId],
+            ...prev[rowId] || {
+              id: rowId,
+              isGenerating: false,
+              isGeneratingPrompt: false,
+              signedUrls: {},
+              isLoadingResults: false
+            },
             signedUrls: { ...prev[rowId]?.signedUrls, [path]: url }
           }
         }))
@@ -333,38 +346,173 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       console.error('Failed to get signed URL:', error)
       return ''
     }
-  }, [rowStates])
+  }, [])
 
-  // Lazy load signed URLs only when images become visible
+  // Load full resolution image on demand (for dialog)
+
+
+
+  // Track which images we've preloaded to avoid duplicates
+  const preloadedImagesRef = useRef<Set<string>>(new Set())
+  
+  // Track which ref/target URLs have been fetched to prevent duplicates
+  const loadedRefTargetUrlsRef = useRef<Set<string>>(new Set())
+  
+  // Track rows that have been processed to reset ref on row changes
+  const processedRowsRef = useRef<string>('')
+  const currentRowsKey = useMemo(() => rows.map(r => r.id).join(','), [rows])
+  
+  // Load reference and target image signed URLs when rows change
   useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            const img = entry.target as HTMLImageElement
-            const path = img.dataset.imagePath
-            const rowId = img.dataset.rowId
-            
-            if (path && rowId) {
-              getImageUrl(path, rowId).catch(() => {})
+    // Reset loaded URLs when rows actually change (different set of row IDs)
+    if (currentRowsKey !== processedRowsRef.current) {
+      loadedRefTargetUrlsRef.current.clear()
+      processedRowsRef.current = currentRowsKey
+    }
+    
+    const loadRefTargetUrls = async () => {
+      if (!rows.length) return
+      
+      // Read current state first to determine what needs to be loaded
+      let currentState: Record<string, RowState> = {}
+      setRowStates(prev => {
+        currentState = prev
+        return prev // Don't change state, just read it
+      })
+      
+      // Collect all ref and target URLs that need to be fetched
+      const urlsToLoad: Array<{ path: string; rowId: string }> = []
+      
+      rows.forEach(row => {
+        const rowId = row.id
+        const rowState = currentState[rowId] || { signedUrls: {} }
+        
+        // Collect reference image URLs
+        if (row.ref_image_urls && row.ref_image_urls.length > 0) {
+          row.ref_image_urls.forEach(refUrl => {
+            if (refUrl && !rowState.signedUrls?.[refUrl] && !loadedRefTargetUrlsRef.current.has(refUrl)) {
+              urlsToLoad.push({ path: refUrl, rowId })
             }
+          })
+        } else if ((row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url) {
+          // Use model default ref if row doesn't have specific refs
+          const defaultRef = model.default_ref_headshot_url
+          if (defaultRef && !rowState.signedUrls?.[defaultRef] && !loadedRefTargetUrlsRef.current.has(defaultRef)) {
+            urlsToLoad.push({ path: defaultRef, rowId })
+          }
+        }
+        
+        // Collect target image URL
+        if (row.target_image_url && !rowState.signedUrls?.[row.target_image_url] && !loadedRefTargetUrlsRef.current.has(row.target_image_url)) {
+          urlsToLoad.push({ path: row.target_image_url, rowId })
+        }
+      })
+      
+      if (urlsToLoad.length === 0) return
+      
+      console.log('[ModelWorkspace] Loading ref/target URLs:', { count: urlsToLoad.length, paths: urlsToLoad.map(u => u.path) })
+      
+      // Batch fetch signed URLs (limit concurrency to 10)
+      const CONCURRENCY_LIMIT = 10
+      const results: Array<{ path: string; rowId: string; url: string }> = []
+      
+      for (let i = 0; i < urlsToLoad.length; i += CONCURRENCY_LIMIT) {
+        const batch = urlsToLoad.slice(i, i + CONCURRENCY_LIMIT)
+        
+        const batchPromises = batch.map(async ({ path, rowId }) => {
+          try {
+            // Mark as loading to prevent duplicates
+            loadedRefTargetUrlsRef.current.add(path)
+            
+            // Use getImageUrl which handles caching
+            const url = await getImageUrl(path, rowId)
+            
+            return { path, rowId, url }
+          } catch (error) {
+            console.error(`Failed to load URL for ${path}:`, error)
+            // Remove from loaded set on failure so it can be retried
+            loadedRefTargetUrlsRef.current.delete(path)
+            return { path, rowId, url: '' }
           }
         })
-      },
-      {
-        rootMargin: '50px', // Start loading 50px before image becomes visible
-        threshold: 0.1
+        
+        const batchResults = await Promise.all(batchPromises)
+        results.push(...batchResults)
       }
-    )
-
-    // Observe all image elements with data attributes
-    const imageElements = document.querySelectorAll('[data-image-path]')
-    imageElements.forEach((el) => observer.observe(el))
-
-    return () => {
-      observer.disconnect()
+      
+      // Update rowStates with fetched URLs
+      if (results.length > 0) {
+        const successfulUrls = results.filter(r => r.url).length
+        console.log('[ModelWorkspace] Successfully loaded URLs:', { 
+          total: results.length, 
+          successful: successfulUrls,
+          failed: results.length - successfulUrls 
+        })
+        
+        setRowStates(prev => {
+          const updated = { ...prev }
+          
+          results.forEach(({ path, rowId, url }) => {
+            if (url) {
+              const currentState = prev[rowId] || {
+                id: rowId,
+                isGenerating: false,
+                isGeneratingPrompt: false,
+                signedUrls: {},
+                isLoadingResults: false
+              }
+              updated[rowId] = {
+                ...currentState,
+                signedUrls: {
+                  ...currentState.signedUrls,
+                  [path]: url
+                }
+              }
+            } else {
+              console.warn('[ModelWorkspace] Failed to load URL:', { path, rowId })
+            }
+          })
+          
+          return updated
+        })
+      } else {
+        console.warn('[ModelWorkspace] No URLs were loaded')
+      }
     }
-  }, [rows, getImageUrl])
+    
+    loadRefTargetUrls().catch(error => {
+      console.error('[ModelWorkspace] Error loading ref/target URLs:', error)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentRowsKey, model.default_ref_headshot_url, rows])
+  
+  // Image preloading for smooth navigation
+  useEffect(() => {
+    if (!dialogState.isOpen || !dialogState.rowId) return
+    
+    const currentRow = rows.find(row => row.id === dialogState.rowId)
+    if (!currentRow) return
+    
+    const images = (currentRow as any).generated_images || []
+    if (images.length === 0) return
+    
+    // Load full resolution for current and adjacent images
+    const imageIndexes = [
+      dialogState.imageIndex,
+      dialogState.imageIndex - 1,
+      dialogState.imageIndex + 1
+    ].filter(i => i >= 0 && i < images.length)
+    
+    // Only preload images we haven't already tried to load
+    imageIndexes.forEach(index => {
+      const image = images[index]
+      if (image && !preloadedImagesRef.current.has(image.id)) {
+        preloadedImagesRef.current.add(image.id)
+        loadFullImageFromHook(image.id).catch(() => {})
+      }
+    })
+  }, [dialogState.isOpen, dialogState.rowId, dialogState.imageIndex, rows, loadFullImageFromHook])
+
 
   // On mount: resume active jobs and setup realtime
   useEffect(() => {
@@ -457,16 +605,13 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   }
 
   // Refresh a single row and prefetch its image URLs; clear loading flag
-  const refreshSingleRow = async (rowId: string) => {
+  const       refreshSingleRow = async (rowId: string) => {
     try {
       const res = await fetch(`/api/rows/${rowId}`, { cache: 'no-store' })
       if (!res.ok) return
       const { row } = await res.json()
       setRows(prev => prev.map(r => (r.id === rowId ? row : r)))
-      const images = (row as any).generated_images || []
-      for (const img of images) {
-        await getImageUrl(img.output_url, rowId)
-      }
+      // Thumbnails will be loaded automatically by the useThumbnailLoader hook
     } catch (e) {
       // noop
     } finally {
@@ -561,11 +706,12 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         const result = await uploadImage(file, 'targets', user.id)
         
         // Update row with new target image
+        const { data: { session } } = await supabase.auth.getSession()
         const response = await fetch(`/api/rows/${rowId}`, {
           method: 'PATCH',
           headers: { 
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+            'Authorization': `Bearer ${session?.access_token}`
           },
           body: JSON.stringify({
             target_image_url: result.objectPath
@@ -863,7 +1009,11 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         // Continue with current session - it might still be valid
       }
       
-      // Get fresh session token
+      // Verify user and get session token
+      const { data: { user: authUser } } = await supabase.auth.getUser()
+      if (!authUser) {
+        throw new Error('Not authenticated')
+      }
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) {
         throw new Error('No valid authentication session')
@@ -919,11 +1069,14 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
             await new Promise(resolve => setTimeout(resolve, index * 100))
           }
           
+          const { data: { user: authUser } } = await supabase.auth.getUser()
+          if (!authUser) throw new Error('Not authenticated')
+          const { data: { session } } = await supabase.auth.getSession()
           const response = await fetch('/api/rows', {
             method: 'POST',
             headers: { 
               'Content-Type': 'application/json',
-              'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+              'Authorization': `Bearer ${session?.access_token}`
             },
             body: JSON.stringify({
               model_id: model.id
@@ -1104,11 +1257,14 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       let useServerSide = true
       
       try {
+        const { data: { user: authUser } } = await supabase.auth.getUser()
+        if (!authUser) throw new Error('Not authenticated')
+        const { data: { session } } = await supabase.auth.getSession()
         response = await fetch('/api/upload/bulk', {
           method: 'POST',
           headers: { 
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+            'Authorization': `Bearer ${session?.access_token}`
           },
           body: JSON.stringify({
             model_id: model.id,
@@ -1198,7 +1354,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
 
 
   // AI Prompt Generation (using queue system)
-  const handleAiPromptGeneration = async (rowId: string) => {
+  const handleAiPromptGeneration = async (rowId: string, swapMode: 'face' | 'face-hair' = 'face-hair') => {
     const row = rows.find(r => r.id === rowId)
     
     // Validate target image exists (reference images are optional)
@@ -1227,27 +1383,13 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
           ? [model.default_ref_headshot_url]  // Fallback to model default
           : []  // No references at all
 
-      console.log('[Frontend] Reference images logic:', {
-        rowRefImageUrls: row.ref_image_urls,
-        modelDefaultRef: model.default_ref_headshot_url,
-        finalRefImages: refImages,
-        refImagesLength: refImages.length
-      })
-
       // Convert storage paths to signed URLs for Grok API access
       const refSignedUrls = await Promise.all(
         refImages.map(path => getSignedUrl(path).then(r => r.url))
       )
       const targetSignedUrl = await getSignedUrl(row.target_image_url).then(r => r.url)
 
-      console.log('[Frontend] After URL signing:', {
-        refSignedUrls: refSignedUrls,
-        refSignedUrlsLength: refSignedUrls.length,
-        targetSignedUrl: targetSignedUrl,
-        operationType: refSignedUrls.length > 0 ? 'face-swap' : 'target-only'
-      })
-
-      // Enqueue prompt generation request
+      // Enqueue prompt generation request with swapMode
       const response = await fetch('/api/prompt/queue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1255,7 +1397,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
           rowId,
           refUrls: refSignedUrls,  // Full signed URLs
           targetUrl: targetSignedUrl,  // Full signed URL
-          priority: 8 // High priority for user-initiated requests
+          priority: 8, // High priority for user-initiated requests
+          swapMode: swapMode
         })
       })
 
@@ -1557,39 +1700,97 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       const JSZip = (await import('jszip')).default
       const zip = new JSZip()
       
+      let successCount = 0
+      let failCount = 0
+      
       // Fetch each selected image and add to zip
       for (const imageId of selectedImageIds) {
         // Find the image in rows
         let image: GeneratedImage | null = null
-        let signedUrl = ''
         
         for (const row of rows) {
           const images = (row as any).generated_images || []
           const foundImage = images.find((img: GeneratedImage) => img.id === imageId)
           if (foundImage) {
             image = foundImage
-            signedUrl = rowStates[row.id]?.signedUrls[foundImage.output_url] || ''
             break
           }
         }
 
-        if (image && signedUrl) {
-          try {
-            // Fetch the image as blob
-            const response = await fetch(signedUrl)
-            const blob = await response.blob()
-            
-            // Determine file extension from content type or URL
-            const extension = blob.type.includes('png') ? 'png' : 
-                            blob.type.includes('webp') ? 'webp' : 'jpg'
-            
-            // Add to zip with a meaningful filename
-            const filename = `image-${image.id.slice(0, 8)}.${extension}`
-            zip.file(filename, blob)
-          } catch (error) {
-            console.error(`Failed to fetch image ${imageId}:`, error)
-          }
+        if (!image) {
+          console.warn(`Image ${imageId} not found in rows`)
+          failCount++
+          continue
         }
+
+        try {
+          // Try to get signed URL from fullUrls hook first (full resolution)
+          let signedUrl = fullUrls[image.id] || ''
+          
+          // If not available in hook, try to get from thumbnailUrls
+          if (!signedUrl) {
+            signedUrl = thumbnailUrls[image.id] || ''
+          }
+          
+          // If still not available, fetch it using the image's output_url or thumbnail_url
+          if (!signedUrl) {
+            const imagePath = image.output_url || image.thumbnail_url || ''
+            if (imagePath) {
+              try {
+                signedUrl = await getCachedSignedUrl(imagePath)
+              } catch (error) {
+                console.error(`Failed to get signed URL for image ${imageId}:`, error)
+              }
+            }
+          }
+
+          if (!signedUrl) {
+            console.error(`No signed URL available for image ${imageId}`)
+            failCount++
+            continue
+          }
+
+          // Fetch the image as blob
+          const response = await fetch(signedUrl)
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+          }
+          
+          const blob = await response.blob()
+          
+          // Determine file extension from content type, URL, or default to jpg
+          let extension = 'jpg' // default
+          if (blob.type) {
+            if (blob.type.includes('png')) {
+              extension = 'png'
+            } else if (blob.type.includes('webp')) {
+              extension = 'webp'
+            } else if (blob.type.includes('jpeg') || blob.type.includes('jpg')) {
+              extension = 'jpg'
+            }
+          } else {
+            // Fallback: check URL for extension
+            const urlLower = signedUrl.toLowerCase()
+            if (urlLower.includes('.png')) {
+              extension = 'png'
+            } else if (urlLower.includes('.webp')) {
+              extension = 'webp'
+            }
+          }
+          
+          // Add to zip with a meaningful filename
+          const filename = `image-${image.id.slice(0, 8)}.${extension}`
+          zip.file(filename, blob)
+          successCount++
+        } catch (error) {
+          console.error(`Failed to fetch image ${imageId}:`, error)
+          failCount++
+        }
+      }
+
+      // Validate that at least one image was successfully added
+      if (successCount === 0) {
+        throw new Error('No images could be downloaded. Please try again.')
       }
 
       // Generate and download zip
@@ -1603,10 +1804,19 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       document.body.removeChild(link)
       URL.revokeObjectURL(url)
 
-      toast({
-        title: 'Download started',
-        description: `Downloading ${selectedImageIds.size} image${selectedImageIds.size === 1 ? '' : 's'} as ZIP file`
-      })
+      // Provide feedback on success/failure
+      if (failCount > 0) {
+        toast({
+          title: 'Download started with warnings',
+          description: `Downloaded ${successCount} image${successCount === 1 ? '' : 's'}, ${failCount} failed`,
+          variant: 'default'
+        })
+      } else {
+        toast({
+          title: 'Download started',
+          description: `Downloading ${successCount} image${successCount === 1 ? '' : 's'} as ZIP file`
+        })
+      }
 
       // Clear selections after download
       setSelectedImageIds(new Set())
@@ -1616,7 +1826,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       console.error('Download failed:', error)
       toast({
         title: 'Download failed',
-        description: 'Could not create ZIP file. Please try again.',
+        description: error instanceof Error ? error.message : 'Could not create ZIP file. Please try again.',
         variant: 'destructive'
       })
     } finally {
@@ -2000,7 +2210,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                     <DialogTrigger asChild>
                                       <div className="cursor-zoom-in">
                                         <Thumb
-                                          src={rowState.signedUrls[refUrl]}
+                                          src={rowState.signedUrls[refUrl] || ''}
                                           alt={`Reference image ${index + 1}`}
                                           size={64}
                                           dataImagePath={refUrl}
@@ -2033,10 +2243,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                   <DialogTrigger asChild>
                                     <div className="cursor-zoom-in">
                                       <Thumb
-                                        src={rowState.signedUrls[model.default_ref_headshot_url]}
+                                        src={model.default_ref_headshot_url ? (rowState.signedUrls[model.default_ref_headshot_url] || '') : ''}
                                         alt="Default reference image"
                                         size={64}
-                                        dataImagePath={model.default_ref_headshot_url}
+                                        dataImagePath={model.default_ref_headshot_url || ''}
                                         dataRowId={row.id}
                                         className="transition-transform group-hover:scale-[1.02]"
                                       />
@@ -2095,11 +2305,14 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                   
                                   // Update row with retry logic
                                   await retryWithBackoff(async () => {
+                                    const { data: { user: authUser } } = await supabase.auth.getUser()
+                                    if (!authUser) throw new Error('Not authenticated')
+                                    const { data: { session } } = await supabase.auth.getSession()
                                     const response = await fetch(`/api/rows/${row.id}`, {
                                       method: 'PATCH',
                                       headers: { 
                                         'Content-Type': 'application/json',
-                                        'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+                                        'Authorization': `Bearer ${session?.access_token}`
                                       },
                                       body: JSON.stringify({ ref_image_urls: newRefs })
                                     })
@@ -2228,10 +2441,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                 <DialogTrigger asChild>
                                   <div className="cursor-zoom-in">
                                     <Thumb
-                                      src={rowState.signedUrls[row.target_image_url]}
+                                      src={row.target_image_url ? (rowState.signedUrls[row.target_image_url] || '') : ''}
                                       alt="Target image"
                                       size={88}
-                                      dataImagePath={row.target_image_url}
+                                      dataImagePath={row.target_image_url || ''}
                                       dataRowId={row.id}
                                       className={`transition-all duration-200 ${
                                         dragOverRowId === row.id 
@@ -2365,14 +2578,29 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                               <Button 
                                 variant="outline" 
                                 size="sm"
-                                onClick={() => handleAiPromptGeneration(row.id)}
+                                onClick={() => handleAiPromptGeneration(row.id, 'face')}
                                 disabled={rowState.isGeneratingPrompt || !hasValidImages(row)}
-                                title="Generate AI prompt from images"
+                                title="Generate AI prompt for face swap only"
+                                className="text-xs"
                               >
                                 {rowState.isGeneratingPrompt ? (
                                   <Spinner size="sm" />
                                 ) : (
-                                  <Wand2 className="w-3.5 h-3.5" />
+                                  <>Face</>
+                                )}
+                              </Button>
+                              <Button 
+                                variant="outline" 
+                                size="sm"
+                                onClick={() => handleAiPromptGeneration(row.id, 'face-hair')}
+                                disabled={rowState.isGeneratingPrompt || !hasValidImages(row)}
+                                title="Generate AI prompt for face and hair swap"
+                                className="text-xs"
+                              >
+                                {rowState.isGeneratingPrompt ? (
+                                  <Spinner size="sm" />
+                                ) : (
+                                  <>Face & Hair</>
                                 )}
                               </Button>
                             </div>
@@ -2474,14 +2702,18 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                 {!isSelectionMode ? (
                                   <div 
                                     className="relative cursor-zoom-in"
-                                    onClick={() => setDialogState({ isOpen: true, rowId: row.id, imageIndex: index })}
+                                    onClick={async () => {
+                                      setDialogState({ isOpen: true, rowId: row.id, imageIndex: index })
+                                      // Load full resolution when opening dialog
+                                      await loadFullImageFromHook(image.id)
+                                    }}
                                   >
                                     <Thumb
-                                      src={rowState.signedUrls[image.output_url]}
+                                      src={thumbnailUrls[image.id] || rowState.signedUrls[image.output_url] || ''}
                                       alt="Generated image"
                                       size={96}
                                       className="flex-shrink-0 snap-start"
-                                      dataImagePath={image.output_url}
+                                      dataImagePath={image.thumbnail_url || image.output_url}
                                       dataRowId={row.id}
                                     />
                                     {/* Favorite button overlay - always visible in top-left */}
@@ -2527,7 +2759,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                     onClick={() => handleToggleImageSelection(image.id)}
                                   >
                                     <Thumb
-                                      src={rowState.signedUrls[image.output_url]}
+                                      src={thumbnailUrls[image.id] || rowState.signedUrls[image.output_url] || ''}
                                       alt="Generated image"
                                       size={96}
                                       className={`flex-shrink-0 snap-start transition-opacity duration-200 ${
@@ -2702,14 +2934,20 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                   
                   {/* Image - centered using flexbox */}
                   <div className="flex items-center justify-center h-full min-h-[400px]">
+                    {fullUrls[currentImage.id] ? (
                     <Image
-                      src={rowState.signedUrls[currentImage.output_url] || ''}
+                        src={fullUrls[currentImage.id]}
                       alt="Generated image"
                       width={1920}
                       height={1920}
                       className="max-w-full max-h-[80vh] object-contain rounded-lg"
                       loading="lazy"
                     />
+                    ) : (
+                      <div className="flex items-center justify-center h-[80vh]">
+                        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+                      </div>
+                    )}
                   </div>
                   
                   {/* Right arrow */}
