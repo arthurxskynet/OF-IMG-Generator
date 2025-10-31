@@ -115,6 +115,25 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   // Local prompt state for each row to prevent re-renders on typing
   const [localPrompts, setLocalPrompts] = useState<Record<string, string>>({})
   
+  // Track which prompts have unsaved edits (dirty state)
+  const [dirtyPrompts, setDirtyPrompts] = useState<Set<string>>(new Set())
+  
+  // Track prompts currently being saved to prevent concurrent saves
+  const [savingPrompts, setSavingPrompts] = useState<Set<string>>(new Set())
+  
+  // Refs to store latest dirty/saving prompts for async functions
+  const dirtyPromptsRef = useRef<Set<string>>(new Set())
+  const savingPromptsRef = useRef<Set<string>>(new Set())
+  
+  // Keep refs in sync with state
+  useEffect(() => {
+    dirtyPromptsRef.current = dirtyPrompts
+  }, [dirtyPrompts])
+  
+  useEffect(() => {
+    savingPromptsRef.current = savingPrompts
+  }, [savingPrompts])
+  
   // Initialize favorites state from data when component loads
   useEffect(() => {
     const initialFavorites: Record<string, boolean> = {}
@@ -129,15 +148,28 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     setFavoritesState(initialFavorites)
   }, [rows])
 
-  // Initialize local prompts from row data
+  // Initialize local prompts from row data (preserve dirty prompts)
   useEffect(() => {
     const initialPrompts: Record<string, string> = {}
     rows.forEach(row => {
-      const promptValue = row.prompt_override || model.default_prompt || ''
-      initialPrompts[row.id] = promptValue
+      // Only initialize if this prompt is not dirty (preserve unsaved edits)
+      if (!dirtyPrompts.has(row.id) && !savingPrompts.has(row.id)) {
+        const promptValue = row.prompt_override || model.default_prompt || ''
+        initialPrompts[row.id] = promptValue
+      }
     })
-    setLocalPrompts(prev => ({ ...prev, ...initialPrompts }))
-  }, [rows, model.default_prompt])
+    // Merge only non-dirty prompts, preserving dirty ones
+    setLocalPrompts(prev => {
+      const merged = { ...prev }
+      Object.keys(initialPrompts).forEach(rowId => {
+        // Only update if not dirty and not currently saving
+        if (!dirtyPrompts.has(rowId) && !savingPrompts.has(rowId)) {
+          merged[rowId] = initialPrompts[rowId]
+        }
+      })
+      return merged
+    })
+  }, [rows, model.default_prompt, dirtyPrompts, savingPrompts])
 
   // Get current prompt value for a row (local state takes precedence)
   const getCurrentPrompt = useCallback((rowId: string): string => {
@@ -146,35 +178,122 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
 
   // Handle prompt change (only local state update - no API calls)
   const handlePromptChange = useCallback((rowId: string, value: string) => {
+    const currentSavedValue = rows.find(r => r.id === rowId)?.prompt_override ?? model.default_prompt ?? ''
+    const isDirty = value !== currentSavedValue
+    
     setLocalPrompts(prev => ({ ...prev, [rowId]: value }))
-  }, [])
+    
+    // Mark as dirty if different from saved value
+    if (isDirty) {
+      setDirtyPrompts(prev => new Set(prev).add(rowId))
+    } else {
+      // Clear dirty flag if back to saved value
+      setDirtyPrompts(prev => {
+        const next = new Set(prev)
+        next.delete(rowId)
+        return next
+      })
+    }
+  }, [rows, model.default_prompt])
 
   // Handle prompt blur (save to API when user is done editing)
   const handlePromptBlur = useCallback(async (rowId: string, value: string) => {
+    // Check if already saving to prevent concurrent saves
+    if (savingPrompts.has(rowId)) {
+      return
+    }
+    
+    // Check if value actually changed
+    const currentSavedValue = rows.find(r => r.id === rowId)?.prompt_override ?? model.default_prompt ?? ''
+    if (value === currentSavedValue) {
+      // No change, clear dirty flag
+      setDirtyPrompts(prev => {
+        const next = new Set(prev)
+        next.delete(rowId)
+        return next
+      })
+      return
+    }
+    
+    // Mark as saving
+    setSavingPrompts(prev => new Set(prev).add(rowId))
+    
+    // Optimistic update: update rows state immediately
+    setRows(prev => prev.map(row => 
+      row.id === rowId 
+        ? { ...row, prompt_override: value || undefined }
+        : row
+    ))
+    
     try {
-      await fetch(`/api/rows/${rowId}`, {
+      // Add cache-busting timestamp to prevent stale data
+      const url = new URL(`/api/rows/${rowId}`, window.location.origin)
+      url.searchParams.set('_t', Date.now().toString())
+      
+      const response = await fetch(url.toString(), {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache'
+        },
+        cache: 'no-store',
         body: JSON.stringify({
           prompt_override: value || undefined
         })
       })
       
-      // Update rows state after successful save
-      setRows(prev => prev.map(row => 
-        row.id === rowId 
-          ? { ...row, prompt_override: value || undefined }
-          : row
-      ))
+      if (!response.ok) {
+        throw new Error(`Failed to save prompt: ${response.status}`)
+      }
+      
+      const { row } = await response.json()
+      
+      // Update rows state with server response, but preserve dirty prompts
+      // (in case user typed something new while save was in progress)
+      setRows(prev => prev.map(r => {
+        if (r.id === rowId) {
+          // If prompt became dirty while save was in progress, preserve the local edit
+          if (dirtyPromptsRef.current.has(rowId)) {
+            return { ...row, prompt_override: r.prompt_override }
+          }
+          return row
+        }
+        return r
+      }))
+      
+      // Clear dirty flag on success (but only if no new edits were made during save)
+      if (!dirtyPromptsRef.current.has(rowId)) {
+        setDirtyPrompts(prev => {
+          const next = new Set(prev)
+          next.delete(rowId)
+          return next
+        })
+      }
     } catch (error) {
       console.error('Failed to update prompt:', error)
-      // Revert local state on error
+      
+      // Revert rows state on error
+      const savedValue = rows.find(r => r.id === rowId)?.prompt_override ?? model.default_prompt ?? ''
+      setRows(prev => prev.map(row => 
+        row.id === rowId 
+          ? { ...row, prompt_override: savedValue || undefined }
+          : row
+      ))
+      
+      // Revert local prompt state on error
       setLocalPrompts(prev => ({
         ...prev,
-        [rowId]: rows.find(r => r.id === rowId)?.prompt_override ?? model.default_prompt ?? ''
+        [rowId]: savedValue
       }))
+    } finally {
+      // Clear saving flag
+      setSavingPrompts(prev => {
+        const next = new Set(prev)
+        next.delete(rowId)
+        return next
+      })
     }
-  }, [rows, model.default_prompt])
+  }, [rows, model.default_prompt, savingPrompts])
   
   // Helper function to get current favorite status (prioritizes UI state over data state)
   const getCurrentFavoriteStatus = (imageId: string, dataStatus?: boolean) => {
@@ -554,7 +673,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
 
   const isActiveStatus = (s: string) => ['queued','submitted','running','saving'].includes(s)
 
-  // Refresh row data after generation
+  // Refresh row data after generation (preserve dirty prompts)
   const refreshRowData = async () => {
     try {
       const url = new URL(`/api/models/${model.id}`, window.location.origin)
@@ -562,24 +681,76 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       if (currentSort) {
         url.searchParams.set('sort', currentSort)
       }
+      // Add cache-busting timestamp
+      url.searchParams.set('_t', Date.now().toString())
       
-      const response = await fetch(url.toString(), { cache: 'no-store' })
+      const response = await fetch(url.toString(), { 
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache'
+        }
+      })
       if (response.ok) {
         const { model: updatedModel } = await response.json()
-        setRows(updatedModel.model_rows || [])
+        // Merge refreshed rows, preserving dirty prompts
+        setRows(prev => {
+          const refreshedRows: any[] = updatedModel.model_rows || []
+          // Create a map of refreshed rows for quick lookup
+          const refreshedMap = new Map(refreshedRows.map((r: any) => [r.id, r]))
+          
+          // Merge: use refreshed data, but preserve dirty prompts in local state
+          const mergedRows = prev.map(prevRow => {
+            const refreshedRow = refreshedMap.get(prevRow.id)
+            if (refreshedRow) {
+              // If prompt is dirty, keep the local prompt_override, otherwise use refreshed
+              // Use refs to get latest values in async context
+              if (dirtyPromptsRef.current.has(prevRow.id) || savingPromptsRef.current.has(prevRow.id)) {
+                return { ...refreshedRow, prompt_override: prevRow.prompt_override }
+              }
+              return refreshedRow
+            }
+            return prevRow
+          })
+          
+          // Add any new rows that weren't in prev
+          const newRows = refreshedRows.filter((r: any) => !prev.some(pr => pr.id === r.id))
+          
+          return [...mergedRows, ...newRows]
+        })
       }
     } catch (error) {
       console.error('Failed to refresh row data:', error)
     }
   }
 
-  // Refresh a single row and prefetch its image URLs; clear loading flag
+  // Refresh a single row and prefetch its image URLs; clear loading flag (preserve dirty prompts)
   const       refreshSingleRow = async (rowId: string) => {
     try {
-      const res = await fetch(`/api/rows/${rowId}`, { cache: 'no-store' })
+      // Add cache-busting timestamp
+      const url = new URL(`/api/rows/${rowId}`, window.location.origin)
+      url.searchParams.set('_t', Date.now().toString())
+      
+      const res = await fetch(url.toString(), { 
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache'
+        }
+      })
       if (!res.ok) return
       const { row } = await res.json()
-      setRows(prev => prev.map(r => (r.id === rowId ? row : r)))
+      
+      // Update row, but preserve dirty prompts
+      setRows(prev => prev.map(r => {
+        if (r.id === rowId) {
+          // If prompt is dirty or saving, preserve the local prompt_override
+          // Use refs to get latest values in async context
+          if (dirtyPromptsRef.current.has(rowId) || savingPromptsRef.current.has(rowId)) {
+            return { ...row, prompt_override: r.prompt_override }
+          }
+          return row
+        }
+        return r
+      }))
       // Thumbnails will be loaded automatically by the useThumbnailLoader hook
     } catch (e) {
       // noop
@@ -693,7 +864,17 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         }
 
         const { row } = await response.json()
-        setRows(prev => prev.map(r => r.id === rowId ? row : r))
+        // Update row, but preserve dirty prompts
+        setRows(prev => prev.map(r => {
+          if (r.id === rowId) {
+            // If prompt is dirty or saving, preserve the local prompt_override
+            if (dirtyPromptsRef.current.has(rowId) || savingPromptsRef.current.has(rowId)) {
+              return { ...row, prompt_override: r.prompt_override }
+            }
+            return row
+          }
+          return r
+        }))
       }, 3, 1000)
       
       toast({
@@ -1015,8 +1196,17 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
 
       const { row: updatedRow } = await updateResponse.json()
       
-      // Update the row in the UI
-      setRows(prev => prev.map(r => r.id === row.id ? updatedRow : r))
+      // Update the row in the UI, but preserve dirty prompts
+      setRows(prev => prev.map(r => {
+        if (r.id === row.id) {
+          // If prompt is dirty or saving, preserve the local prompt_override
+          if (dirtyPromptsRef.current.has(row.id) || savingPromptsRef.current.has(row.id)) {
+            return { ...updatedRow, prompt_override: r.prompt_override }
+          }
+          return updatedRow
+        }
+        return r
+      }))
     }, 5, 2000) // Increased retries and base delay for production stability
   }
 
@@ -1380,11 +1570,11 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       
       toast({
         title: 'AI prompt generation queued',
-        description: `Your request has been queued. Estimated wait time: ${Math.ceil(estimatedWaitTime / 60)} minutes`
+        description: `Generating ${swapMode === 'face' ? 'face-only' : 'face and hair'} prompt. Estimated wait time: ${Math.ceil(estimatedWaitTime / 60)} minutes`
       })
 
       // Start polling for completion
-      pollPromptGeneration(rowId, promptJobId)
+      pollPromptGeneration(rowId, promptJobId, swapMode)
 
     } catch (error) {
       toast({
@@ -1401,7 +1591,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   }
 
   // Poll for prompt generation completion
-  const pollPromptGeneration = async (rowId: string, promptJobId: string) => {
+  const pollPromptGeneration = async (rowId: string, promptJobId: string, swapMode: 'face' | 'face-hair' = 'face-hair') => {
     const maxAttempts = 60 // Poll for up to 5 minutes (5 second intervals)
     let attempts = 0
 
@@ -1417,12 +1607,18 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
 
         if (status === 'completed' && generatedPrompt) {
           // Update the prompt immediately (automatic replacement)
+          // Clear dirty flag first since we're replacing with AI-generated prompt
+          setDirtyPrompts(prev => {
+            const next = new Set(prev)
+            next.delete(rowId)
+            return next
+          })
           setLocalPrompts(prev => ({ ...prev, [rowId]: generatedPrompt }))
           await handlePromptBlur(rowId, generatedPrompt)
           
           toast({
             title: 'AI prompt generated',
-            description: 'Prompt has been updated with AI-generated content'
+            description: `${swapMode === 'face' ? 'Face-only' : 'Face and hair'} prompt has been updated`
           })
 
           setRowStates(prev => ({
@@ -2548,13 +2744,17 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                 size="sm"
                                 onClick={() => handleAiPromptGeneration(row.id, 'face')}
                                 disabled={rowState.isGeneratingPrompt || !hasValidImages(row)}
-                                title="Generate AI prompt for face swap only"
+                                title="Generate AI prompt for face swap only (preserves target hair)"
                                 className="text-xs"
+                                aria-label="Generate AI prompt for face swap only"
                               >
                                 {rowState.isGeneratingPrompt ? (
-                                  <Spinner size="sm" />
+                                  <>
+                                    <Spinner size="sm" />
+                                    <span className="ml-1">Generating...</span>
+                                  </>
                                 ) : (
-                                  <>Face</>
+                                  <>Face Only</>
                                 )}
                               </Button>
                               <Button 
@@ -2564,9 +2764,13 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                 disabled={rowState.isGeneratingPrompt || !hasValidImages(row)}
                                 title="Generate AI prompt for face and hair swap"
                                 className="text-xs"
+                                aria-label="Generate AI prompt for face and hair swap"
                               >
                                 {rowState.isGeneratingPrompt ? (
-                                  <Spinner size="sm" />
+                                  <>
+                                    <Spinner size="sm" />
+                                    <span className="ml-1">Generating...</span>
+                                  </>
                                 ) : (
                                   <>Face & Hair</>
                                 )}

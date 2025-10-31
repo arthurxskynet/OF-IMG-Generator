@@ -105,7 +105,16 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ro
       return NextResponse.json({ error: "Row not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ ok: true, row });
+    return NextResponse.json(
+      { ok: true, row }, 
+      { 
+        headers: { 
+          "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+          "Pragma": "no-cache",
+          "Expires": "0"
+        } 
+      }
+    );
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ 
