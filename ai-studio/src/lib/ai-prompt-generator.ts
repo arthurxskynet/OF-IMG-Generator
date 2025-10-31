@@ -28,12 +28,11 @@ export async function generatePromptWithGrok(
     return generateTargetOnlyPrompt(targetUrl)
   }
 
-  // Use only the first reference image to avoid confusion
-  const singleRefUrl = refUrls[0]
+  // Use all reference images for better prompt generation
   console.log('[generatePromptWithGrok] Reference images present, using face-swap mode', {
     swapMode,
-    usingSingleRef: true,
-    originalRefCount: refUrls.length
+    refImagesCount: refUrls.length,
+    usingAllRefs: true
   })
 
   const apiKey = process.env.XAI_API_KEY
@@ -44,13 +43,13 @@ export async function generatePromptWithGrok(
   // Try each model in order until one works
   for (const model of GROK_MODELS) {
     try {
-      return await generatePromptWithModel(model, [singleRefUrl], targetUrl, apiKey, swapMode)
+      return await generatePromptWithModel(model, refUrls, targetUrl, apiKey, swapMode)
     } catch (error) {
       console.warn(`Model ${model} failed, trying next model:`, error instanceof Error ? error.message : error)
       // If this is the last model, use fallback template
       if (model === GROK_MODELS[GROK_MODELS.length - 1]) {
         console.warn('All models failed, using fallback template')
-        return generateFallbackPrompt([singleRefUrl], swapMode)
+        return generateFallbackPrompt(refUrls, swapMode)
       }
     }
   }
@@ -163,25 +162,56 @@ async function generatePromptWithModel(
     throw new Error(`Model ${model} does not support vision capabilities`)
   }
 
-  // Determine swap elements based on mode
-  const swapElements = swapMode === 'face-hair' ? 'face and hair' : 'face'
-  const swapElementsUpper = swapMode === 'face-hair' ? 'Face and hair' : 'Face'
+  // Determine swap elements based on mode - be very explicit
+  const isFaceOnly = swapMode === 'face'
+  const refCount = refUrls.length
+  const totalImages = refCount + 1 // N reference images + 1 target image
 
-  // Build optimized system prompt for Seedream v4 - minimal reference, preserve target exactly
-  const systemPrompt = `You write simple face swap instructions for Seedream v4. 
-You will see 1 reference image (${swapElements} to copy) and 1 target image (scene to keep exactly as is).
-Write ONE concise sentence that swaps the ${swapElements} from the reference image onto the target image.
-Keep the target image EXACTLY the same: poses, angles, composition, lighting, and background.
-For reference: use minimal identifier only (e.g., "first image" or simple color).
-For target: mention only background/setting context, never describe the person's appearance.
-Use simple words. No technical terms. No bullet points.
-Example for ${swapMode === 'face-hair' ? 'face and hair swap' : 'face swap'}: "${swapElementsUpper === 'Face and hair' ? 'Swap the face and hair' : 'Swap the face'} from the person in the first image onto the person in the second image in the bedroom, keep poses, angles, and composition exactly the same."`
+  // Build optimized system prompt for Seedream v4 - explicit mode differentiation with multiple reference support
+  const referenceText = refCount === 1 
+    ? '1 reference image (source person)' 
+    : `${refCount} reference images (source person)`
+  
+  const systemPrompt = `You write simple face swap instructions for Seedream v4.
+You will see ${totalImages} images: ${referenceText} and 1 target image (destination scene - always the last image).
+${isFaceOnly 
+  ? 'Swap ONLY the face from the reference image(s) onto the target image. DO NOT swap hair - keep the target person\'s original hair.'
+  : 'Swap the face AND hair from the reference image(s) onto the target image.'}
+Keep the target image EXACTLY the same: poses, angles, composition, lighting, background, body, and clothing.
+Write ONE concise sentence using simple words. No technical terms. No bullet points.
+Always reference images clearly: reference images are the first ${refCount === 1 ? 'image' : refCount === 2 ? '2 images' : `${refCount} images`} (source), the last image is the target (destination).
+${isFaceOnly
+  ? refCount === 1
+    ? 'Example: "Swap only the face from the person in the first image onto the person in the second image in the bedroom, keeping the target person\'s original hair and all poses exactly the same."'
+    : `Example: "Swap only the face from the person in the reference images onto the person in the last image in the bedroom, keeping the target person's original hair and all poses exactly the same."`
+  : refCount === 1
+    ? 'Example: "Swap the face and hair from the person in the first image onto the person in the second image in the bedroom, keep poses, angles, and composition exactly the same."'
+    : `Example: "Swap the face and hair from the person in the reference images onto the person in the last image in the bedroom, keep poses, angles, and composition exactly the same."`}`
 
-  // Build minimal user message - emphasize simplicity and preservation
+  // Build user message with explicit mode instructions
+  const refImagesText = refCount === 1 
+    ? '1. First image = REFERENCE (source person'
+    : `1. Images 1-${refCount} = REFERENCE IMAGES (source person`
+  
+  const targetImageText = refCount === 1
+    ? '2. Second image = TARGET'
+    : `${refCount + 1}. Last image = TARGET`
+  
   const userContent: GrokVisionContent[] = [
     { 
       type: 'text', 
-      text: `Write one simple sentence for ${swapMode === 'face-hair' ? 'face and hair swapping' : 'face swapping'}. You have 2 images: first is reference (${swapElements} to copy), last is target (keep exactly as is). Reference: use minimal identifier. Target: only mention background/setting. Preserve target poses, angles, composition, and lighting exactly.`
+      text: `Write one simple sentence for ${isFaceOnly ? 'face-only swapping (NO hair)' : 'face and hair swapping'}.
+You have ${totalImages} images in order:
+${refImagesText} - ${isFaceOnly ? 'face only' : 'face and hair'} to copy)
+${targetImageText} (destination scene - keep everything else exactly as is)
+${isFaceOnly 
+  ? 'CRITICAL: Only swap the face. Do NOT swap or mention hair - preserve the target person\'s original hair.'
+  : 'Swap both face and hair from reference images to target.'}
+${refCount === 1 
+  ? 'Reference: identify simply (e.g., "first image" or person description).'
+  : 'Reference: identify simply (e.g., "reference images", "first images", or person description).'}
+Target: only mention setting/background context, never describe the person's appearance.
+Preserve target poses, angles, composition, lighting, body, and clothing exactly.`
     }
   ]
 
@@ -221,11 +251,12 @@ Example for ${swapMode === 'face-hair' ? 'face and hair swap' : 'face swap'}: "$
   ]
 
         // Build request body with model-specific parameters
+        // Lower temperature for more consistent, focused outputs that follow instructions precisely
         const requestBody: GrokVisionRequest = {
           model: model,
           messages,
-          temperature: 0.3, // Slightly higher for more descriptive, creative outputs
-          max_tokens: 600, // Keep at 600 as requested
+          temperature: 0.2, // Lower for more consistent mode-specific outputs
+          max_tokens: 400, // Reduced - prompts should be concise
         }
 
         // Add parameters only for models that support them
@@ -314,6 +345,25 @@ Example for ${swapMode === 'face-hair' ? 'face and hair swap' : 'face swap'}: "$
     }
 
 
+    // Validate mode-specific content - ensure correct swap mode is followed
+    if (isFaceOnly) {
+      // For face-only mode, ensure hair is NOT mentioned or explicitly excluded
+      const mentionsHairSwap = /\b(hair|hairstyle|hairstyles)\b/i.test(generatedPrompt) &&
+                              (generatedPrompt.toLowerCase().includes('swap') || generatedPrompt.toLowerCase().includes('transfer'))
+      if (mentionsHairSwap && !generatedPrompt.toLowerCase().includes('not') && !generatedPrompt.toLowerCase().includes('only')) {
+        console.log(`${model} rejected: face-only mode but prompt mentions hair swap`)
+        throw new Error(`Generated prompt for face-only mode incorrectly mentions hair swap, retrying with different model`)
+      }
+    } else {
+      // For face-hair mode, ensure both face and hair are mentioned
+      const mentionsFace = /\bface\b/i.test(generatedPrompt)
+      const mentionsHair = /\b(hair|hairstyle|hairstyles)\b/i.test(generatedPrompt)
+      if (!mentionsFace || !mentionsHair) {
+        console.log(`${model} rejected: face-hair mode but prompt missing face or hair`)
+        throw new Error(`Generated prompt for face-hair mode missing face or hair mention, retrying with different model`)
+      }
+    }
+
     // Validate that the prompt contains identifying descriptions (not just generic text)
     // Check for minimal identifiers: setting description (context like "in bedroom") or clothing/pose
     const hasSettingContext = /\bin\s+(the\s+)?(bedroom|kitchen|bathroom|office|park|beach|indoor|outdoor|room|setting|background)/i.test(generatedPrompt)
@@ -323,9 +373,12 @@ Example for ${swapMode === 'face-hair' ? 'face and hair swap' : 'face swap'}: "$
                           generatedPrompt.toLowerCase().includes('standing') || // pose descriptions
                           hasSettingContext // setting context
     
-    const isGeneric = generatedPrompt.toLowerCase().includes('first image') && 
-                     generatedPrompt.toLowerCase().includes('second image') &&
-                     !hasIdentifier
+    // Check for generic references - adapt based on number of reference images
+    const hasGenericRef = refCount === 1
+      ? (generatedPrompt.toLowerCase().includes('first image') && generatedPrompt.toLowerCase().includes('second image'))
+      : (generatedPrompt.toLowerCase().includes('reference image') || generatedPrompt.toLowerCase().includes('first image'))
+    
+    const isGeneric = hasGenericRef && !hasIdentifier
     
     if (isGeneric) {
       console.log(`${model} rejected due to generic prompt without identifying descriptions`)
@@ -361,7 +414,22 @@ Example for ${swapMode === 'face-hair' ? 'face and hair swap' : 'face swap'}: "$
 }
 
 function generateFallbackPrompt(refUrls: string[], swapMode: SwapMode = 'face-hair'): string {
-  // Generate minimal, jargon-free fallback prompt
-  const swapElements = swapMode === 'face-hair' ? 'face and hair' : 'face'
-  return `Swap the ${swapElements} from the person in the first image onto the person in the second image, keep poses, angles, and composition exactly the same.`
+  // Generate minimal, jargon-free fallback prompt with explicit mode differentiation
+  const isFaceOnly = swapMode === 'face'
+  const refCount = refUrls.length
+  
+  // Build reference text based on number of reference images
+  const refText = refCount === 1 
+    ? 'the first image' 
+    : 'the reference images'
+  
+  const targetText = refCount === 1
+    ? 'the second image'
+    : 'the last image'
+  
+  if (isFaceOnly) {
+    return `Swap only the face from the person in ${refText} onto the person in ${targetText}, keep the target person's original hair and all poses, angles, and composition exactly the same.`
+  } else {
+    return `Swap the face and hair from the person in ${refText} onto the person in ${targetText}, keep poses, angles, and composition exactly the same.`
+  }
 }
