@@ -11,9 +11,10 @@ export const config = {
      * - _next/webpack-hmr (HMR requests)
      * - _nextjs_original-stack-frames (Next.js dev tools)
      * - favicon.ico (favicon file)
+     * - favicon.svg (favicon file)
      * - RSC requests (containing _rsc parameter)
      */
-    '/((?!api|_next/static|_next/image|_next/webpack-hmr|_nextjs_original-stack-frames|favicon.ico).*)',
+    '/((?!api|_next/static|_next/image|_next/webpack-hmr|_nextjs_original-stack-frames|favicon.ico|favicon.svg).*)',
   ],
 }
 
