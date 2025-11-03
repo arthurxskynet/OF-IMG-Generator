@@ -1,11 +1,21 @@
 import { GrokVisionRequest, GrokVisionResponse, GrokVisionMessage, GrokVisionContent } from '@/types/ai-prompt'
 
 const XAI_API_BASE = 'https://api.x.ai/v1'
+const USE_LLM_FACESWAP = process.env.PROMPT_USE_LLM_FACESWAP !== 'false'
 // Try different model names in order of preference (latest models first)
 const GROK_MODELS = ['grok-4-fast-reasoning', 'grok-4', 'grok-3-mini', 'grok-2-vision-1212', 'grok-2-image-1212']
 // const GROK_VISION_MODEL = GROK_MODELS[0] // Start with the most likely to work
 
 export type SwapMode = 'face' | 'face-hair'
+
+// Deterministic, single-sentence face-swap prompt builder
+function buildFaceSwapPrompt(refCount: number, swapMode: SwapMode): string {
+  const faceOnly = swapMode === 'face'
+  if (faceOnly) {
+    return 'Swap only the face from the first image of reference person onto the second image of target person; keep the hair unchanged and leave everything else in the second image unchanged.'
+  }
+  return 'Swap the face and hair from the first image of reference person onto the second image of target person; leave everything else in the second image unchanged.'
+}
 
 export async function generatePromptWithGrok(
   refUrls: string[], 
@@ -35,12 +45,24 @@ export async function generatePromptWithGrok(
     usingAllRefs: true
   })
 
+  // Default: use LLM for face-swap unless explicitly disabled
+  if (!USE_LLM_FACESWAP) {
+    const prompt = buildFaceSwapPrompt(refUrls.length, swapMode)
+    console.log('[generatePromptWithGrok] Deterministic face-swap prompt (LLM disabled)', {
+      promptPreview: prompt.substring(0, 200),
+      swapMode,
+      refImagesCount: refUrls.length,
+      imageOrder: 'ref first, then target'
+    })
+    return prompt
+  }
+
   const apiKey = process.env.XAI_API_KEY
   if (!apiKey) {
     throw new Error('XAI_API_KEY environment variable is not set')
   }
 
-  // Try each model in order until one works
+  // LLM path (optional via PROMPT_USE_LLM_FACESWAP): Try each model in order until one works
   for (const model of GROK_MODELS) {
     try {
       return await generatePromptWithModel(model, refUrls, targetUrl, apiKey, swapMode)
@@ -167,51 +189,20 @@ async function generatePromptWithModel(
   const refCount = refUrls.length
   const totalImages = refCount + 1 // N reference images + 1 target image
 
-  // Build optimized system prompt for Seedream v4 - explicit mode differentiation with multiple reference support
-  const referenceText = refCount === 1 
-    ? '1 reference image (source person)' 
-    : `${refCount} reference images (source person)`
-  
-  const systemPrompt = `You write simple face swap instructions for Seedream v4.
-You will see ${totalImages} images: ${referenceText} and 1 target image (destination scene - always the last image).
+  // Ultra-direct system instruction - exactly what we want
+  const systemPrompt = `You must output exactly one sentence in this format:
 ${isFaceOnly 
-  ? 'Swap ONLY the face from the reference image(s) onto the target image. DO NOT swap hair - keep the target person\'s original hair.'
-  : 'Swap the face AND hair from the reference image(s) onto the target image.'}
-Keep the target image EXACTLY the same: poses, angles, composition, lighting, background, body, and clothing.
-Write ONE concise sentence using simple words. No technical terms. No bullet points.
-Always reference images clearly: reference images are the first ${refCount === 1 ? 'image' : refCount === 2 ? '2 images' : `${refCount} images`} (source), the last image is the target (destination).
-${isFaceOnly
-  ? refCount === 1
-    ? 'Example: "Swap only the face from the person in the first image onto the person in the second image in the bedroom, keeping the target person\'s original hair and all poses exactly the same."'
-    : `Example: "Swap only the face from the person in the reference images onto the person in the last image in the bedroom, keeping the target person's original hair and all poses exactly the same."`
-  : refCount === 1
-    ? 'Example: "Swap the face and hair from the person in the first image onto the person in the second image in the bedroom, keep poses, angles, and composition exactly the same."'
-    : `Example: "Swap the face and hair from the person in the reference images onto the person in the last image in the bedroom, keep poses, angles, and composition exactly the same."`}`
+  ? '"Swap only the face from the first image of [visual description] onto the second image of [visual description]; keep the hair unchanged and leave everything else in the second image unchanged."'
+  : '"Swap the face and hair from the first image of [visual description] onto the second image of [visual description]; leave everything else in the second image unchanged."'}
+Replace [visual description] with 2-5 words describing what you see in each image. Do not write anything else. Do not explain. Do not add markdown. Output only the single sentence.`
 
-  // Build user message with explicit mode instructions
-  const refImagesText = refCount === 1 
-    ? '1. First image = REFERENCE (source person'
-    : `1. Images 1-${refCount} = REFERENCE IMAGES (source person`
-  
-  const targetImageText = refCount === 1
-    ? '2. Second image = TARGET'
-    : `${refCount + 1}. Last image = TARGET`
-  
+  // Minimal user message - no analysis, just direct instruction
   const userContent: GrokVisionContent[] = [
-    { 
-      type: 'text', 
-      text: `Write one simple sentence for ${isFaceOnly ? 'face-only swapping (NO hair)' : 'face and hair swapping'}.
-You have ${totalImages} images in order:
-${refImagesText} - ${isFaceOnly ? 'face only' : 'face and hair'} to copy)
-${targetImageText} (destination scene - keep everything else exactly as is)
-${isFaceOnly 
-  ? 'CRITICAL: Only swap the face. Do NOT swap or mention hair - preserve the target person\'s original hair.'
-  : 'Swap both face and hair from reference images to target.'}
-${refCount === 1 
-  ? 'Reference: identify simply (e.g., "first image" or person description).'
-  : 'Reference: identify simply (e.g., "reference images", "first images", or person description).'}
-Target: only mention setting/background context, never describe the person's appearance.
-Preserve target poses, angles, composition, lighting, body, and clothing exactly.`
+    {
+      type: 'text',
+      text: `${isFaceOnly 
+  ? 'Swap only the face from the first image of [describe first image in 2-5 words] onto the second image of [describe second image in 2-5 words]; keep the hair unchanged and leave everything else in the second image unchanged.'
+  : 'Swap the face and hair from the first image of [describe first image in 2-5 words] onto the second image of [describe second image in 2-5 words]; leave everything else in the second image unchanged.'}`
     }
   ]
 
@@ -229,14 +220,18 @@ Preserve target poses, angles, composition, lighting, body, and clothing exactly
     image_url: { url: targetUrl }
   })
 
-  // Log image passing details
+  // Log image passing details and what's being sent to Grok
+  const userTextContent = userContent.find(item => item.type === 'text') as { type: 'text', text: string } | undefined
   console.log(`${model} sending face-swap request to Grok:`, {
     totalImages: userContent.filter(item => item.type === 'image_url').length,
     refImagesCount: refUrls.length,
     hasTarget: !!targetUrl,
     imageOrder: 'ref first, then target',
     promptType: 'face-swap',
-    swapMode: swapMode
+    swapMode: swapMode,
+    isFaceOnly: isFaceOnly,
+    systemPrompt: systemPrompt.substring(0, 200) + '...',
+    userContentText: userTextContent?.text ? (userTextContent.text.substring(0, 200) + '...') : 'N/A'
   })
 
   const messages: GrokVisionMessage[] = [
@@ -250,13 +245,15 @@ Preserve target poses, angles, composition, lighting, body, and clothing exactly
     }
   ]
 
-        // Build request body with model-specific parameters
-        // Lower temperature for more consistent, focused outputs that follow instructions precisely
+        // Build request body with strict parameters for single sentence output
         const requestBody: GrokVisionRequest = {
           model: model,
           messages,
-          temperature: 0.2, // Lower for more consistent mode-specific outputs
-          max_tokens: 400, // Reduced - prompts should be concise
+          temperature: 0.1, // Even lower for maximum consistency
+          max_tokens: 50, // Very low - we only want one sentence
+          top_p: 0.9, // Focused sampling
+          frequency_penalty: 0.5, // Reduce repetition
+          presence_penalty: 0.3, // Encourage conciseness
         }
 
         // Add parameters only for models that support them
@@ -311,7 +308,7 @@ Preserve target poses, angles, composition, lighting, body, and clothing exactly
       swapMode: swapMode
     })
 
-    // Validate response content (removed length restriction to avoid unnecessary limits)
+    // Validate response content - enforce single short sentence and correct mode terms
     console.log(`${model} starting validation for face-swap prompt`, {
       refUrlsCount: refUrls.length,
       promptLength: generatedPrompt.length,
@@ -333,68 +330,78 @@ Preserve target poses, angles, composition, lighting, body, and clothing exactly
       throw new Error(`Generated prompt contains camera jargon: ${foundJargon.join(', ')}, retrying with different model`)
     }
 
-    // Validate that the prompt is not overly detailed or structured
-    const isOverlyDetailed = generatedPrompt.includes('**') || // Markdown formatting
-                            generatedPrompt.includes('###') || // Headers
-                            generatedPrompt.includes('Image Descriptions') || // Structured format
-                            generatedPrompt.includes('Key Visual Features') // Bullet points
+    // Strict enforcement: reject any response that's not a single sentence
+    const forbiddenWords = ['based on', 'i\'ve performed', 'the result', 'here\'s', 'note:', 'if you need', 'let me know', 'generated via', 'simulation', 'placeholder']
+    const forbiddenStructured = ['**', '###', '\n\n', '\r\n', '•', '- ', '1.', '2.', '![', '](', 'Image Descriptions', 'Key Visual Features', 'Below is', 'Here is', '*(', '*)', 'Note:', 'Here\'s']
+    const hasStructured = forbiddenStructured.some(token => generatedPrompt.includes(token))
+    const hasForbiddenWords = forbiddenWords.some(word => generatedPrompt.toLowerCase().includes(word.toLowerCase()))
+    const sentenceTerminators = (generatedPrompt.match(/[.!?]/g) || []).length
+    const lineBreaks = (generatedPrompt.match(/\n/g) || []).length
+    const wordCount = generatedPrompt.split(/\s+/).length
     
-    if (isOverlyDetailed) {
-      console.log(`${model} rejected due to overly detailed/structured prompt`)
-      throw new Error(`Generated prompt is too detailed or structured, retrying with different model`)
+    // Must be exactly one sentence, no explanations, no markdown, under 50 words
+    if (hasStructured || hasForbiddenWords || sentenceTerminators > 1 || lineBreaks > 0 || wordCount > 50) {
+      console.log(`${model} rejected: not a single simple sentence (words: ${wordCount}, sentences: ${sentenceTerminators}, lines: ${lineBreaks})`)
+      throw new Error('Generated prompt must be exactly one sentence under 50 words with no explanations or markdown, retrying with different model')
     }
 
+    // Validate required format: "first image of" and "second image of"
+    const hasFirstImageOf = /\bfirst image of\b/i.test(generatedPrompt)
+    const hasSecondImageOf = /\bsecond image of\b/i.test(generatedPrompt)
+    if (!hasFirstImageOf || !hasSecondImageOf) {
+      console.log(`${model} rejected: missing "first image of" or "second image of" format`)
+      throw new Error("Generated prompt must use 'first image of' and 'second image of' format, retrying with different model")
+    }
 
-    // Validate mode-specific content - ensure correct swap mode is followed
-    if (isFaceOnly) {
-      // For face-only mode, ensure hair is NOT mentioned or explicitly excluded
-      const mentionsHairSwap = /\b(hair|hairstyle|hairstyles)\b/i.test(generatedPrompt) &&
-                              (generatedPrompt.toLowerCase().includes('swap') || generatedPrompt.toLowerCase().includes('transfer'))
-      if (mentionsHairSwap && !generatedPrompt.toLowerCase().includes('not') && !generatedPrompt.toLowerCase().includes('only')) {
-        console.log(`${model} rejected: face-only mode but prompt mentions hair swap`)
-        throw new Error(`Generated prompt for face-only mode incorrectly mentions hair swap, retrying with different model`)
+    // Validate descriptors are present (visual descriptions after "of")
+    const firstImageMatch = generatedPrompt.match(/first image of ([^;]+)/i)
+    const secondImageMatch = generatedPrompt.match(/second image of ([^;]+)/i)
+    
+    if (firstImageMatch && secondImageMatch) {
+      const firstDescriptor = firstImageMatch[1].trim().split(/\s+/).slice(0, 5).join(' ')
+      const secondDescriptor = secondImageMatch[1].trim().split(/\s+/).slice(0, 5).join(' ')
+      
+      const firstWordCount = firstDescriptor.split(/\s+/).length
+      const secondWordCount = secondDescriptor.split(/\s+/).length
+      
+      // Descriptors should be 2-5 words (flexible: 1-6 to account for variations)
+      if (firstWordCount < 1 || firstWordCount > 6 || secondWordCount < 1 || secondWordCount > 6) {
+        console.log(`${model} rejected: descriptors out of valid range (first: ${firstWordCount}, second: ${secondWordCount} words)`)
+        throw new Error('Generated prompt descriptors should be 1-6 words each, retrying with different model')
       }
     } else {
-      // For face-hair mode, ensure both face and hair are mentioned
-      const mentionsFace = /\bface\b/i.test(generatedPrompt)
-      const mentionsHair = /\b(hair|hairstyle|hairstyles)\b/i.test(generatedPrompt)
-      if (!mentionsFace || !mentionsHair) {
-        console.log(`${model} rejected: face-hair mode but prompt missing face or hair`)
-        throw new Error(`Generated prompt for face-hair mode missing face or hair mention, retrying with different model`)
+      console.log(`${model} rejected: missing descriptor extraction`)
+      throw new Error('Generated prompt must include descriptors after "first image of" and "second image of", retrying with different model')
+    }
+
+    // Mode-specific validation
+    if (isFaceOnly) {
+      if (!/\bonly the face\b/i.test(generatedPrompt)) {
+        console.log(`${model} rejected: face-only missing "only the face"`)
+        throw new Error('Face-only prompt must include "only the face", retrying')
+      }
+      if (!/\bkeep.*hair.*unchanged\b/i.test(generatedPrompt) && !/\bhair.*unchanged\b/i.test(generatedPrompt)) {
+        console.log(`${model} rejected: face-only missing hair unchanged phrase`)
+        throw new Error('Face-only prompt must keep hair unchanged, retrying')
+      }
+      if (/\bface and hair\b/i.test(generatedPrompt)) {
+        console.log(`${model} rejected: face-only mentions "face and hair"`)
+        throw new Error('Face-only prompt should not mention "face and hair", retrying')
+      }
+    } else {
+      if (!/\bface and hair\b/i.test(generatedPrompt)) {
+        console.log(`${model} rejected: face-hair missing "face and hair"`)
+        throw new Error('Face+hair prompt must include "face and hair", retrying')
       }
     }
 
-    // Validate that the prompt contains identifying descriptions (not just generic text)
-    // Check for minimal identifiers: setting description (context like "in bedroom") or clothing/pose
-    const hasSettingContext = /\bin\s+(the\s+)?(bedroom|kitchen|bathroom|office|park|beach|indoor|outdoor|room|setting|background)/i.test(generatedPrompt)
-    const hasIdentifier = generatedPrompt.toLowerCase().includes('who is') || // "who is" descriptions
-                          generatedPrompt.toLowerCase().includes('wearing') || // clothing descriptions
-                          generatedPrompt.toLowerCase().includes('sitting') || // pose descriptions
-                          generatedPrompt.toLowerCase().includes('standing') || // pose descriptions
-                          hasSettingContext // setting context
+    // Additional safety check for inappropriate content
+    const unsafeWords = ['nude', 'naked', 'topless', 'explicit', 'sexual']
+    const hasUnsafeContent = unsafeWords.some(word => generatedPrompt.toLowerCase().includes(word))
     
-    // Check for generic references - adapt based on number of reference images
-    const hasGenericRef = refCount === 1
-      ? (generatedPrompt.toLowerCase().includes('first image') && generatedPrompt.toLowerCase().includes('second image'))
-      : (generatedPrompt.toLowerCase().includes('reference image') || generatedPrompt.toLowerCase().includes('first image'))
-    
-    const isGeneric = hasGenericRef && !hasIdentifier
-    
-    if (isGeneric) {
-      console.log(`${model} rejected due to generic prompt without identifying descriptions`)
-      throw new Error(`Generated prompt is too generic without identifying descriptions, retrying with different model`)
-    }
-
-    // Validate that target image description is safe (not describing person's appearance)
-    const hasUnsafeTargetDescription = generatedPrompt.toLowerCase().includes('who is') && 
-                                      (generatedPrompt.toLowerCase().includes('nude') ||
-                                       generatedPrompt.toLowerCase().includes('topless') ||
-                                       generatedPrompt.toLowerCase().includes('bent') ||
-                                       generatedPrompt.toLowerCase().includes('looking'))
-    
-    if (hasUnsafeTargetDescription) {
-      console.log(`${model} rejected due to unsafe target image description`)
-      throw new Error(`Generated prompt has unsafe target description that could cause unwanted changes, retrying with different model`)
+    if (hasUnsafeContent) {
+      console.log(`${model} rejected due to unsafe content`)
+      throw new Error(`Generated prompt contains unsafe content, retrying with different model`)
     }
 
     console.log(`${model} prompt generation successful:`, {
@@ -414,22 +421,6 @@ Preserve target poses, angles, composition, lighting, body, and clothing exactly
 }
 
 function generateFallbackPrompt(refUrls: string[], swapMode: SwapMode = 'face-hair'): string {
-  // Generate minimal, jargon-free fallback prompt with explicit mode differentiation
-  const isFaceOnly = swapMode === 'face'
-  const refCount = refUrls.length
-  
-  // Build reference text based on number of reference images
-  const refText = refCount === 1 
-    ? 'the first image' 
-    : 'the reference images'
-  
-  const targetText = refCount === 1
-    ? 'the second image'
-    : 'the last image'
-  
-  if (isFaceOnly) {
-    return `Swap only the face from the person in ${refText} onto the person in ${targetText}, keep the target person's original hair and all poses, angles, and composition exactly the same.`
-  } else {
-    return `Swap the face and hair from the person in ${refText} onto the person in ${targetText}, keep poses, angles, and composition exactly the same.`
-  }
+  // One-line fallback using deterministic builder
+  return buildFaceSwapPrompt(refUrls.length, swapMode)
 }
