@@ -189,7 +189,7 @@ async function generatePromptWithModel(
   const refCount = refUrls.length
   const totalImages = refCount + 1 // N reference images + 1 target image
 
-  // Ultra-direct system instruction - exactly what we want
+  // Ultra-direct system instruction - exactly what we want (force rebuild)
   const systemPrompt = `You must output exactly one sentence in this format:
 ${isFaceOnly 
   ? '"Swap only the face from the first image of [visual description] onto the second image of [visual description]; keep the hair unchanged and leave everything else in the second image unchanged."'
