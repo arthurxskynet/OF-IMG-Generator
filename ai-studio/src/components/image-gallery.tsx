@@ -97,6 +97,16 @@ export function ImageGallery({ images }: ImageGalleryProps) {
                       isLoading ? 'opacity-50' : 'opacity-100'
                     }`}
                     priority={false}
+                    onError={async (e) => {
+                      const path = image.thumbnail_url || image.output_url
+                      if (!path) return
+                      try {
+                        const response = await getSignedUrl(path)
+                        const el = e.currentTarget as HTMLImageElement
+                        el.src = response.url
+                      } catch {}
+                    }}
+                    data-image-path={image.thumbnail_url || image.output_url}
                   />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center">
@@ -142,6 +152,18 @@ export function ImageGallery({ images }: ImageGalleryProps) {
                           width={1600}
                           height={1600}
                           className="max-w-full max-h-[80vh] object-contain rounded-lg"
+                          loading="lazy"
+                          priority={false}
+                          onError={async (e) => {
+                            const path = image.output_url || image.thumbnail_url
+                            if (!path) return
+                            try {
+                              const response = await getSignedUrl(path)
+                              const el = e.currentTarget as HTMLImageElement
+                              el.src = response.url
+                            } catch {}
+                          }}
+                          data-image-path={image.output_url || image.thumbnail_url || ''}
                         />
                       )}
                     </div>

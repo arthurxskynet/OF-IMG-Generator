@@ -25,8 +25,8 @@ export function getOptimizedImageUrl(path: string): string {
   const normalizeToObjectPath = (input: string): string => {
     let p = input.trim()
     if (!p) return ''
-    // Strip leading slashes
-    p = p.replace(/^\/+/, '')
+    // Strip leading slashes and collapse multiple slashes
+    p = p.replace(/\/{2,}/g, '/').replace(/^\/+/, '')
     // If it's a full URL, attempt to extract the object path
     if (/^https?:\/\//i.test(p)) {
       try {
@@ -54,6 +54,10 @@ export function getOptimizedImageUrl(path: string): string {
         }
         // If not our project or unrecognized format, fall through and return the original input
       } catch {}
+    }
+    // Strip accidental public/ prefix (public/outputs/...)
+    if (/^public\/(outputs|refs|targets|thumbnails)\//i.test(p)) {
+      p = p.replace(/^public\//i, '')
     }
     return p
   }

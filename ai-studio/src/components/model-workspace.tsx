@@ -437,6 +437,19 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     return optimizedUrl
   }, [])
 
+  // Fallback: if Next Image fails, try direct signed URL and swap src in-place
+  const handleImageError = useCallback(async (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const target = e.currentTarget as HTMLImageElement
+    const originalPath = target.getAttribute('data-image-path') || ''
+    if (!originalPath) return
+    try {
+      const { url } = await getSignedUrl(originalPath)
+      target.src = url
+    } catch {
+      // leave as-is
+    }
+  }, [])
+
   // Load full resolution image on demand (for dialog)
 
 
@@ -2393,6 +2406,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                             height={1600}
                                             className="max-w-full max-h-[80vh] object-contain rounded-lg"
                                             loading="lazy"
+                                            onError={handleImageError}
+                                            data-image-path={refUrl}
                                           />
                                         ) : (
                                           <div className="flex items-center justify-center h-[80vh]">
@@ -2433,6 +2448,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                         height={1600}
                                         className="max-w-full max-h-[80vh] object-contain rounded-lg"
                                         loading="lazy"
+                                        onError={handleImageError}
+                                        data-image-path={model.default_ref_headshot_url}
                                       />
                                     ) : (
                                       <div className="flex items-center justify-center h-[80vh]">
@@ -2658,6 +2675,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                         height={1600}
                                         className="max-w-full max-h-[80vh] object-contain rounded-lg"
                                         loading="lazy"
+                                        onError={handleImageError}
+                                        data-image-path={row.target_image_url}
                                       />
                                     ) : (
                                       <div className="flex items-center justify-center h-[80vh]">

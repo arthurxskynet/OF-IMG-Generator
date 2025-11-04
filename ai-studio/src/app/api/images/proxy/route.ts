@@ -42,9 +42,17 @@ export async function GET(req: NextRequest) {
     } catch (error) {
       return NextResponse.json({ error: 'Invalid path encoding' }, { status: 400 })
     }
+    // Some clients may double-encode. Attempt one more decode if it still has %
+    try {
+      if (/%[0-9a-fA-F]{2}/.test(path)) {
+        const second = decodeURIComponent(path)
+        // Only use if it shortened (indicates a decode actually happened)
+        if (second.length <= path.length) path = second
+      }
+    } catch {}
     
-    // Normalize leading slashes (allow "/outputs/..." as well)
-    path = path.replace(/^\/+/, '')
+    // Normalize: trim, collapse multiple slashes, strip leading slashes
+    path = path.trim().replace(/\/{2,}/g, '/').replace(/^\/+/, '')
     
     // Allow two forms for backward compatibility:
     // 1) "bucket/key" object paths (preferred)
@@ -87,6 +95,11 @@ export async function GET(req: NextRequest) {
       }
     }
     
+    // Strip accidental leading "public/" prefix if present (public/outputs/...)
+    if (/^public\/(outputs|refs|targets|thumbnails)\//i.test(path)) {
+      path = path.replace(/^public\//i, '')
+    }
+
     // Final validation for object path shape
     if (!/^(outputs|refs|targets|thumbnails)\/.+$/i.test(path)) {
       return NextResponse.json({ error: 'Invalid path format' }, { status: 400 })
@@ -140,6 +153,16 @@ export async function GET(req: NextRequest) {
       // Get content type from response headers
       const contentType = imageResponse.headers.get('content-type') || 'image/jpeg'
       
+      // Optional debug: return JSON with diagnostics when debug=1 and NOT production
+      if (searchParams.get('debug') === '1' && process.env.NODE_ENV !== 'production') {
+        return NextResponse.json({
+          ok: true,
+          normalizedPath: path,
+          contentType,
+          upstreamStatus: imageResponse.status
+        })
+      }
+
       // Stream the response body directly - DO NOT buffer in memory
       // This prevents triggering Vercel's fluid provisioned memory
       return new NextResponse(imageResponse.body, {

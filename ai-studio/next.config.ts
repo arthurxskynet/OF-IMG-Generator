@@ -10,6 +10,12 @@ const nextConfig: NextConfig = {
             pathname: "/storage/v1/object/**",
           },
         ],
+        // Allow optimized loading from our local proxy endpoint (any subpath)
+        localPatterns: [
+          {
+            pathname: '/api/images/proxy/**',
+          },
+        ],
         // Enable image optimization for better performance and cost savings
         formats: ['image/avif', 'image/webp'],
         minimumCacheTTL: 12600, // 3.5 hours (slightly less than signed URL expiry)

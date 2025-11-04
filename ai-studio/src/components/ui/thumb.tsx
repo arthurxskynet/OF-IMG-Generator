@@ -2,6 +2,8 @@
 
 import Image from "next/image";
 import { cn } from "@/lib/utils";
+import { useState, useCallback } from "react";
+import { getSignedUrl } from "@/lib/jobs";
 
 interface ThumbProps {
   src?: string | null;
@@ -13,6 +15,23 @@ interface ThumbProps {
 }
 
 const Thumb = ({ src, alt, size = 96, className, dataImagePath, dataRowId }: ThumbProps) => {
+  const [fallbackSrc, setFallbackSrc] = useState<string | null>(null)
+  const [errored, setErrored] = useState(false)
+
+  const handleError = useCallback(async (e: React.SyntheticEvent<HTMLImageElement>) => {
+    if (errored) return
+    setErrored(true)
+    const path = dataImagePath
+    if (!path) return
+    try {
+      const { url } = await getSignedUrl(path)
+      // Switch to direct signed URL
+      setFallbackSrc(url)
+    } catch {
+      // ignore; leave as empty fallback
+    }
+  }, [dataImagePath, errored])
+
   return (
     <div
       className={cn(
@@ -23,7 +42,16 @@ const Thumb = ({ src, alt, size = 96, className, dataImagePath, dataRowId }: Thu
       data-image-path={dataImagePath}
       data-row-id={dataRowId}
     >
-      {src ? (
+      {fallbackSrc ? (
+        <img
+          src={fallbackSrc}
+          alt={alt}
+          width={size}
+          height={size}
+          className="object-cover w-full h-full"
+          loading="lazy"
+        />
+      ) : src ? (
         <Image
           src={src}
           alt={alt}
@@ -31,6 +59,8 @@ const Thumb = ({ src, alt, size = 96, className, dataImagePath, dataRowId }: Thu
           sizes={`${size}px`}
           className="object-cover"
           loading="lazy"
+          onError={handleError}
+          data-image-path={dataImagePath}
         />
       ) : (
         <div className="absolute inset-0 grid place-items-center text-xs text-muted-foreground">IMG</div>
