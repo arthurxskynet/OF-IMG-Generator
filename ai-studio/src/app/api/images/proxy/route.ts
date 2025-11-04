@@ -48,30 +48,47 @@ export async function GET(req: NextRequest) {
     
     // Allow two forms for backward compatibility:
     // 1) "bucket/key" object paths (preferred)
-    // 2) Full Supabase Storage URLs (signed or public) for the same project
+    // 2) Full Supabase Storage URLs (signed or public) - extract object path safely
     const isObjectPath = /^(outputs|refs|targets|thumbnails)\/.+$/i.test(path)
     const isHttpUrl = /^https?:\/\//i.test(path)
 
-    // For full URLs, ensure they belong to our Supabase project and extract as-is
-    let useSignedUrlDirectly = false
+    // If a full Supabase Storage URL was provided, extract the object path "bucket/key"
     if (!isObjectPath && isHttpUrl) {
       try {
         const url = new URL(path)
-        const allowedHost = process.env.NEXT_PUBLIC_SUPABASE_URL ? new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).host : ''
-        const isSameSupabase = allowedHost && url.host === allowedHost && url.pathname.includes('/storage/v1/object/')
-        if (isSameSupabase) {
-          // Use provided signed/public URL directly; optimization and caching still apply upstream
-          useSignedUrlDirectly = true
-        } else {
+        // Only allow Supabase storage hosts to avoid SSRF: *.supabase.co
+        const isSupabaseHost = /\.supabase\.co$/i.test(url.host)
+        const isStoragePath = url.pathname.includes('/storage/v1/object/')
+        if (!isSupabaseHost || !isStoragePath) {
+          console.warn('[Image Proxy] Rejected non-supabase URL', { host: url.host, pathname: url.pathname })
           return NextResponse.json({ error: 'External URL not allowed' }, { status: 400 })
         }
+        // Extract bucket/key after optional public/sign segment
+        const parts = url.pathname.split('/').filter(Boolean)
+        const idx = parts.findIndex(seg => seg === 'object')
+        if (idx === -1) {
+          return NextResponse.json({ error: 'Invalid storage URL' }, { status: 400 })
+        }
+        const afterObject = parts[idx + 1]
+        let bucketIndex = idx + 1
+        if (afterObject === 'public' || afterObject === 'sign') {
+          bucketIndex = idx + 2
+        }
+        const bucket = parts[bucketIndex]
+        const key = parts.slice(bucketIndex + 1).join('/')
+        const extracted = bucket && key ? `${bucket}/${key}` : ''
+        if (!extracted || !/^(outputs|refs|targets|thumbnails)\/.+$/i.test(extracted)) {
+          console.warn('[Image Proxy] Rejected bucket or key not allowed', { bucket, keyPreview: key?.slice(0, 16) })
+          return NextResponse.json({ error: 'Invalid path format' }, { status: 400 })
+        }
+        path = extracted
       } catch {
         return NextResponse.json({ error: 'Invalid URL format' }, { status: 400 })
       }
     }
     
-    // If not a valid object path or allowed full URL, reject
-    if (!isObjectPath && !useSignedUrlDirectly) {
+    // Final validation for object path shape
+    if (!/^(outputs|refs|targets|thumbnails)\/.+$/i.test(path)) {
       return NextResponse.json({ error: 'Invalid path format' }, { status: 400 })
     }
     
@@ -89,12 +106,9 @@ export async function GET(req: NextRequest) {
       // Use cached signed URL
       signedUrl = cached.signedUrl
     } else {
-      if (useSignedUrlDirectly) {
-        signedUrl = path
-      } else {
-        // Generate new signed URL (4 hour expiry)
-        signedUrl = await signPath(path, 14400)
-      }
+      // Always sign the object path (even if user sent a full URL)
+      // Ensures consistent expiry and host, avoids relying on client tokens
+      signedUrl = await signPath(path, 14400)
       
       // Cache the signed URL
       signedUrlCache.set(cacheKey, {

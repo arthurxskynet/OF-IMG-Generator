@@ -31,8 +31,9 @@ export function getOptimizedImageUrl(path: string): string {
     if (/^https?:\/\//i.test(p)) {
       try {
         const url = new URL(p)
-        const allowedHost = process.env.NEXT_PUBLIC_SUPABASE_URL ? new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).host : ''
-        if (allowedHost && url.host === allowedHost && url.pathname.includes('/storage/v1/object/')) {
+        // Accept any valid Supabase storage host to be resilient to env misconfig
+        const isSupabaseHost = /\.supabase\.co$/i.test(url.host)
+        if (isSupabaseHost && url.pathname.includes('/storage/v1/object/')) {
           // pathname patterns we may encounter:
           // /storage/v1/object/outputs/<key>
           // /storage/v1/object/public/outputs/<key>
