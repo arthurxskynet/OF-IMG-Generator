@@ -34,6 +34,7 @@ interface RowState {
   id: string
   isGenerating: boolean
   isGeneratingPrompt: boolean
+  activePromptSwapMode?: 'face' | 'face-hair'
   signedUrls: Record<string, string> // Optimized proxy URLs for display (reference images, target images, generated images)
   isLoadingResults?: boolean
   isUploadingTarget?: boolean
@@ -248,17 +249,15 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       
       const { row } = await response.json()
       
-      // Update rows state with server response, but preserve dirty prompts
+      // Update rows state with server response, but preserve existing generated_images and dirty prompts
       // (in case user typed something new while save was in progress)
       setRows(prev => prev.map(r => {
-        if (r.id === rowId) {
-          // If prompt became dirty while save was in progress, preserve the local edit
-          if (dirtyPromptsRef.current.has(rowId)) {
-            return { ...row, prompt_override: r.prompt_override }
-          }
-          return row
+        if (r.id !== rowId) return r
+        const merged = { ...r, ...row }
+        if (dirtyPromptsRef.current.has(rowId)) {
+          merged.prompt_override = r.prompt_override
         }
-        return r
+        return merged
       }))
       
       // Clear dirty flag on success (but only if no new edits were made during save)
@@ -398,6 +397,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
           id: rowId,
           isGenerating: false,
           isGeneratingPrompt: false,
+          activePromptSwapMode: undefined,
           signedUrls: {},
           isLoadingResults: false
         }
@@ -425,6 +425,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
             id: rowId,
             isGenerating: false,
             isGeneratingPrompt: false,
+            activePromptSwapMode: undefined,
             signedUrls: {},
             isLoadingResults: false
           },
@@ -864,16 +865,14 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         }
 
         const { row } = await response.json()
-        // Update row, but preserve dirty prompts
+        // Update row, but preserve existing generated_images and any dirty prompt edits
         setRows(prev => prev.map(r => {
-          if (r.id === rowId) {
-            // If prompt is dirty or saving, preserve the local prompt_override
-            if (dirtyPromptsRef.current.has(rowId) || savingPromptsRef.current.has(rowId)) {
-              return { ...row, prompt_override: r.prompt_override }
-            }
-            return row
+          if (r.id !== rowId) return r
+          const merged = { ...r, ...row }
+          if (dirtyPromptsRef.current.has(rowId) || savingPromptsRef.current.has(rowId)) {
+            merged.prompt_override = r.prompt_override
           }
-          return r
+          return merged
         }))
       }, 3, 1000)
       
@@ -1196,16 +1195,14 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
 
       const { row: updatedRow } = await updateResponse.json()
       
-      // Update the row in the UI, but preserve dirty prompts
+      // Update the row in the UI, but preserve existing generated_images and dirty prompts
       setRows(prev => prev.map(r => {
-        if (r.id === row.id) {
-          // If prompt is dirty or saving, preserve the local prompt_override
-          if (dirtyPromptsRef.current.has(row.id) || savingPromptsRef.current.has(row.id)) {
-            return { ...updatedRow, prompt_override: r.prompt_override }
-          }
-          return updatedRow
+        if (r.id !== row.id) return r
+        const merged = { ...r, ...updatedRow }
+        if (dirtyPromptsRef.current.has(row.id) || savingPromptsRef.current.has(row.id)) {
+          merged.prompt_override = r.prompt_override
         }
-        return r
+        return merged
       }))
     }, 5, 2000) // Increased retries and base delay for production stability
   }
@@ -1529,7 +1526,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     // Set loading state
     setRowStates(prev => ({
       ...prev,
-      [rowId]: { ...getRowState(rowId), isGeneratingPrompt: true }
+      [rowId]: { ...getRowState(rowId), isGeneratingPrompt: true, activePromptSwapMode: swapMode }
     }))
 
     try {
@@ -1585,7 +1582,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       
       setRowStates(prev => ({
         ...prev,
-        [rowId]: { ...getRowState(rowId), isGeneratingPrompt: false }
+        [rowId]: { ...getRowState(rowId), isGeneratingPrompt: false, activePromptSwapMode: undefined }
       }))
     }
   }
@@ -1623,7 +1620,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
 
           setRowStates(prev => ({
             ...prev,
-            [rowId]: { ...getRowState(rowId), isGeneratingPrompt: false }
+            [rowId]: { ...getRowState(rowId), isGeneratingPrompt: false, activePromptSwapMode: undefined }
           }))
           return
         }
@@ -1649,7 +1646,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         
         setRowStates(prev => ({
           ...prev,
-          [rowId]: { ...getRowState(rowId), isGeneratingPrompt: false }
+          [rowId]: { ...getRowState(rowId), isGeneratingPrompt: false, activePromptSwapMode: undefined }
         }))
       }
     }
@@ -2388,14 +2385,20 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                         <DialogTitle>Reference Image {index + 1}</DialogTitle>
                                       </DialogHeader>
                                       <div className="flex justify-center">
-                                        <Image
-                                          src={rowState.signedUrls[refUrl] || ''}
-                                          alt={`Reference image ${index + 1}`}
-                                          width={1600}
-                                          height={1600}
-                                          className="max-w-full max-h-[80vh] object-contain rounded-lg"
-                                          loading="lazy"
-                                        />
+                                        {rowState.signedUrls[refUrl] ? (
+                                          <Image
+                                            src={rowState.signedUrls[refUrl]}
+                                            alt={`Reference image ${index + 1}`}
+                                            width={1600}
+                                            height={1600}
+                                            className="max-w-full max-h-[80vh] object-contain rounded-lg"
+                                            loading="lazy"
+                                          />
+                                        ) : (
+                                          <div className="flex items-center justify-center h-[80vh]">
+                                            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+                                          </div>
+                                        )}
                                       </div>
                                     </DialogContent>
                                   </div>
@@ -2422,14 +2425,20 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                     <DialogTitle>Default Reference Image</DialogTitle>
                                   </DialogHeader>
                                   <div className="flex justify-center">
-                                    <Image
-                                      src={rowState.signedUrls[model.default_ref_headshot_url] || ''}
-                                      alt="Default reference image"
-                                      width={1600}
-                                      height={1600}
-                                      className="max-w-full max-h-[80vh] object-contain rounded-lg"
-                                      loading="lazy"
-                                    />
+                                    {model.default_ref_headshot_url && rowState.signedUrls[model.default_ref_headshot_url] ? (
+                                      <Image
+                                        src={rowState.signedUrls[model.default_ref_headshot_url]}
+                                        alt="Default reference image"
+                                        width={1600}
+                                        height={1600}
+                                        className="max-w-full max-h-[80vh] object-contain rounded-lg"
+                                        loading="lazy"
+                                      />
+                                    ) : (
+                                      <div className="flex items-center justify-center h-[80vh]">
+                                        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+                                      </div>
+                                    )}
                                   </div>
                                 </DialogContent>
                               </Dialog>
@@ -2641,14 +2650,20 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                     <DialogTitle>Target Image</DialogTitle>
                                   </DialogHeader>
                                   <div className="flex justify-center">
-                                    <Image
-                                      src={rowState.signedUrls[row.target_image_url] || ''}
-                                      alt="Target image"
-                                      width={1600}
-                                      height={1600}
-                                      className="max-w-full max-h-[80vh] object-contain rounded-lg"
-                                      loading="lazy"
-                                    />
+                                    {row.target_image_url && rowState.signedUrls[row.target_image_url] ? (
+                                      <Image
+                                        src={rowState.signedUrls[row.target_image_url]}
+                                        alt="Target image"
+                                        width={1600}
+                                        height={1600}
+                                        className="max-w-full max-h-[80vh] object-contain rounded-lg"
+                                        loading="lazy"
+                                      />
+                                    ) : (
+                                      <div className="flex items-center justify-center h-[80vh]">
+                                        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+                                      </div>
+                                    )}
                                   </div>
                                 </DialogContent>
                               </div>
@@ -2748,7 +2763,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                 className="text-xs"
                                 aria-label="Generate AI prompt for face swap only"
                               >
-                                {rowState.isGeneratingPrompt ? (
+                                {rowState.isGeneratingPrompt && rowState.activePromptSwapMode === 'face' ? (
                                   <>
                                     <Spinner size="sm" />
                                     <span className="ml-1">Generating...</span>
@@ -2766,7 +2781,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                 className="text-xs"
                                 aria-label="Generate AI prompt for face and hair swap"
                               >
-                                {rowState.isGeneratingPrompt ? (
+                                {rowState.isGeneratingPrompt && rowState.activePromptSwapMode === 'face-hair' ? (
                                   <>
                                     <Spinner size="sm" />
                                     <span className="ml-1">Generating...</span>
