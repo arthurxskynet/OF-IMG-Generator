@@ -21,8 +21,46 @@ const CACHE_DURATION = 3.5 * 60 * 60 * 1000
 export function getOptimizedImageUrl(path: string): string {
   if (!path) return ''
   
-  // Encode the path as a query parameter
-  const encodedPath = encodeURIComponent(path)
+  // Normalize possible full Supabase URLs or leading slashes to object path "bucket/key"
+  const normalizeToObjectPath = (input: string): string => {
+    let p = input.trim()
+    if (!p) return ''
+    // Strip leading slashes
+    p = p.replace(/^\/+/, '')
+    // If it's a full URL, attempt to extract the object path
+    if (/^https?:\/\//i.test(p)) {
+      try {
+        const url = new URL(p)
+        const allowedHost = process.env.NEXT_PUBLIC_SUPABASE_URL ? new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).host : ''
+        if (allowedHost && url.host === allowedHost && url.pathname.includes('/storage/v1/object/')) {
+          // pathname patterns we may encounter:
+          // /storage/v1/object/outputs/<key>
+          // /storage/v1/object/public/outputs/<key>
+          // /storage/v1/object/sign/outputs/<key>?token=...
+          const parts = url.pathname.split('/').filter(Boolean)
+          const idx = parts.findIndex(seg => seg === 'object')
+          if (idx !== -1 && parts.length > idx + 2) {
+            // Skip optional marker after 'object' (e.g., 'public' or 'sign')
+            const afterObject = parts[idx + 1]
+            let bucketIndex = idx + 1
+            if (afterObject === 'public' || afterObject === 'sign') {
+              bucketIndex = idx + 2
+            }
+            const bucket = parts[bucketIndex]
+            const key = parts.slice(bucketIndex + 1).join('/')
+            if (bucket && key) return `${bucket}/${key}`
+          }
+        }
+        // If not our project or unrecognized format, fall through and return the original input
+      } catch {}
+    }
+    return p
+  }
+  
+  const objectPath = normalizeToObjectPath(path)
+  
+  // Encode the normalized path as a query parameter
+  const encodedPath = encodeURIComponent(objectPath)
   
   // Use the proxy route for Next.js Image Optimization
   // Next.js will automatically optimize (resize, convert to WebP/AVIF, cache on edge)

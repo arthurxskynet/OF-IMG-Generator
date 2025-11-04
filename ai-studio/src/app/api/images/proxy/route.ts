@@ -1,46 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { signPath } from '@/lib/storage'
-import { cache } from 'react'
 
 // In-memory cache for signed URLs (works within the same serverless function instance)
 // Key: storage path, Value: { signedUrl: string, expires: number }
+// NOTE: This only caches signed URLs (strings), not image data - keeping memory usage minimal
 const signedUrlCache = new Map<string, { signedUrl: string; expires: number }>()
 const CACHE_DURATION = 3.5 * 60 * 60 * 1000 // 3.5 hours
 
-// Cache the image fetching to reduce Supabase bandwidth
-// This uses React cache() which is request-memoized
-const getCachedImage = cache(async (signedUrl: string, path: string) => {
-  const imageResponse = await fetch(signedUrl, {
-    // Use Next.js fetch caching
-    next: { 
-      revalidate: 12600, // 3.5 hours
-      tags: [`image-${path}`]
-    }
-  })
-  
-  if (!imageResponse.ok) {
-    throw new Error(`Failed to fetch image: ${imageResponse.status}`)
-  }
-  
-  const imageBuffer = await imageResponse.arrayBuffer()
-  const contentType = imageResponse.headers.get('content-type') || 'image/jpeg'
-  
-  return { imageBuffer, contentType }
-})
-
 /**
  * Optimized image proxy for Next.js Image Optimization
- * This route generates signed URLs from Supabase Storage and returns the image
+ * This route generates signed URLs from Supabase Storage and streams the image
  * Next.js Image Optimization will then cache and optimize these images
- * Benefits:
+ * 
+ * CRITICAL OPTIMIZATION: Streams responses instead of buffering in memory
+ * - Prevents high memory usage that triggers Vercel's fluid provisioned memory
+ * - Reduces serverless function costs significantly
  * - Reduces Supabase bandwidth costs (images cached on Vercel edge)
  * - Automatic WebP/AVIF conversion
  * - Automatic resizing based on device
  * - Edge caching (free on Vercel)
  * - Server-side signed URL caching prevents repeated API calls
+ * 
+ * Route caching: Keep dynamic to handle query params, but rely on Cache-Control headers
+ * and Next.js fetch caching for edge optimization. Vercel will cache at edge based on URL.
  */
-// Configure route caching
-export const dynamic = 'force-dynamic' // Required for query params
 export const revalidate = 12600 // 3.5 hours - cache revalidation time
 
 export async function GET(req: NextRequest) {
@@ -60,8 +43,35 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid path encoding' }, { status: 400 })
     }
     
-    // Validate path to prevent abuse - must start with allowed bucket and have content after
-    if (!path.match(/^(outputs|refs|targets|thumbnails)\/.+$/)) {
+    // Normalize leading slashes (allow "/outputs/..." as well)
+    path = path.replace(/^\/+/, '')
+    
+    // Allow two forms for backward compatibility:
+    // 1) "bucket/key" object paths (preferred)
+    // 2) Full Supabase Storage URLs (signed or public) for the same project
+    const isObjectPath = /^(outputs|refs|targets|thumbnails)\/.+$/i.test(path)
+    const isHttpUrl = /^https?:\/\//i.test(path)
+
+    // For full URLs, ensure they belong to our Supabase project and extract as-is
+    let useSignedUrlDirectly = false
+    if (!isObjectPath && isHttpUrl) {
+      try {
+        const url = new URL(path)
+        const allowedHost = process.env.NEXT_PUBLIC_SUPABASE_URL ? new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).host : ''
+        const isSameSupabase = allowedHost && url.host === allowedHost && url.pathname.includes('/storage/v1/object/')
+        if (isSameSupabase) {
+          // Use provided signed/public URL directly; optimization and caching still apply upstream
+          useSignedUrlDirectly = true
+        } else {
+          return NextResponse.json({ error: 'External URL not allowed' }, { status: 400 })
+        }
+      } catch {
+        return NextResponse.json({ error: 'Invalid URL format' }, { status: 400 })
+      }
+    }
+    
+    // If not a valid object path or allowed full URL, reject
+    if (!isObjectPath && !useSignedUrlDirectly) {
       return NextResponse.json({ error: 'Invalid path format' }, { status: 400 })
     }
     
@@ -70,67 +80,77 @@ export async function GET(req: NextRequest) {
       cleanupExpiredCache()
     }
     
-    // Check cache for signed URL first
-    const cached = signedUrlCache.get(path)
+    // Check cache for signed URL first (use the normalized key)
+    const cacheKey = path
+    const cached = signedUrlCache.get(cacheKey)
     let signedUrl: string
     
     if (cached && cached.expires > Date.now()) {
       // Use cached signed URL
       signedUrl = cached.signedUrl
     } else {
-      // Generate new signed URL (4 hour expiry)
-      signedUrl = await signPath(path, 14400)
+      if (useSignedUrlDirectly) {
+        signedUrl = path
+      } else {
+        // Generate new signed URL (4 hour expiry)
+        signedUrl = await signPath(path, 14400)
+      }
       
       // Cache the signed URL
-      signedUrlCache.set(path, {
+      signedUrlCache.set(cacheKey, {
         signedUrl,
         expires: Date.now() + CACHE_DURATION
       })
     }
     
-    // Fetch the image from Supabase using React cache for request deduplication
-    let imageBuffer: ArrayBuffer
-    let contentType: string
-    
+    // Stream the image directly from Supabase without buffering in memory
+    // This is CRITICAL to prevent high memory usage and costs
     try {
-      const result = await getCachedImage(signedUrl, path)
-      imageBuffer = result.imageBuffer
-      contentType = result.contentType
-    } catch (error) {
-      // Clear cache on error so we can retry on next request
-      signedUrlCache.delete(path)
-      console.error('Image proxy fetch error:', error)
+      const imageResponse = await fetch(signedUrl, {
+        // Use Next.js fetch caching with tags for revalidation
+        next: { 
+          revalidate: 12600, // 3.5 hours
+          tags: [`image-${path}`]
+        }
+      })
       
-      // Return appropriate error based on error type
-      if (error instanceof Error && error.message.includes('Failed to fetch image')) {
-        const statusMatch = error.message.match(/\d+/)
-        const status = statusMatch ? parseInt(statusMatch[0]) : 500
+      if (!imageResponse.ok) {
+        // Clear cache on error so we can retry on next request
+        signedUrlCache.delete(cacheKey)
         return NextResponse.json(
           { error: 'Failed to fetch image from storage' },
-          { status }
+          { status: imageResponse.status }
         )
       }
+      
+      // Get content type from response headers
+      const contentType = imageResponse.headers.get('content-type') || 'image/jpeg'
+      
+      // Stream the response body directly - DO NOT buffer in memory
+      // This prevents triggering Vercel's fluid provisioned memory
+      return new NextResponse(imageResponse.body, {
+        headers: {
+          'Content-Type': contentType,
+          // Aggressive caching headers
+          // s-maxage: edge/CDN cache (3.5 hours), max-age: browser cache
+          // stale-while-revalidate: serve stale content for 24h while revalidating in background
+          'Cache-Control': 'public, s-maxage=12600, max-age=12600, stale-while-revalidate=86400, immutable',
+          // Prevent content type sniffing
+          'X-Content-Type-Options': 'nosniff',
+          // Allow Next.js Image Optimization to process different formats
+          'Vary': 'Accept',
+        },
+      })
+    } catch (error) {
+      // Clear cache on error so we can retry on next request
+      signedUrlCache.delete(cacheKey)
+      console.error('Image proxy fetch error:', error)
       
       return NextResponse.json(
         { error: 'Failed to fetch image' },
         { status: 500 }
       )
     }
-    
-    // Return image with aggressive caching headers
-    // This prevents Next.js from fetching on every refresh
-    return new NextResponse(imageBuffer, {
-      headers: {
-        'Content-Type': contentType,
-        // Cache for 3.5 hours on CDN/edge, allow stale for 24h
-        // s-maxage: edge/CDN cache, max-age: browser cache
-        'Cache-Control': 'public, s-maxage=12600, max-age=12600, stale-while-revalidate=86400, immutable',
-        // Prevent content type sniffing
-        'X-Content-Type-Options': 'nosniff',
-        // Allow Next.js Image Optimization to process different formats
-        'Vary': 'Accept',
-      },
-    })
   } catch (error) {
     console.error('Image proxy error:', error)
     return NextResponse.json(
