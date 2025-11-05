@@ -134,11 +134,8 @@ export async function GET(req: NextRequest) {
     // This is CRITICAL to prevent high memory usage and costs
     try {
       const imageResponse = await fetch(signedUrl, {
-        // Use Next.js fetch caching with tags for revalidation
-        next: { 
-          revalidate: 12600, // 3.5 hours
-          tags: [`image-${path}`]
-        }
+        // Avoid Next.js Data Cache for large binaries (>2MB) to prevent cache errors
+        cache: 'no-store'
       })
       
       if (!imageResponse.ok) {

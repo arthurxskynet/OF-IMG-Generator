@@ -36,6 +36,13 @@ export async function POST(req: NextRequest) {
     }
 
     // Enqueue the prompt generation with swapMode
+    console.log('[PromptQueue] Enqueue request', {
+      rowId,
+      refUrlsCount: refUrls?.length || 0,
+      hasTarget: Boolean(targetUrl),
+      priority,
+      swapMode
+    })
     const promptJobId = await promptQueueService.enqueuePromptGeneration(
       rowId,
       model.id,

@@ -330,16 +330,22 @@ export async function POST(req: NextRequest) {
           }).eq('id', job.id)
         }
       } catch (e: any) {
+        const providerMessage = e?.response?.data?.error
+          ?? e?.response?.data?.message
+          ?? e?.response?.data?.detail
+          ?? null
+        const errMessage = providerMessage || (e?.message ?? 'submit error')
+
         console.error(`Failed to submit job ${job.id}:`, {
           status: e?.response?.status,
           statusText: e?.response?.statusText,
-          error: e?.response?.data?.error ?? e?.response?.data?.message ?? e?.message,
+          error: errMessage,
           fullResponseData: e?.response?.data,
           endpoint: '/api/v3/bytedance/seedream-v4/edit'
         })
         await supabase.from('jobs').update({
           status: 'failed',
-          error: e?.message ?? 'submit error',
+          error: errMessage,
           updated_at: new Date().toISOString()
         }).eq('id', job.id)
 

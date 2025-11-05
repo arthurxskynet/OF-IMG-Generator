@@ -14,6 +14,7 @@ create table if not exists public.prompt_generation_jobs (
   retry_count int not null default 0,
   max_retries int not null default 3,
   priority int not null default 5, -- 1-10, higher = more priority
+  swap_mode text default 'face-hair', -- 'face' | 'face-hair'
   created_at timestamptz default now(),
   updated_at timestamptz default now(),
   started_at timestamptz,
@@ -111,22 +112,101 @@ begin
 end;
 $$;
 
--- Add constraints for data integrity
-alter table public.prompt_generation_jobs 
-add constraint chk_prompt_jobs_status 
-check (status in ('queued', 'processing', 'completed', 'failed'));
+-- Add constraints for data integrity (idempotent)
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint c
+    join pg_class t on c.conrelid = t.oid
+    join pg_namespace n on t.relnamespace = n.oid
+    where n.nspname = 'public'
+      and t.relname = 'prompt_generation_jobs'
+      and c.conname = 'chk_prompt_jobs_status'
+  ) then
+    alter table public.prompt_generation_jobs
+      add constraint chk_prompt_jobs_status
+      check (status in ('queued', 'processing', 'completed', 'failed'));
+  end if;
+end $$;
 
-alter table public.prompt_generation_jobs 
-add constraint chk_prompt_jobs_priority 
-check (priority >= 1 and priority <= 10);
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint c
+    join pg_class t on c.conrelid = t.oid
+    join pg_namespace n on t.relnamespace = n.oid
+    where n.nspname = 'public'
+      and t.relname = 'prompt_generation_jobs'
+      and c.conname = 'chk_prompt_jobs_priority'
+  ) then
+    alter table public.prompt_generation_jobs
+      add constraint chk_prompt_jobs_priority
+      check (priority >= 1 and priority <= 10);
+  end if;
+end $$;
 
-alter table public.prompt_generation_jobs 
-add constraint chk_prompt_jobs_retry_count 
-check (retry_count >= 0 and retry_count <= max_retries);
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint c
+    join pg_class t on c.conrelid = t.oid
+    join pg_namespace n on t.relnamespace = n.oid
+    where n.nspname = 'public'
+      and t.relname = 'prompt_generation_jobs'
+      and c.conname = 'chk_prompt_jobs_retry_count'
+  ) then
+    alter table public.prompt_generation_jobs
+      add constraint chk_prompt_jobs_retry_count
+      check (retry_count >= 0 and retry_count <= max_retries);
+  end if;
+end $$;
 
-alter table public.jobs 
-add constraint chk_jobs_prompt_status 
-check (prompt_status in ('pending', 'generating', 'completed', 'failed'));
+-- Ensure swap_mode column exists first (for backwards compatibility with older schemas)
+do $$ begin
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'prompt_generation_jobs'
+      and column_name = 'swap_mode'
+  ) then
+    alter table public.prompt_generation_jobs
+      add column swap_mode text default 'face-hair';
+  end if;
+end $$;
+
+-- Ensure swap_mode values are constrained when column exists
+do $$ begin
+  -- Only add constraint if column exists AND constraint doesn't exist
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'prompt_generation_jobs'
+      and column_name = 'swap_mode'
+  ) and not exists (
+    select 1 from pg_constraint c
+    join pg_class t on c.conrelid = t.oid
+    join pg_namespace n on t.relnamespace = n.oid
+    where n.nspname = 'public'
+      and t.relname = 'prompt_generation_jobs'
+      and c.conname = 'chk_prompt_jobs_swap_mode'
+  ) then
+    alter table public.prompt_generation_jobs
+      add constraint chk_prompt_jobs_swap_mode
+      check (swap_mode in ('face', 'face-hair'));
+  end if;
+end $$;
+
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint c
+    join pg_class t on c.conrelid = t.oid
+    join pg_namespace n on t.relnamespace = n.oid
+    where n.nspname = 'public'
+      and t.relname = 'jobs'
+      and c.conname = 'chk_jobs_prompt_status'
+  ) then
+    alter table public.jobs
+      add constraint chk_jobs_prompt_status
+      check (prompt_status in ('pending', 'generating', 'completed', 'failed'));
+  end if;
+end $$;
 
 -- Add trigger to update updated_at timestamp
 create or replace function public.update_updated_at_column()
@@ -137,9 +217,17 @@ begin
 end;
 $$ language plpgsql;
 
-create trigger update_prompt_generation_jobs_updated_at
-  before update on public.prompt_generation_jobs
-  for each row execute function public.update_updated_at_column();
+-- Create trigger (idempotent)
+do $$ begin
+  if not exists (
+    select 1 from pg_trigger
+    where tgname = 'update_prompt_generation_jobs_updated_at'
+  ) then
+    create trigger update_prompt_generation_jobs_updated_at
+      before update on public.prompt_generation_jobs
+      for each row execute function public.update_updated_at_column();
+  end if;
+end $$;
 
 -- Grant permissions
 grant execute on function public.claim_prompt_jobs(int) to authenticated;

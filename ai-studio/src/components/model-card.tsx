@@ -134,7 +134,8 @@ export function ModelCard({ model, showStats = false, onDelete }: ModelCardProps
                     {new Date(model.created_at).toLocaleDateString('en-US', {
                       year: 'numeric',
                       month: 'short',
-                      day: 'numeric'
+                      day: 'numeric',
+                      timeZone: 'UTC',
                     })}
                   </span>
                 </div>

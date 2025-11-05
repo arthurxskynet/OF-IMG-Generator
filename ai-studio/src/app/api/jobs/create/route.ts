@@ -127,6 +127,15 @@ export async function POST(req: NextRequest) {
 
     console.log('[JobCreate] created jobs', { count: jobIds.length, jobIds })
 
+    // Increment per-user generation usage counter (non-blocking for main flow)
+    try {
+      const step = Math.max(1, jobIds.length || 0)
+      const { error: usageErr } = await supabase.rpc('increment_generation_count', { step })
+      if (usageErr) console.warn('[Usage] increment failed:', usageErr.message)
+    } catch (e) {
+      console.warn('[Usage] increment threw:', e)
+    }
+
     // Trigger dispatcher asynchronously after response (don't await to prevent race condition)
     // The database transaction needs to commit before dispatch can claim the jobs
     const dispatchUrl = new URL('/api/dispatch', req.url)
