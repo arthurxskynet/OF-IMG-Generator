@@ -57,8 +57,19 @@ const Page = async () => {
 
       // Calculate row stats
       const totalRows = model.model_rows?.length || 0;
-      const completedRows = model.model_rows?.filter(row => row.status === 'done').length || 0;
-      const activeRows = model.model_rows?.filter(row => ['queued', 'running', 'partial'].includes(row.status)).length || 0;
+      const completedRows = model.model_rows?.filter((row: any) => String(row.status) === 'done').length || 0;
+
+      // A row is considered "active" if it has any active jobs,
+      // falling back to row status when jobs aren't present.
+      const ACTIVE_JOB_STATUSES = new Set(['queued', 'submitted', 'running', 'saving']);
+      const isRowActive = (row: any): boolean => {
+        const jobs = Array.isArray(row?.jobs) ? row.jobs : [];
+        if (jobs.length > 0) {
+          return jobs.some((j: any) => ACTIVE_JOB_STATUSES.has(String(j?.status)));
+        }
+        return ['queued', 'running', 'partial'].includes(String(row?.status));
+      };
+      const activeRows = model.model_rows?.filter(isRowActive).length || 0;
       
       // Calculate total requests (jobs) across all rows
       const totalRequests = model.model_rows?.reduce((total, row) => {
