@@ -38,6 +38,7 @@ interface RowState {
   signedUrls: Record<string, string> // Optimized proxy URLs for display (reference images, target images, generated images)
   isLoadingResults?: boolean
   isUploadingTarget?: boolean
+  isTargetSaving?: boolean
 }
 
 interface BulkUploadItem {
@@ -50,6 +51,9 @@ interface BulkUploadItem {
 
 // Simple client-side cache for signed URLs
 const urlCache = new Map<string, { url: string; expires: number }>()
+
+// Internal drag MIME for generated images dragged within the app
+const INTERNAL_IMAGE_MIME = 'application/x-ai-studio-image'
 
 export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspaceProps) {
   const { toast } = useToast()
@@ -80,6 +84,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   const [dragOverRowId, setDragOverRowId] = useState<string | null>(null)
   const [, setIsDragOverTarget] = useState(false)
   const [isGlobalDragActive, setIsGlobalDragActive] = useState(false)
+  const [dragOverRefRowId, setDragOverRefRowId] = useState<string | null>(null)
 
   // Download selection state
   const [isSelectionMode, setIsSelectionMode] = useState(false)
@@ -125,6 +130,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   // Refs to store latest dirty/saving prompts for async functions
   const dirtyPromptsRef = useRef<Set<string>>(new Set())
   const savingPromptsRef = useRef<Set<string>>(new Set())
+  // Watchdog timers to ensure saving flags are cleared even if a network step stalls
+  const targetSavingTimersRef = useRef<Record<string, number | NodeJS.Timeout>>({})
   
   // Keep refs in sync with state
   useEffect(() => {
@@ -399,7 +406,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
           isGeneratingPrompt: false,
           activePromptSwapMode: undefined,
           signedUrls: {},
-          isLoadingResults: false
+          isLoadingResults: false,
+          isUploadingTarget: false,
+          isTargetSaving: false
         }
       setRowStates(prev => ({
         ...prev,
@@ -427,7 +436,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
             isGeneratingPrompt: false,
             activePromptSwapMode: undefined,
             signedUrls: {},
-            isLoadingResults: false
+            isLoadingResults: false,
+            isUploadingTarget: false,
+            isTargetSaving: false
           },
           signedUrls: { ...prev[rowId]?.signedUrls, [path]: optimizedUrl }
         }
@@ -560,8 +571,11 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                 id: rowId,
                 isGenerating: false,
                 isGeneratingPrompt: false,
+                activePromptSwapMode: undefined,
                 signedUrls: {},
-                isLoadingResults: false
+                isLoadingResults: false,
+                isUploadingTarget: false,
+                isTargetSaving: false
               }
               updated[rowId] = {
                 ...currentState,
@@ -769,10 +783,19 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     } catch (e) {
       // noop
     } finally {
-      setRowStates(prev => ({
-        ...prev,
-        [rowId]: { ...getRowState(rowId), isLoadingResults: false }
-      }))
+      setRowStates(prev => {
+        const current = prev[rowId] || {
+          id: rowId,
+          isGenerating: false,
+          isGeneratingPrompt: false,
+          activePromptSwapMode: undefined,
+          signedUrls: {},
+          isLoadingResults: false,
+          isUploadingTarget: false,
+          isTargetSaving: false
+        }
+        return { ...prev, [rowId]: { ...current, isLoadingResults: false } }
+      })
     }
   }
 
@@ -841,10 +864,22 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   // Handle file upload for target image
   const handleTargetImageUpload = async (file: File, rowId: string) => {
     // Set loading state
-    setRowStates(prev => ({
-      ...prev,
-      [rowId]: { ...getRowState(rowId), isUploadingTarget: true }
-    }))
+    setRowStates(prev => {
+      const current = prev[rowId] || {
+        id: rowId,
+        isGenerating: false,
+        isGeneratingPrompt: false,
+        activePromptSwapMode: undefined,
+        signedUrls: {},
+        isLoadingResults: false,
+        isUploadingTarget: false,
+        isTargetSaving: false
+      }
+      return {
+        ...prev,
+        [rowId]: { ...current, isUploadingTarget: true }
+      }
+    })
 
     try {
       validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 10)
@@ -908,6 +943,316 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     }
   }
 
+  // Parse internal drag payload from generated images
+  const parseInternalDrag = (e: React.DragEvent): { outputPath: string; imageId?: string; thumbnailPath?: string; sourceRowId?: string } | null => {
+    try {
+      const types = Array.from(e.dataTransfer.types || [])
+      let raw = ''
+      if (types.includes(INTERNAL_IMAGE_MIME)) {
+        raw = e.dataTransfer.getData(INTERNAL_IMAGE_MIME)
+      }
+      // Fallback for browsers that strip custom MIME types
+      if (!raw && types.includes('text/plain')) {
+        raw = e.dataTransfer.getData('text/plain')
+      }
+      if (!raw) return null
+      const data = JSON.parse(raw)
+      const outputPath = typeof data?.outputPath === 'string' ? data.outputPath : ''
+      if (!outputPath) return null
+      // Basic validation for supabase objectPath "bucket/key"
+      if (!/^(outputs|refs|targets|thumbnails)\//i.test(outputPath)) return null
+      return {
+        outputPath,
+        imageId: typeof data?.imageId === 'string' ? data.imageId : undefined,
+        thumbnailPath: typeof data?.thumbnailPath === 'string' ? data.thumbnailPath : undefined,
+        sourceRowId: typeof data?.sourceRowId === 'string' ? data.sourceRowId : undefined
+      }
+    } catch {
+      return null
+    }
+  }
+
+  // Set target image directly from an existing storage object path (no re-upload)
+  const setTargetFromPath = async (rowId: string, objectPath: string) => {
+    // Start saving state for internal replacement
+    setRowStates(prev => {
+      const current = prev[rowId] || {
+        id: rowId,
+        isGenerating: false,
+        isGeneratingPrompt: false,
+        activePromptSwapMode: undefined,
+        signedUrls: {},
+        isLoadingResults: false,
+        isUploadingTarget: false,
+        isTargetSaving: false
+      }
+      return { ...prev, [rowId]: { ...current, isTargetSaving: true } }
+    })
+    // Start a watchdog to guarantee clearing the saving state
+    try {
+      if (targetSavingTimersRef.current[rowId]) {
+        clearTimeout(targetSavingTimersRef.current[rowId] as number)
+      }
+      targetSavingTimersRef.current[rowId] = setTimeout(() => {
+        console.warn(`[setTargetFromPath] Watchdog clearing stale saving state for row ${rowId}`)
+        setRowStates(prev => {
+          const current = prev[rowId] || {
+            id: rowId,
+            isGenerating: false,
+            isGeneratingPrompt: false,
+            activePromptSwapMode: undefined,
+            signedUrls: {},
+            isLoadingResults: false,
+            isUploadingTarget: false,
+            isTargetSaving: false
+          }
+          return { ...prev, [rowId]: { ...current, isTargetSaving: false } }
+        })
+      }, 12000)
+    } catch {}
+
+    // If source is not already in targets/, clone it first
+    let finalPath = objectPath
+    try {
+      if (!/^targets\//i.test(objectPath)) {
+        console.log(`[setTargetFromPath] Cloning ${objectPath} to targets/ bucket`)
+        const res = await fetch('/api/storage/clone', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sourcePath: objectPath, destBucket: 'targets' })
+        })
+        if (!res.ok) {
+          const msg = await res.text()
+          console.error(`[setTargetFromPath] Clone API error: ${res.status} ${msg}`)
+          throw new Error(`Clone failed: ${res.status} ${msg}`)
+        }
+        const data = await res.json()
+        finalPath = data.objectPath || objectPath
+        console.log(`[setTargetFromPath] Successfully cloned to ${finalPath}`)
+      } else {
+        console.log(`[setTargetFromPath] Source already in targets/, using directly: ${objectPath}`)
+      }
+    } catch (error) {
+      console.error(`[setTargetFromPath] Clone error for ${objectPath}:`, error)
+      setRowStates(prev => {
+        const current = prev[rowId] || {
+          id: rowId,
+          isGenerating: false,
+          isGeneratingPrompt: false,
+          activePromptSwapMode: undefined,
+          signedUrls: {},
+          isLoadingResults: false,
+          isUploadingTarget: false,
+          isTargetSaving: false
+        }
+        return { ...prev, [rowId]: { ...current, isTargetSaving: false } }
+      })
+      if (targetSavingTimersRef.current[rowId]) {
+        clearTimeout(targetSavingTimersRef.current[rowId] as number)
+        delete targetSavingTimersRef.current[rowId]
+      }
+      toast({ title: 'Clone failed', description: error instanceof Error ? error.message : 'Could not prepare target image', variant: 'destructive' })
+      return
+    }
+    // Optimistic UI update
+    let previousTarget: string | undefined
+    setRows(prev => prev.map(r => {
+      if (r.id !== rowId) return r
+      previousTarget = r.target_image_url
+      return { ...r, target_image_url: finalPath }
+    }))
+    // Pre-seed signed URL for instant display
+    const optimisticUrl = getOptimizedImageUrl(finalPath)
+    setRowStates(prev => {
+      const current = prev[rowId] || {
+        id: rowId,
+        isGenerating: false,
+        isGeneratingPrompt: false,
+        activePromptSwapMode: undefined,
+        signedUrls: {},
+        isLoadingResults: false,
+        isUploadingTarget: false,
+        isTargetSaving: false
+      }
+      return {
+        ...prev,
+        [rowId]: {
+          ...current,
+          signedUrls: { ...current.signedUrls, [finalPath]: optimisticUrl }
+        }
+      }
+    })
+    let success = false
+    try {
+      // Use server-side auth via cookies; no Authorization header needed
+      console.log(`[setTargetFromPath] Updating row ${rowId} with target: ${finalPath}`)
+      const response = await fetch(`/api/rows/${rowId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_image_url: finalPath })
+      })
+      
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error(`[setTargetFromPath] API error: ${response.status} ${errorText}`)
+        throw new Error(`Failed to update row: ${response.status} ${errorText}`)
+      }
+      
+      const { row } = await response.json()
+      console.log(`[setTargetFromPath] Successfully updated row ${rowId}`)
+      
+      setRows(prev => prev.map(r => {
+        if (r.id !== rowId) return r
+        const merged = { ...r, ...row }
+        if (dirtyPromptsRef.current.has(rowId) || savingPromptsRef.current.has(rowId)) {
+          merged.prompt_override = r.prompt_override
+        }
+        return merged
+      }))
+      
+      success = true
+      toast({ title: 'Target set', description: 'Target image updated from result' })
+    } catch (error) {
+      console.error(`[setTargetFromPath] Error updating row ${rowId}:`, error)
+      // Revert optimistic change
+      if (previousTarget !== undefined) {
+        setRows(prev => prev.map(r => r.id === rowId ? { ...r, target_image_url: previousTarget } : r))
+      }
+      toast({
+        title: 'Update failed',
+        description: error instanceof Error ? error.message : 'Failed to set target image',
+        variant: 'destructive'
+      })
+    } finally {
+      // Always clear the saving state first
+      setRowStates(prev => {
+        const current = prev[rowId] || {
+          id: rowId,
+          isGenerating: false,
+          isGeneratingPrompt: false,
+          activePromptSwapMode: undefined,
+          signedUrls: {},
+          isLoadingResults: false,
+          isUploadingTarget: false,
+          isTargetSaving: false
+        }
+        const next = { ...prev, [rowId]: { ...current, isTargetSaving: false } }
+        console.log(`[setTargetFromPath] Cleared isTargetSaving for row ${rowId}`)
+        return next
+      })
+      if (targetSavingTimersRef.current[rowId]) {
+        clearTimeout(targetSavingTimersRef.current[rowId] as number)
+        delete targetSavingTimersRef.current[rowId]
+      }
+      
+      // Only refresh if the update was successful
+      if (success) {
+        try {
+          console.log(`[setTargetFromPath] Refreshing row ${rowId} after successful update`)
+          await refreshSingleRow(rowId)
+        } catch (refreshError) {
+          console.error(`[setTargetFromPath] Error refreshing row ${rowId}:`, refreshError)
+          // Don't show error to user since the main operation succeeded
+        }
+      }
+    }
+  }
+
+  // Add reference image from an existing storage object path (dedupes)
+  const addRefFromPath = async (rowId: string, objectPath: string) => {
+    // Optimistic add + pre-seed URL
+    let previousRefs: string[] | undefined
+    const optimizedUrl = getOptimizedImageUrl(objectPath)
+    const row = rows.find(r => r.id === rowId)
+    const existing = row?.ref_image_urls
+    const nextRefs = Array.isArray(existing) ? [...existing] : []
+    if (nextRefs.includes(objectPath)) {
+      toast({ title: 'Already added', description: 'Reference image already present' })
+      return
+    }
+    previousRefs = Array.isArray(existing) ? [...existing] : existing === undefined ? undefined : []
+    nextRefs.push(objectPath)
+    setRows(prev => prev.map(r => r.id === rowId ? { ...r, ref_image_urls: nextRefs } : r))
+    setRowStates(prev => ({
+      ...prev,
+      [rowId]: {
+        ...getRowState(rowId),
+        signedUrls: { ...getRowState(rowId).signedUrls, [objectPath]: optimizedUrl }
+      }
+    }))
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const response = await fetch(`/api/rows/${rowId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token}`
+        },
+        body: JSON.stringify({ ref_image_urls: nextRefs })
+      })
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Failed to update references: ${response.status} ${errorText}`)
+      }
+      toast({ title: 'Reference added', description: 'Reference image added from result' })
+      // Optionally refresh to stay in sync
+      await refreshSingleRow(rowId)
+    } catch (error) {
+      // Revert optimistic state on failure
+      setRows(prev => prev.map(r => r.id === rowId ? { ...r, ref_image_urls: previousRefs } : r))
+      toast({
+        title: 'Add reference failed',
+        description: error instanceof Error ? error.message : 'Failed to add reference image',
+        variant: 'destructive'
+      })
+    }
+  }
+
+  // Upload dropped files as references and update the row (dedupes)
+  const addRefsFromFiles = async (files: File[], rowId: string) => {
+    const imageFiles = files.filter(f => f.type.startsWith('image/'))
+    if (imageFiles.length === 0) return
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Not authenticated')
+
+      const uploadPromises = imageFiles.map(file => {
+        validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 10)
+        return retryWithBackoff(async () => {
+          await refreshAuth()
+          return uploadImage(file, 'refs', user.id)
+        }, 3, 1000)
+      })
+
+      const results = await Promise.all(uploadPromises)
+      const row = rows.find(r => r.id === rowId)
+      const baseRefs = Array.isArray(row?.ref_image_urls) ? [...row!.ref_image_urls!] : []
+      for (const r of results) {
+        if (r?.objectPath && !baseRefs.includes(r.objectPath)) baseRefs.push(r.objectPath)
+      }
+
+      const { data: { session } } = await supabase.auth.getSession()
+      const response = await fetch(`/api/rows/${rowId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token}`
+        },
+        body: JSON.stringify({ ref_image_urls: baseRefs })
+      })
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Failed to update row: ${response.status} ${errorText}`)
+      }
+
+      await refreshSingleRow(rowId)
+      toast({ title: `Added ${imageFiles.length} reference image${imageFiles.length === 1 ? '' : 's'}` })
+    } catch (err) {
+      toast({ title: 'Ref upload failed', description: err instanceof Error ? err.message : 'Error', variant: 'destructive' })
+    }
+  }
+
   // Handle drag and drop for target images
   const handleTargetDragOver = (e: React.DragEvent, rowId: string) => {
     e.preventDefault()
@@ -921,12 +1266,13 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       return
     }
     
-    // Check if we have valid image files
+    // Check if we have valid image files or internal drag payload
     const hasValidFiles = Array.from(e.dataTransfer.items).some(item => 
       item.kind === 'file' && item.type.startsWith('image/')
     )
+    const hasInternalImage = Array.from(e.dataTransfer.types || []).includes(INTERNAL_IMAGE_MIME)
     
-    if (hasValidFiles) {
+    if (hasValidFiles || hasInternalImage) {
       setDragOverRowId(rowId)
       setIsDragOverTarget(true)
       e.dataTransfer.dropEffect = 'copy'
@@ -967,6 +1313,13 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     setIsDragOverTarget(false)
     setIsGlobalDragActive(false)
     
+    // Accept internal drag first
+    const internal = parseInternalDrag(e)
+    if (internal && internal.outputPath) {
+      setTargetFromPath(rowId, internal.outputPath)
+      return
+    }
+
     const files = Array.from(e.dataTransfer.files)
     const imageFile = files.find(file => file.type.startsWith('image/'))
     
@@ -989,8 +1342,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     const hasValidFiles = Array.from(e.dataTransfer.items).some(item => 
       item.kind === 'file' && item.type.startsWith('image/')
     )
+    const hasInternalImage = Array.from(e.dataTransfer.types || []).includes(INTERNAL_IMAGE_MIME)
     
-    if (hasValidFiles) {
+    if (hasValidFiles || hasInternalImage) {
       setIsGlobalDragActive(true)
       e.dataTransfer.dropEffect = 'copy'
     } else {
@@ -1005,6 +1359,50 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     // Only clear global drag state if we're leaving the table entirely
     if (!e.currentTarget.contains(e.relatedTarget as Node)) {
       setIsGlobalDragActive(false)
+    }
+  }
+
+  // Reference images drag-and-drop handlers
+  const handleRefDragOver = (e: React.DragEvent, rowId: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const hasValidFiles = Array.from(e.dataTransfer.items).some(item => 
+      item.kind === 'file' && item.type.startsWith('image/')
+    )
+    const hasInternalImage = Array.from(e.dataTransfer.types || []).includes(INTERNAL_IMAGE_MIME)
+    if (hasValidFiles || hasInternalImage) {
+      setDragOverRefRowId(rowId)
+      e.dataTransfer.dropEffect = 'copy'
+    } else {
+      e.dataTransfer.dropEffect = 'none'
+    }
+  }
+
+  const handleRefDragLeave = (e: React.DragEvent, rowId: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      if (dragOverRefRowId === rowId) setDragOverRefRowId(null)
+    }
+  }
+
+  const handleRefDrop = async (e: React.DragEvent, rowId: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsGlobalDragActive(false)
+    setDragOverRefRowId(null)
+
+    const internal = parseInternalDrag(e)
+    if (internal && internal.outputPath) {
+      await addRefFromPath(rowId, internal.outputPath)
+      return
+    }
+
+    const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'))
+    if (files.length > 0) {
+      await addRefsFromFiles(files, rowId)
+    } else {
+      // ignore silently to avoid noisy toasts when dragging non-images across the UI
     }
   }
 
@@ -1714,9 +2112,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     } catch (error) {
       // Revert optimistic status on error
       setRows(prev => prev.map(r => r.id === rowId ? { ...r, status: 'idle' as any } : r))
+      const errorMessage = error instanceof Error ? error.message : 'Failed to create generation job'
       toast({
         title: 'Generation failed',
-        description: error instanceof Error ? error.message : 'Failed to create generation job',
+        description: errorMessage,
         variant: 'destructive'
       })
     } finally {
@@ -2375,8 +2774,13 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                       {/* 1. Reference Image */}
                       <TableCell className="align-top">
                         <div className="space-y-2">
-                          {/* Display reference images */}
-                          <div className="flex flex-wrap gap-2">
+                          {/* Display reference images (also acts as a drop zone) */}
+                          <div 
+                            className={`flex flex-wrap gap-2 rounded-lg transition-all ${dragOverRefRowId === row.id ? 'ring-2 ring-primary ring-offset-2 bg-primary/5' : ''}`}
+                            onDragOver={(e) => handleRefDragOver(e, row.id)}
+                            onDragLeave={(e) => handleRefDragLeave(e, row.id)}
+                            onDrop={(e) => handleRefDrop(e, row.id)}
+                          >
                             {row.ref_image_urls && row.ref_image_urls.length > 0 ? (
                               row.ref_image_urls.map((refUrl, index) => (
                                 <Dialog key={index}>
@@ -2420,7 +2824,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                 </Dialog>
                               ))
                             ) : (row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url ? (
-                              <Dialog>
+                          <Dialog>
                                 <div className="relative group">
                                   <DialogTrigger asChild>
                                     <div className="cursor-zoom-in">
@@ -2476,53 +2880,11 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                               onChange={async (e) => {
                                 const files = Array.from(e.target.files || [])
                                 if (files.length === 0) return
-                                
-                                try {
-                                  const { data: { user } } = await supabase.auth.getUser()
-                                  if (!user) throw new Error('Not authenticated')
-                                  
-                                  // Use retry logic for reference image uploads
-                                  const uploadPromises = files.map(file => {
-                                    validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 10)
-                                    return retryWithBackoff(async () => {
-                                      await refreshAuth()
-                                      return uploadImage(file, 'refs', user.id)
-                                    }, 3, 1000)
-                                  })
-                                  
-                                  const results = await Promise.all(uploadPromises)
-                                  const newRefs = [...(row.ref_image_urls || []), ...results.map(r => r.objectPath)]
-                                  
-                                  // Update row with retry logic
-                                  await retryWithBackoff(async () => {
-                                    const { data: { user: authUser } } = await supabase.auth.getUser()
-                                    if (!authUser) throw new Error('Not authenticated')
-                                    const { data: { session } } = await supabase.auth.getSession()
-                                    const response = await fetch(`/api/rows/${row.id}`, {
-                                      method: 'PATCH',
-                                      headers: { 
-                                        'Content-Type': 'application/json',
-                                        'Authorization': `Bearer ${session?.access_token}`
-                                      },
-                                      body: JSON.stringify({ ref_image_urls: newRefs })
-                                    })
-                                    
-                                    if (!response.ok) {
-                                      const errorText = await response.text()
-                                      throw new Error(`Failed to update row: ${response.status} ${errorText}`)
-                                    }
-                                  }, 3, 1000)
-                                  
-                                  refreshRowData()
-                                  toast({ title: `Added ${files.length} reference image${files.length === 1 ? '' : 's'}` })
-                                } catch (err) {
-                                  toast({ title: 'Ref upload failed', description: err instanceof Error ? err.message : 'Error', variant: 'destructive' })
-                                } finally {
-                                  // Clear the input using the ref to avoid null reference error
-                                  const input = fileInputRefs.current[`ref-${row.id}`]
-                                  if (input) {
-                                    input.value = ''
-                                  }
+                                await addRefsFromFiles(files, row.id)
+                                // Clear the input using the ref to avoid null reference error
+                                const input = fileInputRefs.current[`ref-${row.id}`]
+                                if (input) {
+                                  input.value = ''
                                 }
                               }}
                               className="hidden"
@@ -2639,7 +3001,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                       className={`transition-all duration-200 ${
                                         dragOverRowId === row.id 
                                           ? 'ring-2 ring-primary ring-offset-2' 
-                                          : rowState.isUploadingTarget
+                                          : (rowState.isUploadingTarget || rowState.isTargetSaving)
                                           ? 'opacity-50'
                                           : 'group-hover:scale-[1.02]'
                                       }`}
@@ -2727,11 +3089,11 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                           )}
                           
                           {/* Upload loading overlay for existing images */}
-                          {row.target_image_url && rowState.isUploadingTarget && (
+                          {row.target_image_url && (rowState.isUploadingTarget || rowState.isTargetSaving) && (
                             <div className="absolute inset-0 bg-black/40 rounded-lg flex items-center justify-center z-10">
                               <div className="bg-white text-black px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2">
                                 <Spinner size="sm" />
-                                Replacing...
+                                {rowState.isTargetSaving ? 'Saving…' : 'Replacing...'}
                               </div>
                             </div>
                           )}
@@ -2836,9 +3198,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                           const disabledReason = !hasTarget
                             ? 'Upload a target image first'
                             : ''
-                          const isDisabled = !hasTarget || rowState.isGenerating || isActiveStatus(displayStatus)
+                          const isDisabled = !hasTarget || rowState.isGenerating || isActiveStatus(displayStatus) || rowState.isTargetSaving
                           return (
-                            <Tooltip open={isDisabled && !!disabledReason ? undefined : false}>
+                            <Tooltip open={Boolean(isDisabled && !!disabledReason)}>
                               <TooltipTrigger asChild>
                                 <Button
                                   onClick={() => handleGenerate(row.id)}
@@ -2908,6 +3270,22 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                 {!isSelectionMode ? (
                                   <div 
                                     className="relative cursor-zoom-in"
+                                    draggable
+                                    onDragStart={(e) => {
+                                      try {
+                                        const payload = {
+                                          kind: 'generated-image',
+                                          imageId: image.id,
+                                          outputPath: image.output_url,
+                                          thumbnailPath: image.thumbnail_url || null,
+                                          sourceRowId: row.id
+                                        }
+                                        e.dataTransfer.setData(INTERNAL_IMAGE_MIME, JSON.stringify(payload))
+                                        // Fallback text/plain for browsers that strip custom types
+                                        e.dataTransfer.setData('text/plain', JSON.stringify(payload))
+                                        e.dataTransfer.effectAllowed = 'copy'
+                                      } catch {}
+                                    }}
                                     onClick={async () => {
                                       setDialogState({ isOpen: true, rowId: row.id, imageIndex: index })
                                       // Load full resolution when opening dialog

@@ -17,6 +17,7 @@ interface ImageGalleryProps {
 }
 
 export function ImageGallery({ images }: ImageGalleryProps) {
+  const INTERNAL_IMAGE_MIME = 'application/x-ai-studio-image'
   const { toast } = useToast()
   const { thumbnailUrls, fullUrls, loadFullImage, isLoadingFull } = useThumbnailLoader(images)
   const [dialogImageId, setDialogImageId] = useState<string | null>(null)
@@ -86,7 +87,25 @@ export function ImageGallery({ images }: ImageGalleryProps) {
           
           return (
             <div key={image.id} className="group relative">
-              <div className="aspect-square rounded-lg overflow-hidden bg-muted relative">
+              <div 
+                className="aspect-square rounded-lg overflow-hidden bg-muted relative"
+                draggable
+                onDragStart={(e) => {
+                  try {
+                    const payload = {
+                      kind: 'generated-image',
+                      imageId: image.id,
+                      outputPath: image.output_url,
+                      thumbnailPath: image.thumbnail_url || null,
+                      sourceRowId: ''
+                    }
+                    e.dataTransfer.setData(INTERNAL_IMAGE_MIME, JSON.stringify(payload))
+                    // Fallback text/plain for browsers that strip custom types
+                    e.dataTransfer.setData('text/plain', JSON.stringify(payload))
+                    e.dataTransfer.effectAllowed = 'copy'
+                  } catch {}
+                }}
+              >
                 {thumbnailUrl ? (
                   <Image
                     src={thumbnailUrl}

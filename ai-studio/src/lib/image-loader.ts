@@ -1,4 +1,4 @@
-'use client'
+// Server-neutral image URL utilities
 
 import { getSignedUrl } from './jobs'
 

@@ -1,5 +1,6 @@
 import { supabaseAdmin } from '@/lib/supabase-admin'
 import { createAndUploadThumbnail } from './thumbnail-generator'
+import { randomUUID } from 'crypto'
 
 /** objectPath is "bucket/objectKey" */
 export async function signPath(objectPath: string, expiresIn = 14400): Promise<string> {

@@ -2,18 +2,24 @@ import { CreateJobsInput, JobStatus, PollJobResponse, ActiveJobSummary } from '@
 
 // Client-side API functions for job management
 
-export async function createJobs(input: CreateJobsInput): Promise<{ ok: boolean; enqueued: number; jobIds: string[] }> {
+export async function createJobs(input: CreateJobsInput): Promise<any> {
   const res = await fetch('/api/jobs/create', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input)
   })
-  
   if (!res.ok) {
-    const error = await res.text()
-    throw new Error(error)
+    let message = `${res.status} ${res.statusText}`
+    try {
+      const data = await res.json()
+      if (data?.error) message = data.error
+    } catch {
+      try {
+        message = await res.text()
+      } catch {}
+    }
+    throw new Error(message || 'Failed to create jobs')
   }
-  
   return res.json()
 }
 

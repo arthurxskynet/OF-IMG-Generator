@@ -11,13 +11,9 @@ interface ProtectedLayoutProps {
 
 const ProtectedLayout = async ({ children }: ProtectedLayoutProps) => {
   const supabase = await createServer();
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
+  const { data: { user } } = await supabase.auth.getUser();
 
-  if (!session?.user) redirect("/login");
-
-  const user: User = session.user;
+  if (!user) redirect("/login");
 
   return (
     <div className="min-h-screen bg-background">
