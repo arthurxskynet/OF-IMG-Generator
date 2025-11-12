@@ -174,6 +174,22 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
     }
   }, [tutorialEnabledFromDB, tourEnabled, pathname, router])
 
+  // When tutorial is enabled from DB (e.g. persisted between sessions), ensure we begin on the dashboard
+  useEffect(() => {
+    if (isLoading) return
+    if (manualDisabled) return
+    if (!tutorialEnabledFromDB) return
+    // Avoid interfering when explicitly enabled locally or via URL param
+    if (localEnabled || tourEnabled) return
+    if (pathname !== '/dashboard') {
+      try {
+        router.push('/dashboard?tour=1')
+      } catch {
+        // no-op
+      }
+    }
+  }, [isLoading, manualDisabled, tutorialEnabledFromDB, localEnabled, tourEnabled, pathname, router])
+
   // Start immediately on dashboard when tour param flips to true (in case event is missed)
   useEffect(() => {
     if (tourEnabled && !manualDisabled && pathname === '/dashboard' && currentSteps.length > 0) {
