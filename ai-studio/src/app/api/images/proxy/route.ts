@@ -24,6 +24,7 @@ const CACHE_DURATION = 3.5 * 60 * 60 * 1000 // 3.5 hours
  * Route caching: Keep dynamic to handle query params, but rely on Cache-Control headers
  * and Next.js fetch caching for edge optimization. Vercel will cache at edge based on URL.
  */
+export const dynamic = 'force-dynamic' // This route uses req.url and must be dynamic
 export const revalidate = 12600 // 3.5 hours - cache revalidation time
 
 export async function GET(req: NextRequest) {
