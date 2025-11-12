@@ -174,6 +174,16 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
     }
   }, [tutorialEnabledFromDB, tourEnabled, pathname, router])
 
+  // Start immediately on dashboard when tour param flips to true (in case event is missed)
+  useEffect(() => {
+    if (tourEnabled && !manualDisabled && pathname === '/dashboard' && currentSteps.length > 0) {
+      setStepIndex(0)
+      setRunNonce(n => n + 1)
+      setRun(false)
+      setTimeout(() => setRun(true), 50)
+    }
+  }, [tourEnabled, manualDisabled, pathname, currentSteps.length])
+
   // Reset step index when route changes
   useEffect(() => {
     const routeChanged = previousPathname.current !== pathname
