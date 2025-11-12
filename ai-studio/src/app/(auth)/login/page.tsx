@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { TileBackground } from "@/components/tile-background";
 // import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 
@@ -40,34 +41,40 @@ const Page = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[radial-gradient(60%_60%_at_50%_10%,oklch(0.98_0.03_210)_0%,transparent_70%)] dark:bg-[radial-gradient(60%_60%_at_50%_10%,oklch(0.23_0.04_210)_0%,transparent_70%)] p-6">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle>Sign in</CardTitle>
-          <CardDescription>Use your email and password</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" autoComplete="email" {...register("email")} />
-              {errors.email && <p className="text-sm text-red-600">{errors.email.message}</p>}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <div className="relative">
-                <Input id="password" type={isLoading ? "password" : "password"} autoComplete="current-password" {...register("password")} />
-                {/* simple eye toggle placeholder: optional future enhancement */}
+    <div className="min-h-screen flex flex-col items-center justify-center bg-[radial-gradient(60%_60%_at_50%_10%,oklch(0.98_0.03_210)_0%,transparent_70%)] dark:bg-[radial-gradient(60%_60%_at_50%_10%,oklch(0.23_0.04_210)_0%,transparent_70%)] p-6 relative">
+      <TileBackground />
+      <div className="relative z-10 w-full max-w-md space-y-6">
+        <div className="text-center">
+          <p className="text-lg font-medium text-foreground/80">Login to start MVP app</p>
+        </div>
+        <Card className="w-full">
+          <CardHeader>
+            <CardTitle>Sign in</CardTitle>
+            <CardDescription>Use your email and password</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="email">Email</Label>
+                <Input id="email" type="email" autoComplete="email" {...register("email")} />
+                {errors.email && <p className="text-sm text-red-600">{errors.email.message}</p>}
               </div>
-              {errors.password && <p className="text-sm text-red-600">{errors.password.message}</p>}
-            </div>
-            {error && <p className="text-sm text-red-600">{error}</p>}
-            <Button type="submit" disabled={isLoading} className="w-full">
-              {isLoading ? "Signing in..." : "Sign in"}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+              <div className="space-y-2">
+                <Label htmlFor="password">Password</Label>
+                <div className="relative">
+                  <Input id="password" type={isLoading ? "password" : "password"} autoComplete="current-password" {...register("password")} />
+                  {/* simple eye toggle placeholder: optional future enhancement */}
+                </div>
+                {errors.password && <p className="text-sm text-red-600">{errors.password.message}</p>}
+              </div>
+              {error && <p className="text-sm text-red-600">{error}</p>}
+              <Button type="submit" disabled={isLoading} className="w-full">
+                {isLoading ? "Signing in..." : "Sign in"}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 };

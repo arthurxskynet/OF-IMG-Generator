@@ -113,7 +113,10 @@ const Page = () => {
         description: "Your model has been created successfully"
       });
 
-      window.location.assign("/models");
+      // Preserve tutorial if running
+      const params = new URLSearchParams(window.location.search);
+      const dest = params.get("tour") === "1" ? "/models?tour=1" : "/models";
+      window.location.assign(dest);
     } catch (error) {
       console.error("Create model error:", error);
       toast({
@@ -136,7 +139,7 @@ const Page = () => {
           <form className="space-y-4" onSubmit={handleSubmit(onSubmit)}>
             <div>
               <Label htmlFor="name">Model Name</Label>
-              <Input id="name" placeholder="Enter model name" {...register("name")} />
+              <Input id="name" placeholder="Enter model name" {...register("name")} data-tour="new-model-name" />
               {errors.name && <p className="text-xs text-red-600">{errors.name.message}</p>}
             </div>
 
@@ -155,6 +158,7 @@ const Page = () => {
                     type="button"
                     variant="outline"
                     onClick={() => fileInputRef.current?.click()}
+                    data-tour="new-model-headshot"
                   >
                     Choose Image
                   </Button>
@@ -271,7 +275,7 @@ const Page = () => {
               </div>
             </div>
 
-            <Button type="submit" disabled={isLoading || !uploadedHeadshot}>
+            <Button type="submit" disabled={isLoading || !uploadedHeadshot} data-tour="new-model-submit">
               {isLoading ? "Creating..." : "Create Model"}
             </Button>
           </form>

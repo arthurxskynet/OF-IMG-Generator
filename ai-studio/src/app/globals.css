@@ -167,6 +167,20 @@
 }
 
 @layer utilities {
+  .tile-bg {
+    background-color: oklch(0.98 0.03 210);
+    border-color: oklch(0.98 0.03 210 / 0.1);
+  }
+  .dark .tile-bg {
+    background-color: oklch(0.23 0.04 210);
+    border-color: oklch(0.23 0.04 210 / 0.1);
+  }
+  .tile-bg:hover {
+    border-color: oklch(0.98 0.03 210 / 0.3);
+  }
+  .dark .tile-bg:hover {
+    border-color: oklch(0.23 0.04 210 / 0.3);
+  }
   /* Custom spinner animation for better reliability */
   .spinner-rotate {
     animation: spin 1.5s linear infinite !important;

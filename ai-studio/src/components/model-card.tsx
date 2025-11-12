@@ -76,7 +76,7 @@ export function ModelCard({ model, showStats = false, onDelete }: ModelCardProps
 
   return (
     <>
-      <Link href={`/models/${model.id}`}>
+      <Link href={`/models/${model.id}`} data-tour="models-item">
         <Card className="hover:shadow-md transition-shadow cursor-pointer h-full">
           <CardContent className="p-4">
             <div className="flex items-start space-x-3">

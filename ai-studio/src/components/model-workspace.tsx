@@ -2477,6 +2477,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
             
             {/* Compact Folder Drop Zone */}
             <div
+              data-tour="workspace-bulk-upload"
               className={`relative transition-all duration-200 rounded-lg border-2 border-dashed px-4 py-2 min-w-[200px] ${
                 isFolderDropActive 
                   ? 'border-primary bg-primary/5' 
@@ -2582,18 +2583,20 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       </Card>
 
       {/* Dimension Controls */}
-      <DimensionControls 
-        model={currentModel} 
-        onUpdate={(updatedModel) => {
-          setCurrentModel(updatedModel)
-          console.log('Model dimensions updated:', updatedModel)
-        }} 
-      />
+      <div data-tour="workspace-dimensions">
+        <DimensionControls 
+          model={currentModel} 
+          onUpdate={(updatedModel) => {
+            setCurrentModel(updatedModel)
+            console.log('Model dimensions updated:', updatedModel)
+          }} 
+        />
+      </div>
 
       {/* Add Row Button */}
       <div className="flex justify-between items-center">
         <h2 className="text-lg font-medium">Generation Rows</h2>
-        <Button onClick={handleAddRow} size="sm">
+        <Button onClick={handleAddRow} size="sm" data-tour="workspace-add-row">
           <Plus className="h-4 w-4 mr-2" />
           Add Row
         </Button>
@@ -3118,6 +3121,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                         <Dialog>
                           <div className="flex flex-col gap-1">
                             <Textarea
+                              data-tour="workspace-prompt"
                               value={getCurrentPrompt(row.id)}
                               placeholder="Enter prompt..."
                               className="min-h-[80px] md:min-h-[88px] resize-y bg-muted/60 w-[16rem] md:w-[18rem] lg:w-[20rem] xl:w-[22rem] select-text shrink-0"
@@ -3143,6 +3147,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                 title="Generate AI prompt for face swap only (preserves target hair)"
                                 className="text-xs"
                                 aria-label="Generate AI prompt for face swap only"
+                                data-tour="workspace-face-swap"
                               >
                                 {rowState.isGeneratingPrompt && rowState.activePromptSwapMode === 'face' ? (
                                   <>
@@ -3203,6 +3208,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                             <Tooltip open={Boolean(isDisabled && !!disabledReason)}>
                               <TooltipTrigger asChild>
                                 <Button
+                                  data-tour="workspace-generate"
                                   onClick={() => handleGenerate(row.id)}
                                   disabled={isDisabled}
                                   size="sm"

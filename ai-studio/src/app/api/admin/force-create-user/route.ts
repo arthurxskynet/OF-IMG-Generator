@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
   }
   
   try {
-    const { email = 'passarthur2003@icloud.com', password = 'Test123!@#' } = await req.json().catch(() => ({}))
+    const { email = 'passarthur2003@icloud.com', password = 'Test123!@#', full_name = 'Test User' } = await req.json().catch(() => ({}))
     const admin = createClient(url, service, { global: { headers: { apikey: service } } })
 
     // Method 1: Try to sign up as if it's a regular signup (this often works even when admin API doesn't)
@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
       email,
       password,
       options: {
-        data: { full_name: 'Test User' }
+        data: { full_name }
       }
     })
 
@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
       try {
         await admin.from('profiles').insert({
           user_id: signupData.user.id,
-          full_name: 'Test User'
+          full_name
         })
       } catch (profileError) {
         console.warn('Profile creation failed:', profileError)
@@ -59,7 +59,7 @@ export async function POST(req: NextRequest) {
       email,
       password,
       email_confirm: true,
-      user_metadata: { full_name: 'Test User' }
+      user_metadata: { full_name }
     })
 
     if (adminData.user && !adminError) {
