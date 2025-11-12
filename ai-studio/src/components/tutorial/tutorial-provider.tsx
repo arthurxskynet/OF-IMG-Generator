@@ -10,24 +10,90 @@ interface TutorialProviderProps {
   children: React.ReactNode
 }
 
-// Define steps for dashboard only
+// Define steps for each route
 const stepsByRoute: Record<string, Step[]> = {
   '/dashboard': [
     {
       target: '[data-tour="dashboard-create-model"]',
-      content: 'Welcome to AI Studio! Click "New Model" to create your first AI model for image generation.',
+      content: 'Welcome to AI Studio! Click "New Model" to start creating your first AI model.',
       disableBeacon: true,
       placement: 'bottom' as const,
+    },
+  ],
+  '/models/new': [
+    {
+      target: '[data-tour="new-model-headshot"]',
+      content: 'First, add a headshot image of your model. This will be used as the reference face.',
+      disableBeacon: true,
+      placement: 'right' as const,
+    },
+    {
+      target: '[data-tour="new-model-name"]',
+      content: 'Give your model a name so you can easily identify it later.',
+      disableBeacon: true,
+      placement: 'bottom' as const,
+    },
+    {
+      target: '[data-tour="new-model-submit"]',
+      content: 'Once you\'ve added the headshot and name, click "Create Model" to finish.',
+      disableBeacon: true,
+      placement: 'bottom' as const,
+    },
+  ],
+  '/models': [
+    {
+      target: '[data-tour="models-item"]',
+      content: 'Click on your model to open the generation workspace where you can create images.',
+      disableBeacon: true,
+      placement: 'bottom' as const,
+    },
+  ],
+  '/models/[modelId]': [
+    {
+      target: '[data-tour="workspace-dimensions"]',
+      content: 'Here you can adjust the output dimensions for your generated images.',
+      disableBeacon: true,
+      placement: 'bottom' as const,
+    },
+    {
+      target: '[data-tour="workspace-bulk-upload"]',
+      content: 'Upload target images here - these are the outfits/scenes you want to apply the face to.',
+      disableBeacon: true,
+      placement: 'left' as const,
+    },
+    {
+      target: '[data-tour="workspace-face-swap"]',
+      content: 'Click "Face Swap" to generate a prompt that will swap the face onto the target image.',
+      disableBeacon: true,
+      placement: 'bottom' as const,
+    },
+    {
+      target: '[data-tour="workspace-generate"]',
+      content: 'Finally, click "Generate" to create your AI-generated images!',
+      disableBeacon: true,
+      placement: 'bottom' as const,
+    },
+    {
+      target: '[data-tour="workspace-prompt"]',
+      content: 'You can edit the prompt here to fine-tune your results. That\'s it - you\'re ready to create!',
+      disableBeacon: true,
+      placement: 'top' as const,
     },
   ],
 }
 
 // Helper to match route patterns
 function matchRoute(pathname: string): string | null {
-  // Only dashboard has tutorial steps now
-  if (pathname === '/dashboard') {
+  // Exact matches first
+  if (stepsByRoute[pathname]) {
     return pathname
   }
+  
+  // Pattern matches
+  if (pathname.startsWith('/models/') && pathname !== '/models/new') {
+    return '/models/[modelId]'
+  }
+  
   return null
 }
 
@@ -197,11 +263,14 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
     }
   }, [tourEnabled, manualDisabled, pathname, currentSteps.length])
 
-  // Constrain tutorial to dashboard only when running
+  // Redirect to dashboard when tutorial starts (if not already there)
   useEffect(() => {
     const running = (tourEnabled || localEnabled) && !manualDisabled
     if (!running) return
-    if (pathname !== '/dashboard') {
+    
+    // Only redirect to dashboard if we're starting fresh and not on a valid tutorial page
+    const onValidTutorialPage = matchRoute(pathname) !== null
+    if (!onValidTutorialPage && pathname !== '/dashboard') {
       try {
         router.replace('/dashboard?tour=1')
       } catch {
@@ -215,21 +284,34 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
     const routeChanged = previousPathname.current !== pathname
     previousPathname.current = pathname
     
-    if (shouldRun && currentSteps.length > 0 && pathname === '/dashboard') {
+    if (shouldRun && currentSteps.length > 0) {
       if (routeChanged) {
         setStepIndex(0)
         // Reset target-not-found retries on navigation
         targetRetryRef.current = { route: currentRoute, index: 0, retries: 0 }
       }
       
+      // Get the target selector for the first step
+      const firstStepTarget = currentSteps[0]?.target
+      if (!firstStepTarget) {
+        setRun(false)
+        return
+      }
+      
       // Wait for target element to be mounted
+      let attempts = 0
+      const maxAttempts = 30 // 3 seconds max wait
       const checkAndStart = () => {
-        const target = document.querySelector('[data-tour="dashboard-create-model"]')
+        const target = document.querySelector(firstStepTarget as string)
         if (target) {
           setRun(true)
-        } else {
-          // Retry after a short delay
+        } else if (attempts < maxAttempts) {
+          attempts++
           setTimeout(checkAndStart, 100)
+        } else {
+          // Target not found after timeout, stop tutorial
+          console.warn('Tutorial target not found:', firstStepTarget)
+          setRun(false)
         }
       }
       
@@ -238,7 +320,7 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
     } else {
       setRun(false)
     }
-  }, [pathname, shouldRun, currentSteps.length, currentRoute])
+  }, [pathname, shouldRun, currentSteps, currentRoute])
 
   // Handle step callbacks
   const handleJoyrideCallback = useCallback((data: CallBackProps) => {
@@ -331,7 +413,71 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
 
     // Handle step navigation
     if (type === 'step:after' && currentSteps.length > 0) {
-      // Advance to next step (no cross-page navigation)
+      // Navigate based on current route and step
+      if (pathname === '/dashboard' && index === 0) {
+        // After dashboard step, navigate to /models/new
+        setTimeout(() => {
+          const suffix = (tourEnabled || localEnabled) && !manualDisabled ? '?tour=1' : ''
+          router.push(`/models/new${suffix}`)
+        }, 300)
+        return // Don't advance step index, let route change handle it
+      } else if (pathname === '/models/new' && index === currentSteps.length - 1) {
+        // After the last step on new model, navigate to /models
+        setTimeout(() => {
+          const suffix = (tourEnabled || localEnabled) && !manualDisabled ? '?tour=1' : ''
+          router.push(`/models${suffix}`)
+        }, 300)
+        return // Don't advance step index, let route change handle it
+      } else if (pathname === '/models' && index === 0) {
+        // After models list step, try to click first model link
+        setTimeout(() => {
+          const firstModelLink = document.querySelector('[data-tour="models-item"]') as HTMLAnchorElement
+          if (firstModelLink) {
+            try {
+              const url = new URL(firstModelLink.href, window.location.origin)
+              if ((tourEnabled || localEnabled) && !manualDisabled) {
+                url.searchParams.set('tour', '1')
+              } else {
+                url.searchParams.delete('tour')
+              }
+              window.location.assign(url.toString())
+            } catch {
+              firstModelLink.click()
+            }
+          } else {
+            // If no models, keep step active
+            console.warn('No model found to navigate to')
+          }
+        }, 300)
+        return // Don't advance step index, let route change handle it
+      } else if (currentRoute === '/models/[modelId]' && index === 1) {
+        // After bulk upload step, programmatically click add row button
+        setTimeout(() => {
+          const addRowButton = document.querySelector('[data-tour="workspace-add-row"]') as HTMLButtonElement
+          if (addRowButton) {
+            addRowButton.click()
+          }
+        }, 300)
+        // Wait until the next target exists before advancing to step 3 (face swap)
+        const start = Date.now()
+        const waitForFaceSwap = () => {
+          const el = document.querySelector('[data-tour="workspace-face-swap"]')
+          if (el) {
+            setStepIndex(index + 1)
+            return
+          }
+          if (Date.now() - start < 10000) {
+            setTimeout(waitForFaceSwap, 250)
+          } else {
+            // Timeout fallback: advance anyway
+            setStepIndex(index + 1)
+          }
+        }
+        setTimeout(waitForFaceSwap, 350)
+        return
+      }
+      
+      // Advance to next step (if not navigating)
       if (index < currentSteps.length - 1) {
         setStepIndex(index + 1)
       }
