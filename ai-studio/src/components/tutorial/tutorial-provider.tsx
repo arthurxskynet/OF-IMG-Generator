@@ -240,7 +240,7 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
     }
 
     // Retry when target isn't ready yet (after navigation/render)
-    if (type === 'error:target_not_found' || type === 'target:notFound') {
+    if (type === 'error') {
       const keyRoute = currentRoute
       const retryState = targetRetryRef.current
       if (retryState.route !== keyRoute || retryState.index !== index) {
