@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
-import { useQueryState } from 'nuqs'
+import { useQueryState, parseAsBoolean } from 'nuqs'
 import { NuqsAdapter } from 'nuqs/adapters/next/app'
 import Joyride, { CallBackProps, STATUS, Step } from 'react-joyride'
 
@@ -90,11 +90,7 @@ function matchRoute(pathname: string): string | null {
 function TutorialProviderInner({ children }: TutorialProviderProps) {
   const pathname = usePathname()
   const router = useRouter()
-  const [tourEnabled, setTourEnabled] = useQueryState('tour', {
-    parse: (value) => value === '1',
-    serialize: (value) => value ? '1' : null,
-    defaultValue: false,
-  })
+  const [tourEnabled, setTourEnabled] = useQueryState('tour', parseAsBoolean.withDefault(false))
   
   const [run, setRun] = useState(false)
   const [stepIndex, setStepIndex] = useState(0)

@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import path from "path";
 
 const nextConfig: NextConfig = {
   images: process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -23,8 +24,9 @@ const nextConfig: NextConfig = {
         unoptimized: false,
       }
     : undefined,
+  outputFileTracingRoot: path.resolve(__dirname, ".."),
   turbopack: {
-    root: __dirname,
+    root: path.resolve(__dirname, ".."),
   },
   async headers() {
     // Avoid mixed-content warnings and set baseline security headers
