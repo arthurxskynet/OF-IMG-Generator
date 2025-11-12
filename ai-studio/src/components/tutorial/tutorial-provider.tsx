@@ -197,7 +197,7 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
 
   // Handle step callbacks
   const handleJoyrideCallback = useCallback((data: CallBackProps) => {
-    const { status, type, index } = data
+    const { status, type, index, action } = data
 
     // If manually disabled or not supposed to run, ignore further actions
     if (manualDisabled || !shouldRun) {
@@ -225,7 +225,7 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
     }
 
     // Handle explicit close
-    if (type === 'close') {
+    if (action === 'close') {
       setRun(false)
       setStepIndex(0)
       setLocalEnabled(false)
