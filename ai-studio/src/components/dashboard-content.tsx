@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import Link from "next/link";
-import { useQueryState } from "nuqs";
+import { useQueryState, parseAsBoolean } from "nuqs";
 import { ModelCard } from "@/components/model-card";
 import { useToast } from "@/hooks/use-toast";
 
@@ -25,11 +25,7 @@ export function DashboardContent({ initialModels }: DashboardContentProps) {
   const [models, setModels] = useState(initialModels);
   const [tutorialEnabled, setTutorialEnabled] = useState(false);
   const [isLoadingTutorial, setIsLoadingTutorial] = useState(true);
-  const [tourParam, setTourParam] = useQueryState('tour', {
-    parse: (value) => value === '1',
-    serialize: (value) => value ? '1' : null,
-    defaultValue: false,
-  });
+  const [tourParam, setTourParam] = useQueryState('tour', parseAsBoolean.withDefault(false));
   const { toast } = useToast();
 
   // Fetch tutorial enabled state
