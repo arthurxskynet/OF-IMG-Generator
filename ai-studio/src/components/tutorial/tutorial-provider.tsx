@@ -102,6 +102,20 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
   const [localEnabled, setLocalEnabled] = useState(false)
   const [runNonce, setRunNonce] = useState(0)
 
+  // Load persisted disabled state
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('ai-studio:tutorial-disabled')
+      if (stored === '1') {
+        setManualDisabled(true)
+        setLocalEnabled(false)
+        setTourEnabled(false)
+      }
+    } catch {
+      // no-op
+    }
+  }, [setTourEnabled])
+
   // Fetch tutorial enabled state from API
   useEffect(() => {
     async function fetchTutorialEnabled() {
@@ -145,10 +159,23 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
       const enabled = Boolean(custom.detail?.enabled)
       setManualDisabled(!enabled)
       setLocalEnabled(enabled)
+      try {
+        localStorage.setItem('ai-studio:tutorial-disabled', enabled ? '0' : '1')
+      } catch {
+        // no-op
+      }
       if (!enabled) {
         // Stop immediately
         setRun(false)
         setStepIndex(0)
+        try {
+          const params = new URLSearchParams(window.location.search)
+          params.delete('tour')
+          const next = `${pathname}${params.size ? `?${params.toString()}` : ''}`
+          router.replace(next)
+        } catch {
+          // no-op
+        }
       } else if (enabled) {
         // Start from dashboard immediately
         const suffix = '?tour=1'
@@ -200,6 +227,19 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
     }
   }, [tourEnabled, manualDisabled, pathname, currentSteps.length])
 
+  // Constrain tutorial to dashboard only when running
+  useEffect(() => {
+    const running = (tourEnabled || localEnabled) && !manualDisabled
+    if (!running) return
+    if (pathname !== '/dashboard') {
+      try {
+        router.replace('/dashboard?tour=1')
+      } catch {
+        // no-op
+      }
+    }
+  }, [tourEnabled, localEnabled, manualDisabled, pathname, router])
+
   // Reset step index when route changes
   useEffect(() => {
     const routeChanged = previousPathname.current !== pathname
@@ -246,6 +286,11 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
         
         setTourEnabled(false)
         setManualDisabled(true)
+        try {
+          localStorage.setItem('ai-studio:tutorial-disabled', '1')
+        } catch {
+          // no-op
+        }
         // Remove ?tour from URL
         try {
           const params = new URLSearchParams(window.location.search)
@@ -271,6 +316,11 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
       }).catch(console.error)
       setTourEnabled(false)
       setManualDisabled(true)
+      try {
+        localStorage.setItem('ai-studio:tutorial-disabled', '1')
+      } catch {
+        // no-op
+      }
       // Remove ?tour from URL
       try {
         const params = new URLSearchParams(window.location.search)
@@ -302,76 +352,49 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
 
     // Handle step navigation
     if (type === 'step:after' && currentSteps.length > 0) {
-      // Navigate based on current route and step
-      if (pathname === '/dashboard' && index === 0) {
-        // After dashboard step, navigate to /models/new
-        setTimeout(() => {
-          const suffix = (tourEnabled || localEnabled) && !manualDisabled ? '?tour=1' : ''
-          router.push(`/models/new${suffix}`)
-        }, 300)
-        return // Don't advance step index, let route change handle it
-      } else if (pathname === '/models/new' && index === currentSteps.length - 1) {
-        // After the last step on new model, navigate to /models
-        setTimeout(() => {
-          const suffix = (tourEnabled || localEnabled) && !manualDisabled ? '?tour=1' : ''
-          router.push(`/models${suffix}`)
-        }, 300)
-        return // Don't advance step index, let route change handle it
-      } else if (pathname === '/models' && index === 0) {
-        // After models list step, try to click first model link
-        setTimeout(() => {
-          const firstModelLink = document.querySelector('[data-tour="models-item"]') as HTMLAnchorElement
-          if (firstModelLink) {
-            try {
-              const url = new URL(firstModelLink.href, window.location.origin)
-              if ((tourEnabled || localEnabled) && !manualDisabled) {
-                url.searchParams.set('tour', '1')
-              } else {
-                url.searchParams.delete('tour')
-              }
-              window.location.assign(url.toString())
-            } catch {
-              firstModelLink.click()
-            }
-          } else {
-            // If no models, keep step active
-            console.warn('No model found to navigate to')
-          }
-        }, 300)
-        return // Don't advance step index, let route change handle it
-      } else if (currentRoute === '/models/[modelId]' && index === 1) {
-        // After bulk upload step, programmatically click add row button
-        setTimeout(() => {
-          const addRowButton = document.querySelector('[data-tour="workspace-add-row"]') as HTMLButtonElement
-          if (addRowButton) {
-            addRowButton.click()
-          }
-        }, 300)
-        // Wait until the next target exists before advancing to step 3 (face swap)
-        const start = Date.now()
-        const waitForFaceSwap = () => {
-          const el = document.querySelector('[data-tour="workspace-face-swap"]')
-          if (el) {
-            setStepIndex(index + 1)
-            return
-          }
-          if (Date.now() - start < 10000) {
-            setTimeout(waitForFaceSwap, 250)
-          } else {
-            // Timeout fallback: advance anyway
-            setStepIndex(index + 1)
-          }
-        }
-        setTimeout(waitForFaceSwap, 350)
-        return
-      }
-      
-      // Advance to next step (only if not navigating)
+      // Advance to next step (no cross-page navigation)
       if (index < currentSteps.length - 1) {
         setStepIndex(index + 1)
       }
     }
   }, [pathname, currentRoute, currentSteps, router, setTourEnabled])
+
+  // Failsafe: if overlay appears but tooltip doesn't, exit to avoid dark page lock
+  useEffect(() => {
+    if (!run) return
+    const timer = setTimeout(() => {
+      try {
+        const hasOverlay = !!document.querySelector('.react-joyride__overlay')
+        const hasTooltip =
+          !!document.querySelector('.react-joyride__tooltip') ||
+          !!document.querySelector('[data-test-id="react-joyride-tooltip"]')
+        if (hasOverlay && !hasTooltip) {
+          setRun(false)
+          setStepIndex(0)
+          setLocalEnabled(false)
+          setManualDisabled(true)
+          setTourEnabled(false)
+          try {
+            localStorage.setItem('ai-studio:tutorial-disabled', '1')
+          } catch {}
+          try {
+            fetch('/api/user/settings', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ tutorial_enabled: false }),
+            }).catch(() => {})
+            const params = new URLSearchParams(window.location.search)
+            params.delete('tour')
+            const next = `${pathname}${params.size ? `?${params.toString()}` : ''}`
+            router.replace(next)
+          } catch {}
+        }
+      } catch {
+        // no-op
+      }
+    }, 1500)
+    return () => clearTimeout(timer)
+  }, [run, stepIndex, pathname, router, setTourEnabled])
 
   // Don't render if loading and not locally enabled, or no steps/shouldn't run
   if ((isLoading && !localEnabled) || !shouldRun || !currentSteps.length) {

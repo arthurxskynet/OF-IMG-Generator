@@ -3,6 +3,8 @@ import { z } from "zod";
 import { createServer } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 const UpdateSettingsSchema = z.object({
   tutorial_enabled: z.boolean()
@@ -13,7 +15,7 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser();
   
   if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: { "Cache-Control": "no-store" } });
   }
 
   try {
@@ -26,15 +28,15 @@ export async function GET() {
 
     if (error && error.code !== 'PGRST116') { // PGRST116 is "not found", which is fine
       console.error("Failed to fetch user settings:", error);
-      return NextResponse.json({ error: "Failed to fetch settings" }, { status: 500 });
+      return NextResponse.json({ error: "Failed to fetch settings" }, { status: 500, headers: { "Cache-Control": "no-store" } });
     }
 
     return NextResponse.json({ 
       tutorial_enabled: settings?.tutorial_enabled ?? false 
-    });
+    }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Settings GET error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: "Internal server error" }, { status: 500, headers: { "Cache-Control": "no-store" } });
   }
 }
 
@@ -43,7 +45,7 @@ export async function POST(req: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
   
   if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: { "Cache-Control": "no-store" } });
   }
 
   try {
@@ -65,22 +67,22 @@ export async function POST(req: NextRequest) {
 
     if (error) {
       console.error("Failed to update user settings:", error);
-      return NextResponse.json({ error: "Failed to update settings" }, { status: 500 });
+      return NextResponse.json({ error: "Failed to update settings" }, { status: 500, headers: { "Cache-Control": "no-store" } });
     }
 
     return NextResponse.json({ 
       tutorial_enabled: settings.tutorial_enabled 
-    });
+    }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ 
         error: "Validation failed", 
         details: error.issues 
-      }, { status: 400 });
+      }, { status: 400, headers: { "Cache-Control": "no-store" } });
     }
     
     console.error("Settings POST error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: "Internal server error" }, { status: 500, headers: { "Cache-Control": "no-store" } });
   }
 }
 
