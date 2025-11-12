@@ -25,7 +25,7 @@ const NavigationLinks = () => {
             className={cn(
               "rounded-full px-4 py-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               isActive
-                ? "bg-primary/10 text-primary"
+                ? "bg-primary/15 text-primary dark:bg-primary/25"
                 : "text-muted-foreground hover:text-foreground hover:bg-accent"
             )}
             aria-current={isActive ? "page" : undefined}

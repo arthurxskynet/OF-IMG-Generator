@@ -13,7 +13,7 @@ const AuthHeader = ({ user }: AuthHeaderProps) => {
   const displayName = user.user_metadata?.full_name ?? user.email ?? "Account";
 
   return (
-    <header className="sticky top-0 z-40 border-b bg-card/80 text-card-foreground backdrop-blur supports-[backdrop-filter]:bg-card/60">
+    <header className="sticky top-0 relative z-[11000] border-b bg-card/80 text-card-foreground backdrop-blur supports-[backdrop-filter]:bg-card/60">
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between gap-6 px-4 sm:px-6">
         <Link href="/dashboard" className="flex items-center gap-3 text-sm font-semibold" suppressHydrationWarning>
           <span className="rounded-md border border-primary/30 bg-primary/10 px-3 py-1 text-primary" suppressHydrationWarning>AI Studio</span>

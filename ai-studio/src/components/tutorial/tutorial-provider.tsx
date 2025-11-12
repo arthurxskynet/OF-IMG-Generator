@@ -230,6 +230,15 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
         
         setTourEnabled(false)
         setManualDisabled(true)
+        // Remove ?tour from URL
+        try {
+          const params = new URLSearchParams(window.location.search)
+          params.delete('tour')
+          const next = `${pathname}${params.size ? `?${params.toString()}` : ''}`
+          router.replace(next)
+        } catch {
+          // no-op
+        }
       }
       return
     }
@@ -246,6 +255,15 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
       }).catch(console.error)
       setTourEnabled(false)
       setManualDisabled(true)
+      // Remove ?tour from URL
+      try {
+        const params = new URLSearchParams(window.location.search)
+        params.delete('tour')
+        const next = `${pathname}${params.size ? `?${params.toString()}` : ''}`
+        router.replace(next)
+      } catch {
+        // no-op
+      }
       return
     }
 
@@ -352,6 +370,7 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
         steps={currentSteps}
         run={run}
         stepIndex={stepIndex}
+        spotlightPadding={8}
         continuous
         showProgress
         showSkipButton
@@ -367,6 +386,13 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
           },
           tooltip: {
             borderRadius: '8px',
+            zIndex: 12000,
+          },
+          overlay: {
+            zIndex: 10000,
+          },
+          spotlight: {
+            zIndex: 12000,
           },
           buttonNext: {
             backgroundColor: 'hsl(var(--primary))',

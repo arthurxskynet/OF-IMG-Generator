@@ -5,11 +5,11 @@ import { ModelsContent } from "@/components/models-content";
 
 const Page = async () => {
   const supabase = await createServer();
-  const { data: { session } } = await supabase.auth.getSession();
+  const { data: { user } } = await supabase.auth.getUser();
   
-  if (session?.user?.id) {
+  if (user?.id) {
     try {
-      await ensureUserOnboarding(session.user.id);
+      await ensureUserOnboarding(user.id);
     } catch {
       // Swallow onboarding errors
     }
