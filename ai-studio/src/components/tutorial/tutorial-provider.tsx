@@ -10,80 +10,24 @@ interface TutorialProviderProps {
   children: React.ReactNode
 }
 
-// Define steps for each route
+// Define steps for dashboard only
 const stepsByRoute: Record<string, Step[]> = {
   '/dashboard': [
     {
       target: '[data-tour="dashboard-create-model"]',
-      content: 'Select Create Model to begin.',
+      content: 'Welcome to AI Studio! Click "New Model" to create your first AI model for image generation.',
       disableBeacon: true,
-    },
-  ],
-  '/models/new': [
-    {
-      target: '[data-tour="new-model-headshot"]',
-      content: 'Add your best picture of the model\'s face here. Don\'t worry, you can add more later (even outfit items).',
-      disableBeacon: true,
-    },
-    {
-      target: '[data-tour="new-model-name"], #name',
-      content: 'Add a name for your model.',
-      disableBeacon: true,
-    },
-    {
-      target: '[data-tour="new-model-submit"]',
-      content: 'Then select Create to finish your model.',
-      disableBeacon: true,
-    },
-  ],
-  '/models': [
-    {
-      target: '[data-tour="models-item"]',
-      content: 'Open your model to enter the generation workspace.',
-      disableBeacon: true,
-    },
-  ],
-  '/models/[modelId]': [
-    {
-      target: '[data-tour="workspace-dimensions"]',
-      content: 'This is where you can change the dimensions of your output photo.',
-      disableBeacon: true,
-    },
-    {
-      target: '[data-tour="workspace-bulk-upload"]',
-      content: 'You can upload an image or drag and drop a folder of images here.',
-      disableBeacon: true,
-    },
-    {
-      target: '[data-tour="workspace-face-swap"]',
-      content: 'When both images are present select the face swap. This will generate a prompt.',
-      disableBeacon: true,
-    },
-    {
-      target: '[data-tour="workspace-generate"]',
-      content: 'Click Generate to create images.',
-      disableBeacon: true,
-    },
-    {
-      target: '[data-tour="workspace-prompt"]',
-      content: 'Tweak the prompt if anything is wrong with the image. If it\'s close, try Generate again.',
-      disableBeacon: true,
+      placement: 'bottom' as const,
     },
   ],
 }
 
 // Helper to match route patterns
 function matchRoute(pathname: string): string | null {
-  // Exact matches first
-  if (stepsByRoute[pathname]) {
+  // Only dashboard has tutorial steps now
+  if (pathname === '/dashboard') {
     return pathname
   }
-  
-  // Pattern matches
-  if (pathname.startsWith('/models/') && pathname !== '/models/new') {
-    return '/models/[modelId]'
-  }
-  
   return null
 }
 
@@ -148,7 +92,16 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
       setStepIndex(0)
       setRunNonce(n => n + 1)
       setRun(false)
-      setTimeout(() => setRun(true), 50)
+      // Wait for target element
+      const waitForTarget = () => {
+        const target = document.querySelector('[data-tour="dashboard-create-model"]')
+        if (target) {
+          setRun(true)
+        } else {
+          setTimeout(waitForTarget, 100)
+        }
+      }
+      setTimeout(waitForTarget, 300)
     }
   }, [localEnabled, manualDisabled, pathname, currentSteps.length])
 
@@ -189,9 +142,17 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
           setStepIndex(0)
           targetRetryRef.current = { route: '/dashboard', index: 0, retries: 0 }
           setRunNonce(n => n + 1)
-          // Toggle run to ensure Joyride initializes the first step
           setRun(false)
-          setTimeout(() => setRun(true), 50)
+          // Wait for target element
+          const waitForTarget = () => {
+            const target = document.querySelector('[data-tour="dashboard-create-model"]')
+            if (target) {
+              setRun(true)
+            } else {
+              setTimeout(waitForTarget, 100)
+            }
+          }
+          setTimeout(waitForTarget, 300)
         }
       }
     }
@@ -223,7 +184,16 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
       setStepIndex(0)
       setRunNonce(n => n + 1)
       setRun(false)
-      setTimeout(() => setRun(true), 50)
+      // Wait for target element
+      const waitForTarget = () => {
+        const target = document.querySelector('[data-tour="dashboard-create-model"]')
+        if (target) {
+          setRun(true)
+        } else {
+          setTimeout(waitForTarget, 100)
+        }
+      }
+      setTimeout(waitForTarget, 300)
     }
   }, [tourEnabled, manualDisabled, pathname, currentSteps.length])
 
@@ -240,26 +210,35 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
     }
   }, [tourEnabled, localEnabled, manualDisabled, pathname, router])
 
-  // Reset step index when route changes
+  // Reset step index when route changes and wait for DOM
   useEffect(() => {
     const routeChanged = previousPathname.current !== pathname
     previousPathname.current = pathname
     
-    if (shouldRun && currentSteps.length > 0) {
+    if (shouldRun && currentSteps.length > 0 && pathname === '/dashboard') {
       if (routeChanged) {
         setStepIndex(0)
         // Reset target-not-found retries on navigation
         targetRetryRef.current = { route: currentRoute, index: 0, retries: 0 }
-        // Briefly pause and resume to ensure DOM is ready
-        setRun(false)
-        setTimeout(() => setRun(true), 250)
-      } else {
-        setRun(true)
       }
+      
+      // Wait for target element to be mounted
+      const checkAndStart = () => {
+        const target = document.querySelector('[data-tour="dashboard-create-model"]')
+        if (target) {
+          setRun(true)
+        } else {
+          // Retry after a short delay
+          setTimeout(checkAndStart, 100)
+        }
+      }
+      
+      // Initial delay to let React render
+      setTimeout(checkAndStart, 300)
     } else {
       setRun(false)
     }
-  }, [pathname, shouldRun, currentSteps.length])
+  }, [pathname, shouldRun, currentSteps.length, currentRoute])
 
   // Handle step callbacks
   const handleJoyrideCallback = useCallback((data: CallBackProps) => {
