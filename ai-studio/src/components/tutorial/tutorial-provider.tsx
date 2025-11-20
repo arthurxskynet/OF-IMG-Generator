@@ -98,6 +98,11 @@ function matchRoute(pathname: string): string | null {
 }
 
 function TutorialProviderInner({ children }: TutorialProviderProps) {
+  // Tutorial mode is disabled - always return children without tutorial functionality
+  // This prevents bugs where new users can't turn it off and it constantly refreshes the app
+  return <>{children}</>
+  
+  /* Tutorial functionality disabled - kept for future reference
   const pathname = usePathname()
   const router = useRouter()
   const [tourEnabled, setTourEnabled] = useQueryState('tour', parseAsBoolean.withDefault(false))
@@ -576,6 +581,7 @@ function TutorialProviderInner({ children }: TutorialProviderProps) {
       />
     </>
   )
+  */
 }
 
 export function TutorialProvider({ children }: TutorialProviderProps) {

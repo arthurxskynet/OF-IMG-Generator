@@ -31,8 +31,9 @@ export async function GET() {
       return NextResponse.json({ error: "Failed to fetch settings" }, { status: 500, headers: { "Cache-Control": "no-store" } });
     }
 
+    // Tutorial mode is disabled - always return false
     return NextResponse.json({ 
-      tutorial_enabled: settings?.tutorial_enabled ?? false 
+      tutorial_enabled: false 
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Settings GET error:", error);
@@ -52,12 +53,12 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const validatedData = UpdateSettingsSchema.parse(body);
 
-    // Upsert user settings
+    // Tutorial mode is disabled - always save as false regardless of request
     const { data: settings, error } = await supabase
       .from("user_settings")
       .upsert({
         user_id: user.id,
-        tutorial_enabled: validatedData.tutorial_enabled,
+        tutorial_enabled: false, // Always set to false - tutorial mode is disabled
         updated_at: new Date().toISOString()
       }, {
         onConflict: "user_id"
@@ -70,8 +71,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Failed to update settings" }, { status: 500, headers: { "Cache-Control": "no-store" } });
     }
 
+    // Always return false - tutorial mode is disabled
     return NextResponse.json({ 
-      tutorial_enabled: settings.tutorial_enabled 
+      tutorial_enabled: false 
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof z.ZodError) {
