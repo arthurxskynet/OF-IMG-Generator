@@ -23,6 +23,7 @@ import { Progress } from '@/components/ui/progress'
 import { Spinner } from '@/components/ui/spinner'
 import { Checkbox } from '@/components/ui/checkbox'
 import { DimensionControls } from '@/components/dimension-controls'
+import { PromptEnhanceDialog } from '@/components/prompt-enhance-dialog'
 
 interface ModelWorkspaceProps {
   model: Model
@@ -58,6 +59,7 @@ const INTERNAL_IMAGE_MIME = 'application/x-ai-studio-image'
 export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspaceProps) {
   const { toast } = useToast()
   const supabase = createClient()
+  const [enhanceOpenRowId, setEnhanceOpenRowId] = useState<string | null>(null)
   const [rows, setRows] = useState(initialRows)
   const [currentModel, setCurrentModel] = useState(model)
   
@@ -3176,6 +3178,18 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                   <>Face & Hair</>
                                 )}
                               </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setEnhanceOpenRowId(row.id)}
+                                disabled={!Boolean(row?.target_image_url)}
+                                title="Enhance the current prompt with AI using your images as context"
+                                className="text-xs"
+                                aria-label="Enhance prompt with AI"
+                              >
+                                <Wand2 className="mr-1 h-4 w-4" />
+                                Enhance
+                              </Button>
                             </div>
                           </div>
                           <DialogContent className="max-w-3xl">
@@ -3192,6 +3206,22 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                             </div>
                           </DialogContent>
                         </Dialog>
+                        <PromptEnhanceDialog
+                          open={enhanceOpenRowId === row.id}
+                          onOpenChange={(open) => setEnhanceOpenRowId(open ? row.id : null)}
+                          rowId={row.id}
+                          currentPrompt={getCurrentPrompt(row.id)}
+                          swapMode={rowState.activePromptSwapMode || 'face-hair'}
+                          onPromptUpdated={(newPrompt) => {
+                            setLocalPrompts(prev => ({ ...prev, [row.id]: newPrompt }))
+                            setRows(prev => prev.map(r => r.id === row.id ? { ...r, prompt_override: newPrompt || undefined } : r))
+                            setDirtyPrompts(prev => {
+                              const next = new Set(prev)
+                              next.delete(row.id)
+                              return next
+                            })
+                          }}
+                        />
                       </TableCell>
                       
                       

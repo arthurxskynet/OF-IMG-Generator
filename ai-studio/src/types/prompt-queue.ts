@@ -15,6 +15,15 @@ export const PromptQueueResponseSchema = z.object({
   estimatedWaitTime: z.number().optional() // seconds
 })
 
+// Prompt enhancement queue schema
+export const PromptEnhanceQueueRequestSchema = z.object({
+  rowId: z.string().uuid(),
+  existingPrompt: z.string().min(1),
+  userInstructions: z.string().min(1),
+  swapMode: z.enum(['face', 'face-hair']).optional().default('face-hair'),
+  priority: z.number().min(1).max(10).default(8) // High priority by default for interactive edits
+})
+
 // Database types for prompt generation queue
 export interface PromptGenerationJob {
   id: string
@@ -30,6 +39,10 @@ export interface PromptGenerationJob {
   max_retries: number
   priority: number
   swap_mode?: 'face' | 'face-hair' // Optional - defaults to 'face-hair' if not present
+  operation?: 'generate' | 'enhance' // Default 'generate'
+  existing_prompt?: string
+  user_instructions?: string
+  enhanced_prompt?: string
   created_at: string
   updated_at: string
   started_at?: string

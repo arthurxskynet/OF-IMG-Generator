@@ -1,5 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabase-admin'
-import { generatePromptWithGrok, SwapMode } from '@/lib/ai-prompt-generator'
+import { generatePromptWithGrok, enhancePromptWithGrok, SwapMode } from '@/lib/ai-prompt-generator'
 import { 
   PromptGenerationJob, 
   PromptQueueStats, 
@@ -24,6 +24,64 @@ export class PromptQueueService {
       PromptQueueService.instance = new PromptQueueService()
     }
     return PromptQueueService.instance
+  }
+
+  /**
+   * Add a prompt enhancement request to the queue
+   */
+  async enqueuePromptEnhancement(
+    rowId: string,
+    modelId: string,
+    userId: string,
+    existingPrompt: string,
+    userInstructions: string,
+    refUrls: string[],
+    targetUrl: string,
+    priority: number = 8,
+    swapMode: SwapMode = 'face-hair'
+  ): Promise<string> {
+    // Build insert object
+    const insertData: any = {
+      row_id: rowId,
+      model_id: modelId,
+      user_id: userId,
+      ref_urls: refUrls.length > 0 ? refUrls : null,
+      target_url: targetUrl,
+      existing_prompt: existingPrompt,
+      user_instructions: userInstructions,
+      priority,
+      status: 'queued',
+      operation: 'enhance',
+      swap_mode: swapMode
+    }
+    
+    let { data, error } = await supabaseAdmin
+      .from('prompt_generation_jobs')
+      .insert(insertData)
+      .select('id')
+      .single()
+
+    // If error is due to missing columns, log warning (should handle via migration)
+    if (error) {
+      console.error('[PromptQueue] Failed to enqueue prompt enhancement:', error)
+      throw new Error(`Failed to enqueue prompt enhancement: ${error.message}`)
+    }
+
+    if (!data) {
+      throw new Error('Failed to enqueue prompt enhancement: No data returned')
+    }
+
+    console.log('[PromptQueue] Enqueued prompt enhancement', { 
+      promptJobId: data.id, 
+      rowId, 
+      priority,
+      swapMode
+    })
+
+    // Trigger processing if not already running
+    this.startProcessing()
+
+    return data.id
   }
 
   /**
@@ -365,7 +423,7 @@ export class PromptQueueService {
    * Process a single prompt generation job
    */
   private async processPromptJob(job: PromptGenerationJob): Promise<void> {
-    const { id: jobId, ref_urls, target_url, retry_count, max_retries, swap_mode } = job
+    const { id: jobId, ref_urls, target_url, retry_count, max_retries, swap_mode, operation, existing_prompt, user_instructions } = job
 
     try {
       // Default to 'face-hair' if swap_mode not specified
@@ -375,19 +433,35 @@ export class PromptQueueService {
         jobId, 
         retryCount: retry_count,
         hasRefs: Boolean(ref_urls?.length),
-        swapMode
+        swapMode,
+        operation: operation || 'generate'
       })
 
-      // Generate prompt using Grok with timeout protection
       // Set a timeout of 25 minutes to ensure we don't exceed the 30-minute threshold
       const timeoutMs = 25 * 60 * 1000 // 25 minutes
       
-      const generatedPrompt = await Promise.race([
-        generatePromptWithGrok(ref_urls || [], target_url, swapMode),
-        new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error('Prompt generation timeout after 25 minutes')), timeoutMs)
-        )
-      ])
+      let generatedPrompt: string
+
+      if (operation === 'enhance') {
+        if (!existing_prompt || !user_instructions) {
+          throw new Error('Missing inputs for enhancement job')
+        }
+        
+        generatedPrompt = await Promise.race([
+          enhancePromptWithGrok(existing_prompt, user_instructions, ref_urls || [], target_url, swapMode),
+          new Promise<never>((_, reject) => 
+            setTimeout(() => reject(new Error('Prompt enhancement timeout after 25 minutes')), timeoutMs)
+          )
+        ])
+      } else {
+        // Default to generation
+        generatedPrompt = await Promise.race([
+          generatePromptWithGrok(ref_urls || [], target_url, swapMode),
+          new Promise<never>((_, reject) => 
+            setTimeout(() => reject(new Error('Prompt generation timeout after 25 minutes')), timeoutMs)
+          )
+        ])
+      }
 
       // Update job as completed
       await supabaseAdmin
@@ -398,11 +472,13 @@ export class PromptQueueService {
         })
 
       // Update any waiting jobs that depend on this prompt
+      // Note: Enhance jobs might not have dependent jobs, but it doesn't hurt to check
       await this.updateDependentJobs(jobId, generatedPrompt)
 
       console.log('[PromptQueue] Job completed', { 
         jobId, 
-        promptLength: generatedPrompt.length 
+        promptLength: generatedPrompt.length,
+        operation: operation || 'generate'
       })
 
     } catch (error) {
