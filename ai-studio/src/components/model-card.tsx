@@ -77,29 +77,33 @@ export function ModelCard({ model, showStats = false, onDelete }: ModelCardProps
   return (
     <>
       <Link href={`/models/${model.id}`} data-tour="models-item">
-        <Card className="hover:shadow-md transition-shadow cursor-pointer h-full">
-          <CardContent className="p-4">
-            <div className="flex items-start space-x-3">
-              <Avatar className="h-12 w-12 flex-shrink-0">
+        <Card className="hover:shadow-lg hover:scale-[1.02] transition-all duration-300 cursor-pointer h-full border-border/50 hover:border-primary/20 group">
+          <CardContent className="p-5">
+            <div className="flex items-start space-x-4">
+              <Avatar className="h-14 w-14 flex-shrink-0 ring-2 ring-border/50 group-hover:ring-primary/30 transition-all duration-300">
                 {model.signedHeadshotUrl ? (
-                  <AvatarImage src={model.signedHeadshotUrl} alt={model.name ?? 'Model'} />
+                  <AvatarImage src={model.signedHeadshotUrl} alt={model.name ?? 'Model'} className="object-cover" />
                 ) : (
-                  <AvatarFallback>{(model.name ?? 'UM').slice(0, 2).toUpperCase()}</AvatarFallback>
+                  <AvatarFallback className="bg-gradient-to-br from-primary/20 to-primary/10 text-primary font-semibold">
+                    {(model.name ?? 'UM').slice(0, 2).toUpperCase()}
+                  </AvatarFallback>
                 )}
               </Avatar>
               <div className="flex-1 min-w-0">
-                <div className="flex items-start justify-between">
+                <div className="flex items-start justify-between gap-2">
                   <div className="flex-1 min-w-0">
-                    <h3 className="font-medium text-sm truncate">{model.name ?? 'Untitled Model'}</h3>
-                    <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
-                      {model.default_prompt}
+                    <h3 className="font-semibold text-base truncate group-hover:text-primary transition-colors">
+                      {model.name ?? 'Untitled Model'}
+                    </h3>
+                    <p className="text-xs text-muted-foreground line-clamp-2 mt-1.5 leading-relaxed">
+                      {model.default_prompt || 'No default prompt'}
                     </p>
                   </div>
                   {onDelete && (
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+                      className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all duration-200 opacity-0 group-hover:opacity-100"
                       onClick={handleDeleteClick}
                       disabled={isDeleting}
                     >
@@ -108,29 +112,29 @@ export function ModelCard({ model, showStats = false, onDelete }: ModelCardProps
                   )}
                 </div>
                 
-                <div className="flex items-center justify-between mt-2">
+                <div className="flex items-center justify-between mt-3 pt-3 border-t border-border/50">
                   {showStats ? (
-                    <div className="flex space-x-2">
-                      <Badge variant="secondary">
+                    <div className="flex flex-wrap gap-1.5">
+                      <Badge variant="secondary" className="text-xs font-medium shadow-sm">
                         {model.totalRows || 0} rows
                       </Badge>
                       {model.completedRows && model.completedRows > 0 && (
-                        <Badge variant="default">
+                        <Badge variant="default" className="text-xs font-medium shadow-sm bg-green-500 hover:bg-green-600">
                           {model.completedRows} done
                         </Badge>
                       )}
                       {model.activeRows && model.activeRows > 0 && (
-                        <Badge variant="outline">
+                        <Badge variant="outline" className="text-xs font-medium border-primary/30 text-primary">
                           {model.activeRows} active
                         </Badge>
                       )}
                     </div>
                   ) : (
-                    <span className="text-xs text-muted-foreground">
+                    <span className="text-xs font-medium text-muted-foreground">
                       {model.rowCount || 0} rows
                     </span>
                   )}
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-xs text-muted-foreground/70 font-medium">
                     {new Date(model.created_at).toLocaleDateString('en-US', {
                       year: 'numeric',
                       month: 'short',

@@ -9,8 +9,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'WaveSpeed API key not configured' }, { status: 500 })
     }
 
-    if (!images || images.length < 2) {
-      return NextResponse.json({ error: 'Need at least 2 images for Seedream V4 Edit' }, { status: 400 })
+    if (!images || images.length < 1) {
+      return NextResponse.json({ error: 'Need at least 1 image for Seedream V4 Edit' }, { status: 400 })
     }
 
     const base = process.env.WAVESPEED_API_BASE || 'https://api.wavespeed.ai'

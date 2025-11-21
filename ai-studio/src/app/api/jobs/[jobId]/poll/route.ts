@@ -213,45 +213,57 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
 
       // No need for additional status check since we atomically transitioned to 'saving'
       
-      // Early URL deduplication check - prevent downloading same remote URL multiple times
-      if (urls.length > 0) {
+      // Early URL deduplication check - prevent duplicates (model rows only)
+      if (urls.length > 0 && job.row_id) {
         const remoteUrl = urls[0]
-        
-        // Check if this exact remote URL was already processed for this row
         const { data: existingRemoteUrl } = await admin
           .from('generated_images')
           .select('id, output_url')
           .eq('row_id', job.row_id)
-          .limit(10) // Get recent images to check
-        
-        // Check if any existing image has the same remote URL pattern
+          .limit(10)
         const isDuplicate = existingRemoteUrl?.some(img => {
-          // Extract filename from both URLs for comparison
           const existingFilename = img.output_url.split('/').pop()?.split('?')[0]
           const newFilename = remoteUrl.split('/').pop()?.split('?')[0]
           return existingFilename && newFilename && existingFilename.includes(newFilename.split('-')[0])
         })
-        
         if (isDuplicate) {
-          console.log('[Poll] Remote URL already processed for this row', { 
-            jobId: job.id, 
-            rowId: job.row_id,
-            remoteUrl,
-            existingImages: existingRemoteUrl?.length || 0
-          })
-          // Mark job as succeeded and return
-          await admin.from('jobs').update({ 
-            status: 'succeeded', 
-            updated_at: new Date().toISOString() 
-          }).eq('id', job.id)
+          console.log('[Poll] Remote URL already processed for this row', { jobId: job.id, rowId: job.row_id })
+          await admin.from('jobs').update({ status: 'succeeded', updated_at: new Date().toISOString() }).eq('id', job.id)
           return NextResponse.json({ status: 'succeeded', step: 'done' })
         }
       }
       
       const inserts = []
+      const variantInserts = []
+      let variantStartPosition = 0
       
-      for (const u of urls) {
+      // If this is a variant row job, determine the starting position for new images
+      if (job.variant_row_id) {
+        const { data: existingVariantImages } = await admin
+          .from('variant_row_images')
+          .select('position')
+          .eq('variant_row_id', job.variant_row_id)
+          .order('position', { ascending: false })
+          .limit(1)
+        variantStartPosition = existingVariantImages && existingVariantImages.length > 0
+          ? Number(existingVariantImages[0].position) + 1
+          : 0
+      }
+      
+      for (let i = 0; i < urls.length; i++) {
+        const u = urls[i]
         const uploaded = await fetchAndSaveToOutputs(u, job.user_id)
+        
+        if (job.variant_row_id) {
+          variantInserts.push({
+            variant_row_id: job.variant_row_id,
+            output_path: uploaded.objectPath,
+            thumbnail_path: uploaded.thumbnailPath || null,
+            source_row_id: job.row_id || null,
+            position: variantStartPosition + i,
+            is_generated: true
+          })
+        } else {
         inserts.push({
           job_id: job.id,
           row_id: job.row_id,
@@ -260,11 +272,22 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
           user_id: job.user_id,
           output_url: uploaded.objectPath,
           thumbnail_url: uploaded.thumbnailPath || null,
-          is_upscaled: false
+          is_upscaled: false,
+          prompt_text: job?.request_payload?.prompt ?? null
         })
       }
+      }
       
-      if (inserts.length) {
+      if (variantInserts.length) {
+        // Save into variant_row_images
+        try {
+          await admin.from('variant_row_images').insert(variantInserts)
+          console.log('[Poll] Saved variant images', { jobId: job.id, count: variantInserts.length })
+        } catch (error: any) {
+          console.error('[Poll] Failed to save variant images', { jobId: job.id, error: error?.message })
+          throw error
+        }
+      } else if (inserts.length) {
         // Final safety check: verify job is still in 'saving' status before inserting
         const { data: finalStatusCheck } = await admin
           .from('jobs')
@@ -303,15 +326,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         updated_at: new Date().toISOString() 
       }).eq('id', job.id)
 
-      // Update row status depending on any remaining queued/submitted/running jobs
+      // Update row status (model rows only)
+      if (job.row_id) {
       const { count: remaining } = await admin.from('jobs')
         .select('*', { count: 'exact', head: true })
         .eq('row_id', job.row_id)
         .in('status', ['queued','submitted','running','saving'])
-        
       await admin.from('model_rows').update({ 
         status: (remaining ?? 0) > 0 ? 'partial' : 'done' 
       }).eq('id', job.row_id)
+      }
 
       // Try dispatching more if capacity available (hard cap 3)
       await fetch(new URL('/api/dispatch', req.url), { 

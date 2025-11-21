@@ -47,6 +47,7 @@ export interface PromptGenerationJob {
   updated_at: string
   started_at?: string
   completed_at?: string
+  options?: { preserveComposition?: boolean } // Optional runtime-only; may not exist in DB
 }
 
 // Extended job types to include prompt generation status

@@ -46,6 +46,7 @@ const Page = async ({ params, searchParams }: PageProps) => {
         ref_image_urls,
         target_image_url,
         prompt_override,
+        match_target_ratio,
         status,
         created_at,
         generated_images (

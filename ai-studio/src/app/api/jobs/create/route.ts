@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServer } from '@/lib/supabase-server'
 import { promptQueueService } from '@/lib/prompt-queue'
 import { signPath } from '@/lib/storage'
+import { getRemoteImageDimensions, computeMaxQualityDimensionsForRatio } from '@/lib/server-utils'
 
 export async function POST(req: NextRequest) {
   const supabase = await createServer()
@@ -9,7 +10,7 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   try {
-    const { rowId, useAiPrompt = false } = await req.json()
+    const { rowId, useAiPrompt = false, preserveComposition = true } = await req.json()
 
     // Get the row details
     const { data: row, error: er1 } = await supabase
@@ -22,8 +23,8 @@ export async function POST(req: NextRequest) {
     if (er2 || !model) return NextResponse.json({ error: 'Model not found' }, { status: 404 })
 
     const basePrompt = row.prompt_override ?? model.default_prompt
-    const outputWidth = model.output_width || 4096
-    const outputHeight = model.output_height || 4096
+    let outputWidth = model.output_width || 4096
+    let outputHeight = model.output_height || 4096
     
     // Build reference images array
     // If ref_image_urls is explicitly set (even if empty), use it
@@ -72,7 +73,9 @@ export async function POST(req: NextRequest) {
           user.id,
           refUrls,
           targetUrl,
-          8 // High priority for user-initiated requests
+          8, // High priority for user-initiated requests
+          'face-hair', // Default swap mode
+          preserveComposition
         )
 
         promptStatus = 'generating'
@@ -90,12 +93,44 @@ export async function POST(req: NextRequest) {
       }
     }
     
+    // Optionally override size to match target aspect ratio at max quality
+    if (row.match_target_ratio && row.target_image_url) {
+      try {
+        // Short-lived signed URL for probing dimensions
+        const signedTargetUrl = await signPath(row.target_image_url, 120)
+        const dims = await getRemoteImageDimensions(signedTargetUrl)
+        const computed = computeMaxQualityDimensionsForRatio(
+          model.output_width || 4096,
+          model.output_height || 4096,
+          dims.width,
+          dims.height
+        )
+        outputWidth = computed.width
+        outputHeight = computed.height
+        console.log('[JobCreate] Using target ratio override', {
+          rowId,
+          matchTargetRatio: true,
+          targetDims: dims,
+          computedWidth: outputWidth,
+          computedHeight: outputHeight
+        })
+      } catch (e: any) {
+        console.warn('[JobCreate] Failed to probe target dimensions; falling back to model dimensions', {
+          rowId,
+          error: e?.message
+        })
+      }
+    }
+    
     const payload = {
       refPaths: refImages,
       targetPath: row.target_image_url,
       prompt: finalPrompt, // Will be updated when AI prompt completes
       width: outputWidth,
-      height: outputHeight
+      height: outputHeight,
+      options: {
+        preserveComposition
+      }
     }
 
     // Insert a single queued job (provider will handle single-output)

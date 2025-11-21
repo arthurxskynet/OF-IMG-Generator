@@ -48,6 +48,7 @@ create table if not exists public.model_rows (
   ref_image_urls text[],           -- array of reference image URLs, defaults to model.default_ref_headshot_url if empty
   target_image_url text,  -- user-provided image (signed URL to 'targets')
   prompt_override text,            -- if null, use model.default_prompt
+  match_target_ratio boolean not null default false, -- when true, outputs will match target aspect ratio at max quality
   status text not null default 'idle', -- 'idle'|'queued'|'running'|'partial'|'done'|'error'
   created_by uuid not null references auth.users(id) on delete cascade,
   created_at timestamptz default now()
@@ -79,6 +80,7 @@ create table if not exists public.generated_images (
   output_url text not null,          -- signed URL in 'outputs'
   width int,
   height int,
+  prompt_text text,                  -- the prompt used to generate this image
   created_at timestamptz default now()
 );
 

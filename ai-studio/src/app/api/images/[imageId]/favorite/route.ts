@@ -26,14 +26,49 @@ export async function PATCH(
       )
     }
 
-    // First, let's check if the image exists and get its current state
-    const { data: existingImage, error: fetchError } = await supabase
+    // Check both generated_images and variant_row_images tables
+    // First try generated_images
+    let existingImage: any = null
+    let imageTable: 'generated_images' | 'variant_row_images' | null = null
+    
+    const { data: genImage, error: genError } = await supabase
       .from('generated_images')
       .select('id, is_favorited, user_id')
       .eq('id', imageId)
       .single()
 
-    if (fetchError) {
+    if (!genError && genImage) {
+      existingImage = genImage
+      imageTable = 'generated_images'
+    } else {
+      // Try variant_row_images - need to check via variant_rows for user_id
+      const { data: variantImage, error: variantError } = await supabase
+        .from('variant_row_images')
+        .select('id, is_favorited, variant_row_id')
+        .eq('id', imageId)
+        .single()
+
+      if (!variantError && variantImage) {
+        // Check ownership via variant_rows
+        const { data: variantRow, error: rowError } = await supabase
+          .from('variant_rows')
+          .select('user_id')
+          .eq('id', variantImage.variant_row_id)
+          .single()
+
+        if (!rowError && variantRow) {
+          existingImage = {
+            id: variantImage.id,
+            is_favorited: variantImage.is_favorited,
+            user_id: variantRow.user_id,
+            variant_row_id: variantImage.variant_row_id
+          }
+          imageTable = 'variant_row_images'
+        }
+      }
+    }
+
+    if (!existingImage || !imageTable) {
       return NextResponse.json(
         { error: 'Image not found' },
         { status: 404 }
@@ -47,14 +82,53 @@ export async function PATCH(
       )
     }
 
-    // Update the favorite status for the image
-    const { data, error } = await supabase
-      .from('generated_images')
-      .update({ is_favorited })
-      .eq('id', imageId)
-      .eq('user_id', user.id) // Ensure user can only update their own images
-      .select('id, is_favorited')
-      .single()
+    // Update the favorite status for the image in the appropriate table
+    let data: any = null
+    let error: any = null
+
+    if (imageTable === 'generated_images') {
+      const result = await supabase
+        .from('generated_images')
+        .update({ is_favorited })
+        .eq('id', imageId)
+        .eq('user_id', user.id)
+        .select('id, is_favorited')
+        .single()
+      data = result.data
+      error = result.error
+    } else {
+      // For variant_row_images, verify ownership via variant_rows
+      const variantRowId = (existingImage as any).variant_row_id
+      if (!variantRowId) {
+        return NextResponse.json(
+          { error: 'Invalid image reference' },
+          { status: 400 }
+        )
+      }
+
+      const { data: variantRow } = await supabase
+        .from('variant_rows')
+        .select('id')
+        .eq('id', variantRowId)
+        .eq('user_id', user.id)
+        .single()
+
+      if (!variantRow) {
+        return NextResponse.json(
+          { error: 'Access denied' },
+          { status: 403 }
+        )
+      }
+
+      const result = await supabase
+        .from('variant_row_images')
+        .update({ is_favorited })
+        .eq('id', imageId)
+        .select('id, is_favorited')
+        .single()
+      data = result.data
+      error = result.error
+    }
 
     if (error) {
       console.error('Error updating favorite status:', error)

@@ -38,7 +38,8 @@ export class PromptQueueService {
     refUrls: string[],
     targetUrl: string,
     priority: number = 8,
-    swapMode: SwapMode = 'face-hair'
+    swapMode: SwapMode = 'face-hair',
+    preserveComposition: boolean = true
   ): Promise<string> {
     // Build insert object
     const insertData: any = {
@@ -94,7 +95,8 @@ export class PromptQueueService {
     refUrls: string[],
     targetUrl: string,
     priority: number = 5,
-    swapMode: SwapMode = 'face-hair'
+    swapMode: SwapMode = 'face-hair',
+    preserveComposition: boolean = true
   ): Promise<string> {
     // Build insert object - swap_mode is optional and will be ignored if column doesn't exist
     const insertData: any = {
@@ -447,16 +449,18 @@ export class PromptQueueService {
           throw new Error('Missing inputs for enhancement job')
         }
         
+        const preserveComposition = job.options?.preserveComposition !== false
         generatedPrompt = await Promise.race([
-          enhancePromptWithGrok(existing_prompt, user_instructions, ref_urls || [], target_url, swapMode),
+          enhancePromptWithGrok(existing_prompt, user_instructions, ref_urls || [], target_url, swapMode, { preserveComposition }),
           new Promise<never>((_, reject) => 
             setTimeout(() => reject(new Error('Prompt enhancement timeout after 25 minutes')), timeoutMs)
           )
         ])
       } else {
         // Default to generation
+        const preserveComposition = job.options?.preserveComposition !== false
         generatedPrompt = await Promise.race([
-          generatePromptWithGrok(ref_urls || [], target_url, swapMode),
+          generatePromptWithGrok(ref_urls || [], target_url, swapMode, { preserveComposition }),
           new Promise<never>((_, reject) => 
             setTimeout(() => reject(new Error('Prompt generation timeout after 25 minutes')), timeoutMs)
           )

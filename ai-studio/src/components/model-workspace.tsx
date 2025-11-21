@@ -16,12 +16,14 @@ import { useThumbnailLoader } from '@/hooks/use-thumbnail-loader'
 import { uploadImage, validateFile } from '@/lib/client-upload'
 import { createClient } from '@/lib/supabase-browser'
 import { getCachedSignedUrl, getOptimizedImageUrl } from '@/lib/image-loader'
-import { Plus, Upload, X, Sparkles, Folder, CheckCircle, XCircle, Wand2, Star, Download, Check, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
+import { Plus, Upload, X, Sparkles, Folder, CheckCircle, XCircle, Wand2, Star, Download, Check, ChevronLeft, ChevronRight, Trash2, Maximize2, ImageIcon } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Progress } from '@/components/ui/progress'
 import { Spinner } from '@/components/ui/spinner'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Switch } from '@/components/ui/switch'
+import { Label } from '@/components/ui/label'
 import { DimensionControls } from '@/components/dimension-controls'
 import { PromptEnhanceDialog } from '@/components/prompt-enhance-dialog'
 
@@ -99,6 +101,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   
   // Favorites state for immediate UI updates
   const [favoritesState, setFavoritesState] = useState<Record<string, boolean>>({})
+  
+  // Preserve composition state (default to true)
+  const [preserveComposition, setPreserveComposition] = useState(true)
   
   // Collect all images from all rows for thumbnail loading
   const allImages = useMemo(() => {
@@ -2098,8 +2103,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       // Optimistically mark status as queued for instant feedback
       setRows(prev => prev.map(r => r.id === rowId ? { ...r, status: 'queued' as any } : r))
       
-      // Create job with optional AI prompt generation
-      const result = await createJobs({ rowId, useAiPrompt })
+      // Create job with optional AI prompt generation and composition preservation
+      const result = await createJobs({ rowId, useAiPrompt, preserveComposition })
       const ids = result.jobIds || []
       if (ids[0]) startPolling(ids[0], 'submitted', rowId)
       
@@ -2126,7 +2131,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         [rowId]: { ...getRowState(rowId), isGenerating: false }
       }))
     }
-  }, [rows, getRowState, setRowStates, toast, createJobs, startPolling])
+  }, [rows, getRowState, setRowStates, toast, createJobs, startPolling, preserveComposition])
 
   // Remove row
   const handleRemoveRow = useCallback(async (rowId: string) => {
@@ -2469,6 +2474,65 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     }
   }
 
+  const handleAddSelectedToVariants = async () => {
+    if (selectedImageIds.size === 0) {
+      toast({
+        title: 'No images selected',
+        description: 'Please select at least one image to add to variants',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    // Find selected images and group by row
+    const selectedImages = []
+    for (const imageId of selectedImageIds) {
+      for (const row of rows) {
+        const images = (row as any).generated_images || []
+        const foundImage = images.find((img: GeneratedImage) => img.id === imageId)
+        if (foundImage) {
+          selectedImages.push({
+            outputPath: foundImage.output_url,
+            thumbnailPath: foundImage.thumbnail_url || null,
+            sourceRowId: foundImage.row_id
+          })
+          break
+        }
+      }
+    }
+
+    if (selectedImages.length === 0) return
+
+    try {
+      const response = await fetch('/api/variants/rows/batch-add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ images: selectedImages })
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to add images to variants')
+      }
+
+      const result = await response.json()
+      
+      toast({
+        title: 'Added to Variants',
+        description: `Created ${result.rowsCreated} variant row${result.rowsCreated === 1 ? '' : 's'} with ${result.imagesAdded} image${result.imagesAdded === 1 ? '' : 's'}`,
+        action: {
+          label: 'View Variants',
+          onClick: () => window.location.href = '/variants'
+        }
+      })
+    } catch (error) {
+      toast({
+        title: 'Failed to add to variants',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive'
+      })
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Status Summary with Folder Drop Zone */}
@@ -2515,7 +2579,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
             </div>
           </div>
           
-          <div className="mt-3 flex gap-6 flex-wrap">
+          <div className="mt-3 flex gap-6 flex-wrap items-center">
             {(() => {
               const counts = rows.reduce((acc, row) => {
                 const status = getLiveStatusForRow(row.id, row.status)
@@ -2547,6 +2611,16 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                     <div className="h-2 w-2 rounded-full bg-red-500" />
                     <span className="text-sm font-medium">{counts.failed}</span>
                     <span className="text-xs text-muted-foreground">Failed</span>
+                  </div>
+                  <div className="flex items-center gap-2 ml-4 pl-4 border-l">
+                    <Switch 
+                      id="preserve-composition" 
+                      checked={preserveComposition}
+                      onCheckedChange={setPreserveComposition}
+                    />
+                    <Label htmlFor="preserve-composition" className="text-xs text-muted-foreground cursor-pointer">
+                      Preserve composition (pose/crop/angle)
+                    </Label>
                   </div>
                 </>
               )
@@ -2703,6 +2777,16 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                     </>
                                   )}
                                 </Button>
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={handleAddSelectedToVariants}
+                                  disabled={isDownloading || isDeleting}
+                                  className="h-6 px-2 text-xs whitespace-nowrap"
+                                >
+                                  <Plus className="w-3 h-3 mr-1" />
+                                  Add to Variants
+                                </Button>
                               </>
                             )}
                             <Button
@@ -2781,7 +2865,11 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                         <div className="space-y-2">
                           {/* Display reference images (also acts as a drop zone) */}
                           <div 
-                            className={`flex flex-wrap gap-2 rounded-lg transition-all ${dragOverRefRowId === row.id ? 'ring-2 ring-primary ring-offset-2 bg-primary/5' : ''}`}
+                            className={`flex flex-wrap gap-2 rounded-xl p-2 transition-all duration-300 ${
+                              dragOverRefRowId === row.id 
+                                ? 'ring-2 ring-primary ring-offset-2 bg-primary/10 shadow-lg scale-[1.02]' 
+                                : 'bg-muted/30 hover:bg-muted/50'
+                            }`}
                             onDragOver={(e) => handleRefDragOver(e, row.id)}
                             onDragLeave={(e) => handleRefDragLeave(e, row.id)}
                             onDrop={(e) => handleRefDrop(e, row.id)}
@@ -2791,14 +2879,14 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                 <Dialog key={index}>
                                   <div className="relative group">
                                     <DialogTrigger asChild>
-                                      <div className="cursor-zoom-in">
+                                      <div className="cursor-zoom-in rounded-lg overflow-hidden border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 hover:scale-105">
                                         <Thumb
                                           src={rowState.signedUrls[refUrl] || ''}
                                           alt={`Reference image ${index + 1}`}
                                           size={64}
                                           dataImagePath={refUrl}
                                           dataRowId={row.id}
-                                          className="transition-transform group-hover:scale-[1.02]"
+                                          className="transition-transform group-hover:scale-110"
                                         />
                                       </div>
                                     </DialogTrigger>
@@ -2869,8 +2957,13 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                 </DialogContent>
                               </Dialog>
                             ) : (
-                              <div className="w-16 h-16 border-2 border-dashed border-gray-300 rounded flex items-center justify-center text-gray-400 text-xs">
-                                No ref
+                              <div className={`w-16 h-16 border-2 border-dashed rounded-lg flex flex-col items-center justify-center text-xs transition-all duration-200 ${
+                                dragOverRefRowId === row.id
+                                  ? 'border-primary bg-primary/10 text-primary'
+                                  : 'border-muted-foreground/30 bg-muted/50 text-muted-foreground'
+                              }`}>
+                                <ImageIcon className="h-4 w-4 mb-0.5" />
+                                <span className="text-[10px]">No ref</span>
                               </div>
                             )}
                           </div>
@@ -2898,7 +2991,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                               size="sm"
                               variant="outline"
                               onClick={() => fileInputRefs.current[`ref-${row.id}`]?.click()}
-                              className="text-xs h-8 px-3 w-auto bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700 hover:text-slate-800 transition-colors duration-200"
+                              className="text-xs h-8 px-3 w-auto border-border/50 hover:border-primary/50 hover:bg-primary/5 transition-all duration-200 shadow-sm hover:shadow"
                             >
                               <Plus className="w-3 h-3 mr-1.5" />
                               Add Ref
@@ -2942,7 +3035,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                        })
                                        refreshRowData()
                                      }}
-                                     className="text-xs h-6 px-2 bg-red-500 hover:bg-red-600 text-white border-red-500 hover:border-red-600 transition-colors duration-200 shadow-sm"
+                                     className="text-xs h-6 px-2 bg-destructive hover:bg-destructive/90 text-destructive-foreground border-destructive transition-all duration-200 shadow-sm hover:shadow"
                                      title={`Remove reference image ${index + 1}`}
                                    >
                                      <X className="w-3 h-3 mr-1" />
@@ -2996,19 +3089,19 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                             <Dialog>
                               <div className="relative group">
                                 <DialogTrigger asChild>
-                                  <div className="cursor-zoom-in">
+                                  <div className="cursor-zoom-in rounded-lg overflow-hidden border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 hover:scale-105">
                                     <Thumb
                                       src={row.target_image_url ? (rowState.signedUrls[row.target_image_url] || '') : ''}
                                       alt="Target image"
                                       size={88}
                                       dataImagePath={row.target_image_url || ''}
                                       dataRowId={row.id}
-                                      className={`transition-all duration-200 ${
+                                      className={`transition-all duration-300 ${
                                         dragOverRowId === row.id 
                                           ? 'ring-2 ring-primary ring-offset-2' 
                                           : (rowState.isUploadingTarget || rowState.isTargetSaving)
                                           ? 'opacity-50'
-                                          : 'group-hover:scale-[1.02]'
+                                          : 'group-hover:scale-110'
                                       }`}
                                     />
                                   </div>
@@ -3056,27 +3149,27 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                             </Dialog>
                           ) : (
                             <div 
-                              className={`relative flex h-22 w-22 items-center justify-center rounded-2xl border-2 border-dashed transition-all duration-200 ${
+                              className={`relative flex h-22 w-22 items-center justify-center rounded-xl border-2 border-dashed transition-all duration-300 cursor-pointer ${
                                 dragOverRowId === row.id
-                                  ? 'border-primary bg-primary/10 text-primary scale-105 shadow-lg'
+                                  ? 'border-primary bg-primary/10 text-primary scale-105 shadow-lg ring-2 ring-primary/20'
                                   : rowState.isUploadingTarget
-                                  ? 'border-blue-500 bg-blue-50 text-blue-600'
-                                  : 'border-muted-foreground/25 bg-muted text-muted-foreground hover:border-muted-foreground/50'
+                                  ? 'border-primary/50 bg-primary/5 text-primary'
+                                  : 'border-muted-foreground/30 bg-muted/50 text-muted-foreground hover:border-primary/50 hover:bg-primary/5 hover:text-primary'
                               }`}
                               onClick={() => !rowState.isUploadingTarget && fileInputRefs.current[row.id]?.click()}
                             >
                               {rowState.isUploadingTarget ? (
-                                <div className="flex flex-col items-center gap-1">
+                                <div className="flex flex-col items-center gap-2">
                                   <Spinner size="sm" />
                                   <span className="text-xs font-medium">Uploading...</span>
                                 </div>
                               ) : dragOverRowId === row.id ? (
-                                <div className="flex flex-col items-center gap-1">
+                                <div className="flex flex-col items-center gap-2">
                                   <Upload className="h-6 w-6 animate-bounce" />
-                                  <span className="text-xs font-medium">Drop image</span>
+                                  <span className="text-xs font-semibold">Drop image</span>
                                 </div>
                               ) : (
-                                <div className="flex flex-col items-center gap-1">
+                                <div className="flex flex-col items-center gap-1.5">
                                   <Upload className="h-5 w-5" />
                                   <span className="text-xs">Drop or click</span>
                                 </div>
@@ -3086,8 +3179,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                           
                           {/* Drag overlay for existing images */}
                           {row.target_image_url && dragOverRowId === row.id && (
-                            <div className="absolute inset-0 bg-primary/20 border-2 border-primary border-dashed rounded-lg flex items-center justify-center z-10">
-                              <div className="bg-primary text-primary-foreground px-3 py-1 rounded-full text-xs font-medium">
+                            <div className="absolute inset-0 bg-primary/20 backdrop-blur-sm border-2 border-primary border-dashed rounded-lg flex items-center justify-center z-10">
+                              <div className="bg-primary text-primary-foreground px-4 py-2 rounded-full text-xs font-semibold shadow-lg">
                                 Drop to replace
                               </div>
                             </div>
@@ -3095,8 +3188,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                           
                           {/* Upload loading overlay for existing images */}
                           {row.target_image_url && (rowState.isUploadingTarget || rowState.isTargetSaving) && (
-                            <div className="absolute inset-0 bg-black/40 rounded-lg flex items-center justify-center z-10">
-                              <div className="bg-white text-black px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2">
+                            <div className="absolute inset-0 bg-black/50 backdrop-blur-sm rounded-lg flex items-center justify-center z-10">
+                              <div className="bg-background border border-border px-4 py-2 rounded-full text-xs font-medium flex items-center gap-2 shadow-lg">
                                 <Spinner size="sm" />
                                 {rowState.isTargetSaving ? 'Saving…' : 'Replacing...'}
                               </div>
@@ -3121,25 +3214,46 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                       {/* 3. Prompt Editor */}
                       <TableCell className="align-top">
                         <Dialog>
-                          <div className="flex flex-col gap-1">
-                            <Textarea
-                              data-tour="workspace-prompt"
-                              value={getCurrentPrompt(row.id)}
-                              placeholder="Enter prompt..."
-                              className="min-h-[80px] md:min-h-[88px] resize-y bg-muted/60 w-[16rem] md:w-[18rem] lg:w-[20rem] xl:w-[22rem] select-text shrink-0"
-                              onChange={(e) => handlePromptChange(row.id, e.target.value)}
-                              onBlur={(e) => handlePromptBlur(row.id, e.target.value)}
-                              onKeyDown={(e) => {
-                                if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                                  const target = e.target as HTMLTextAreaElement
-                                  handlePromptBlur(row.id, target.value)
-                                  handleGenerate(row.id)
-                                }
-                              }}
-                            />
-                            <div className="flex gap-1">
+                          <div className="flex flex-col gap-2">
+                            <div className="relative">
+                              <Textarea
+                                data-tour="workspace-prompt"
+                                value={getCurrentPrompt(row.id)}
+                                placeholder="Enter prompt... (Cmd/Ctrl+Enter to generate)"
+                                className={`min-h-[80px] md:min-h-[88px] resize-y w-[16rem] md:w-[18rem] lg:w-[20rem] xl:w-[22rem] select-text shrink-0 border-2 transition-all duration-200 ${
+                                  dirtyPrompts.has(row.id)
+                                    ? 'border-amber-400/50 bg-amber-50/30 dark:bg-amber-950/20 focus-visible:border-amber-500 focus-visible:ring-amber-500/20'
+                                    : savingPrompts.has(row.id)
+                                    ? 'border-blue-400/50 bg-blue-50/30 dark:bg-blue-950/20 focus-visible:border-blue-500 focus-visible:ring-blue-500/20'
+                                    : 'border-border/50 bg-background hover:border-border focus-visible:border-primary focus-visible:ring-primary/20'
+                                } shadow-sm hover:shadow-md focus-visible:shadow-lg`}
+                                onChange={(e) => handlePromptChange(row.id, e.target.value)}
+                                onBlur={(e) => handlePromptBlur(row.id, e.target.value)}
+                                onKeyDown={(e) => {
+                                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                                    const target = e.target as HTMLTextAreaElement
+                                    handlePromptBlur(row.id, target.value)
+                                    handleGenerate(row.id)
+                                  }
+                                }}
+                              />
+                              {/* Status indicator */}
+                              {(dirtyPrompts.has(row.id) || savingPrompts.has(row.id)) && (
+                                <div className="absolute top-1.5 right-1.5">
+                                  {dirtyPrompts.has(row.id) ? (
+                                    <div className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" title="Unsaved changes" />
+                                  ) : savingPrompts.has(row.id) ? (
+                                    <Spinner size="sm" className="h-3 w-3" />
+                                  ) : null}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
                               <DialogTrigger asChild>
-                                <Button variant="soft" size="sm">Expand</Button>
+                                <Button variant="soft" size="sm" className="text-xs h-7">
+                                  <Maximize2 className="h-3 w-3 mr-1" />
+                                  Expand
+                                </Button>
                               </DialogTrigger>
                               <Button 
                                 variant="outline" 
@@ -3147,7 +3261,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                 onClick={() => handleAiPromptGeneration(row.id, 'face')}
                                 disabled={rowState.isGeneratingPrompt || !hasValidImages(row)}
                                 title="Generate AI prompt for face swap only (preserves target hair)"
-                                className="text-xs"
+                                className="text-xs h-7"
                                 aria-label="Generate AI prompt for face swap only"
                                 data-tour="workspace-face-swap"
                               >
@@ -3157,7 +3271,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                     <span className="ml-1">Generating...</span>
                                   </>
                                 ) : (
-                                  <>Face Only</>
+                                  <>
+                                    <Sparkles className="h-3 w-3 mr-1" />
+                                    Face Only
+                                  </>
                                 )}
                               </Button>
                               <Button 
@@ -3166,7 +3283,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                 onClick={() => handleAiPromptGeneration(row.id, 'face-hair')}
                                 disabled={rowState.isGeneratingPrompt || !hasValidImages(row)}
                                 title="Generate AI prompt for face and hair swap"
-                                className="text-xs"
+                                className="text-xs h-7"
                                 aria-label="Generate AI prompt for face and hair swap"
                               >
                                 {rowState.isGeneratingPrompt && rowState.activePromptSwapMode === 'face-hair' ? (
@@ -3175,7 +3292,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                     <span className="ml-1">Generating...</span>
                                   </>
                                 ) : (
-                                  <>Face & Hair</>
+                                  <>
+                                    <Sparkles className="h-3 w-3 mr-1" />
+                                    Face & Hair
+                                  </>
                                 )}
                               </Button>
                               <Button
@@ -3184,25 +3304,84 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                 onClick={() => setEnhanceOpenRowId(row.id)}
                                 disabled={!Boolean(row?.target_image_url)}
                                 title="Enhance the current prompt with AI using your images as context"
-                                className="text-xs"
+                                className="text-xs h-7"
                                 aria-label="Enhance prompt with AI"
                               >
-                                <Wand2 className="mr-1 h-4 w-4" />
+                                <Wand2 className="h-3 w-3 mr-1" />
                                 Enhance
                               </Button>
                             </div>
-                          </div>
-                          <DialogContent className="max-w-3xl">
-                            <DialogHeader>
-                              <DialogTitle>Edit Prompt</DialogTitle>
-                            </DialogHeader>
-                            <div className="space-y-2">
-                              <Textarea
-                                value={getCurrentPrompt(row.id)}
-                                className="min-h-[40vh] w-full resize-y"
-                                onChange={(e) => handlePromptChange(row.id, e.target.value)}
-                                onBlur={(e) => handlePromptBlur(row.id, e.target.value)}
+                            {/* Seedream v4 ratio override */}
+                            <div className="flex items-center gap-2 mt-2">
+                              <Switch
+                                id={`match-target-${row.id}`}
+                                checked={Boolean((row as any).match_target_ratio)}
+                                disabled={!Boolean(row?.target_image_url)}
+                                onCheckedChange={async (checked) => {
+                                  // Optimistic UI update
+                                  setRows(prev => prev.map(r => r.id === row.id ? { ...r, match_target_ratio: Boolean(checked) } : r))
+                                  try {
+                                    const res = await fetch(`/api/rows/${row.id}`, {
+                                      method: 'PATCH',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ match_target_ratio: Boolean(checked) })
+                                    })
+                                    if (!res.ok) {
+                                      throw new Error(await res.text())
+                                    }
+                                  } catch (e: any) {
+                                    // Revert on failure
+                                    setRows(prev => prev.map(r => r.id === row.id ? { ...r, match_target_ratio: !Boolean(checked) } : r))
+                                    toast({
+                                      title: 'Failed to update setting',
+                                      description: 'Could not update match target ratio',
+                                      variant: 'destructive'
+                                    })
+                                  }
+                                }}
                               />
+                              <Label htmlFor={`match-target-${row.id}`} className="text-xs text-muted-foreground cursor-pointer">
+                                Match target ratio (v4)
+                              </Label>
+                            </div>
+                          </div>
+                          <DialogContent className="max-w-4xl">
+                            <DialogHeader className="pb-4">
+                              <DialogTitle className="text-xl font-semibold">Edit Prompt</DialogTitle>
+                              <p className="text-sm text-muted-foreground mt-1">Press Cmd/Ctrl+Enter to save and generate</p>
+                            </DialogHeader>
+                            <div className="space-y-4">
+                              <div className="relative">
+                                <Textarea
+                                  value={getCurrentPrompt(row.id)}
+                                  className={`min-h-[40vh] w-full resize-y border-2 transition-all duration-200 ${
+                                    dirtyPrompts.has(row.id)
+                                      ? 'border-amber-400/50 bg-amber-50/30 dark:bg-amber-950/20 focus-visible:border-amber-500 focus-visible:ring-amber-500/20'
+                                      : savingPrompts.has(row.id)
+                                      ? 'border-blue-400/50 bg-blue-50/30 dark:bg-blue-950/20 focus-visible:border-blue-500 focus-visible:ring-blue-500/20'
+                                      : 'border-border/50 bg-background focus-visible:border-primary focus-visible:ring-primary/20'
+                                  } shadow-sm focus-visible:shadow-lg`}
+                                  onChange={(e) => handlePromptChange(row.id, e.target.value)}
+                                  onBlur={(e) => handlePromptBlur(row.id, e.target.value)}
+                                  placeholder="Enter your prompt here..."
+                                />
+                                {(dirtyPrompts.has(row.id) || savingPrompts.has(row.id)) && (
+                                  <div className="absolute top-3 right-3 flex items-center gap-2 text-xs">
+                                    {dirtyPrompts.has(row.id) && (
+                                      <span className="text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                                        <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+                                        Unsaved
+                                      </span>
+                                    )}
+                                    {savingPrompts.has(row.id) && (
+                                      <span className="text-blue-600 dark:text-blue-400 flex items-center gap-1">
+                                        <Spinner size="sm" className="h-3 w-3" />
+                                        Saving...
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           </DialogContent>
                         </Dialog>
@@ -3234,140 +3413,219 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                             ? 'Upload a target image first'
                             : ''
                           const isDisabled = !hasTarget || rowState.isGenerating || isActiveStatus(displayStatus) || rowState.isTargetSaving
+                          const isActive = isActiveStatus(displayStatus) || rowState.isGenerating
                           return (
-                            <Tooltip open={Boolean(isDisabled && !!disabledReason)}>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  data-tour="workspace-generate"
-                                  onClick={() => handleGenerate(row.id)}
-                                  disabled={isDisabled}
-                                  size="sm"
-                                  aria-busy={rowState.isGenerating || isActiveStatus(displayStatus)}
-                                  className="gap-2 transition-opacity duration-200"
-                                >
-                                  {isActiveStatus(displayStatus) ? (
-                                    <>
-                                      <Spinner 
-                                        key={`spinner-${row.id}-${displayStatus}`}
-                                        size="sm"
-                                      />
-                                      {getStatusLabel(displayStatus)}
-                                    </>
-                                  ) : rowState.isGenerating ? (
-                                    <>
-                                      <Spinner 
-                                        key={`spinner-${row.id}-generating`}
-                                        size="sm"
-                                      />
-                                      Generating
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Sparkles className="h-4 w-4 transition-transform hover:scale-110" />
-                                      Generate
-                                    </>
-                                  )}
-                                </Button>
-                              </TooltipTrigger>
-                              {disabledReason && (
-                                <TooltipContent>{disabledReason}</TooltipContent>
+                            <div className="flex flex-col gap-2">
+                              <Tooltip open={Boolean(isDisabled && !!disabledReason)}>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    data-tour="workspace-generate"
+                                    onClick={() => handleGenerate(row.id)}
+                                    disabled={isDisabled}
+                                    size="sm"
+                                    aria-busy={isActive}
+                                    className={`gap-2 transition-all duration-300 ${
+                                      isDisabled
+                                        ? 'opacity-50 cursor-not-allowed'
+                                        : isActive
+                                        ? 'bg-gradient-to-r from-primary to-primary/80 shadow-lg shadow-primary/20'
+                                        : 'bg-gradient-to-r from-primary via-primary to-primary/90 hover:from-primary/90 hover:via-primary hover:to-primary shadow-md hover:shadow-lg hover:shadow-primary/30 hover:scale-105'
+                                    } font-semibold`}
+                                  >
+                                    {isActiveStatus(displayStatus) ? (
+                                      <>
+                                        <Spinner 
+                                          key={`spinner-${row.id}-${displayStatus}`}
+                                          size="sm"
+                                          className="animate-spin"
+                                        />
+                                        <span>{getStatusLabel(displayStatus)}</span>
+                                      </>
+                                    ) : rowState.isGenerating ? (
+                                      <>
+                                        <Spinner 
+                                          key={`spinner-${row.id}-generating`}
+                                          size="sm"
+                                          className="animate-spin"
+                                        />
+                                        <span>Generating...</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Sparkles className="h-4 w-4 transition-transform group-hover:scale-110 group-hover:rotate-12" />
+                                        <span>Generate</span>
+                                      </>
+                                    )}
+                                  </Button>
+                                </TooltipTrigger>
+                                {disabledReason && (
+                                  <TooltipContent>{disabledReason}</TooltipContent>
+                                )}
+                              </Tooltip>
+                              
+                              {live?.queuePosition !== undefined && isActiveStatus(displayStatus) && (
+                                <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-muted/50 border border-border/50">
+                                  <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+                                  <span className="text-[10px] font-medium text-muted-foreground">
+                                    {live.queuePosition > 0 ? `#${live.queuePosition} in queue` : 'Processing...'}
+                                  </span>
+                                </div>
                               )}
-                            </Tooltip>
+                            </div>
                           )
                         })()}
-                        
-                        
-                        {live?.queuePosition !== undefined && isActiveStatus(displayStatus) && (
-                          <div className="mt-1 text-[10px] text-muted-foreground">{live.queuePosition > 0 ? `#${live.queuePosition} in queue` : 'In progress'}</div>
-                        )}
                       </TableCell>
                       
                       {/* 6. Status */}
                       <TableCell className="align-top">
-                        <div className="flex flex-col gap-2 min-w-[6.5rem]" aria-live="polite">
-                          <Badge variant={getStatusColor(displayStatus) as any} className="w-fit">
-                            <span className="inline-flex items-center gap-2">
+                        <div className="flex flex-col gap-2.5 min-w-[6.5rem]" aria-live="polite">
+                          <Badge 
+                            variant={getStatusColor(displayStatus) as any} 
+                            className={`w-fit shadow-sm ${
+                              isActiveStatus(displayStatus) 
+                                ? 'ring-2 ring-primary/20' 
+                                : ''
+                            }`}
+                          >
+                            <span className="inline-flex items-center gap-1.5">
                               {isActiveStatus(displayStatus) && (
-                                <span className="h-2.5 w-2.5 rounded-full bg-current animate-pulse" />
+                                <span className="h-2 w-2 rounded-full bg-current animate-pulse shadow-sm" />
                               )}
-                              {getStatusLabel(displayStatus)}
+                              <span className="font-medium">{getStatusLabel(displayStatus)}</span>
                             </span>
                           </Badge>
-                          <Progress value={displayProgress} className="h-1.5" />
+                          <div className="relative">
+                            <Progress 
+                              value={displayProgress} 
+                              className={`h-2 rounded-full ${
+                                isActiveStatus(displayStatus)
+                                  ? 'bg-primary/10'
+                                  : 'bg-muted'
+                              }`}
+                            />
+                            {isActiveStatus(displayStatus) && displayProgress > 0 && (
+                              <div className="absolute inset-0 bg-gradient-to-r from-primary/20 via-primary/40 to-primary/20 rounded-full animate-pulse" />
+                            )}
+                          </div>
                         </div>
                       </TableCell>
                       
                       {/* 7. Results (Horizontal Single Row Scroll) */}
                       <TableCell className="align-top">
-                        <div className="flex flex-nowrap gap-2 pb-2 h-[112px] overflow-x-auto overflow-y-hidden overscroll-x-contain -mx-1 px-1 snap-x snap-mandatory">
-                          {images.length > 0 ? (
-                            images.map((image: GeneratedImage, index: number) => (
-                              <div key={image.id} className="relative group">
-                                {!isSelectionMode ? (
-                                  <div 
-                                    className="relative cursor-zoom-in"
-                                    draggable
-                                    onDragStart={(e) => {
-                                      try {
-                                        const payload = {
-                                          kind: 'generated-image',
-                                          imageId: image.id,
-                                          outputPath: image.output_url,
-                                          thumbnailPath: image.thumbnail_url || null,
-                                          sourceRowId: row.id
-                                        }
-                                        e.dataTransfer.setData(INTERNAL_IMAGE_MIME, JSON.stringify(payload))
-                                        // Fallback text/plain for browsers that strip custom types
-                                        e.dataTransfer.setData('text/plain', JSON.stringify(payload))
-                                        e.dataTransfer.effectAllowed = 'copy'
-                                      } catch {}
-                                    }}
-                                    onClick={async () => {
-                                      setDialogState({ isOpen: true, rowId: row.id, imageIndex: index })
-                                      // Load full resolution when opening dialog
-                                      await loadFullImageFromHook(image.id)
-                                    }}
-                                  >
-                                    <Thumb
-                                      src={thumbnailUrls[image.id] || rowState.signedUrls[image.output_url] || ''}
-                                      alt="Generated image"
-                                      size={96}
-                                      className="flex-shrink-0 snap-start"
-                                      dataImagePath={image.thumbnail_url || image.output_url}
-                                      dataRowId={row.id}
-                                    />
-                                    {/* Favorite button overlay - always visible in top-left */}
-                                    {(() => {
-                                      const isFavorited = favoritesState[image.id] ?? (image.is_favorited === true)
-                                      
-                                      return (
-                                        <button
-                                          key={`star-${image.id}-${isFavorited}`}
-                                          onClick={(e) => {
-                                            e.stopPropagation()
-                                            handleToggleFavorite(image.id, isFavorited)
-                                          }}
-                                          className={`absolute top-1 left-1 p-1.5 rounded-full transition-all duration-200 z-20 ${
-                                            isFavorited
-                                              ? 'bg-transparent hover:bg-black/20'
-                                              : 'bg-transparent hover:bg-black/20'
-                                          }`}
-                                          title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
-                                          style={{ position: 'absolute', top: '4px', left: '4px', zIndex: 20 }}
-                                        >
-                                          {isFavorited ? (
-                                            // Favorited state - filled yellow star
-                                            <div className="w-4 h-4 flex items-center justify-center relative">
-                                              <Star className="w-4 h-4 text-yellow-400" style={{ fill: 'currentColor' }} />
-                                              <div className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-400 rounded-full"></div>
-                                            </div>
-                                          ) : (
-                                            // Not favorited state - outline white star
-                                            <Star className="w-4 h-4 text-white hover:text-yellow-300" />
-                                          )}
-                                        </button>
-                                      )
-                                    })()}
+                        <div className="relative">
+                          {/* Scroll gradient indicators */}
+                          <div className="absolute left-0 top-0 bottom-0 w-8 bg-gradient-to-r from-background to-transparent pointer-events-none z-10" />
+                          <div className="absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-background to-transparent pointer-events-none z-10" />
+                          
+                          <div className="flex flex-nowrap gap-2.5 pb-2 h-[112px] overflow-x-auto overflow-y-hidden overscroll-x-contain -mx-1 px-1 snap-x snap-mandatory scrollbar-thin scrollbar-thumb-muted-foreground/20 scrollbar-track-transparent">
+                            {images.length > 0 ? (
+                              images.map((image: GeneratedImage, index: number) => (
+                                <div key={image.id} className="relative group flex-shrink-0">
+                                  {!isSelectionMode ? (
+                                    <div 
+                                      className="relative cursor-zoom-in rounded-lg overflow-hidden border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 hover:scale-105 hover:border-primary/50"
+                                      draggable
+                                      onDragStart={(e) => {
+                                        try {
+                                          const payload = {
+                                            kind: 'generated-image',
+                                            imageId: image.id,
+                                            outputPath: image.output_url,
+                                            thumbnailPath: image.thumbnail_url || null,
+                                            sourceRowId: row.id
+                                          }
+                                          e.dataTransfer.setData(INTERNAL_IMAGE_MIME, JSON.stringify(payload))
+                                          // Fallback text/plain for browsers that strip custom types
+                                          e.dataTransfer.setData('text/plain', JSON.stringify(payload))
+                                          e.dataTransfer.effectAllowed = 'copy'
+                                        } catch {}
+                                      }}
+                                      onClick={async () => {
+                                        setDialogState({ isOpen: true, rowId: row.id, imageIndex: index })
+                                        // Load full resolution when opening dialog
+                                        await loadFullImageFromHook(image.id)
+                                      }}
+                                    >
+                                      <Thumb
+                                        src={thumbnailUrls[image.id] || rowState.signedUrls[image.output_url] || ''}
+                                        alt="Generated image"
+                                        size={96}
+                                        className="flex-shrink-0 snap-start"
+                                        dataImagePath={image.thumbnail_url || image.output_url}
+                                        dataRowId={row.id}
+                                      />
+                                      {/* Favorite button overlay - always visible in top-left */}
+                                      {(() => {
+                                        const isFavorited = favoritesState[image.id] ?? (image.is_favorited === true)
+                                        
+                                        return (
+                                          <button
+                                            key={`star-${image.id}-${isFavorited}`}
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              handleToggleFavorite(image.id, isFavorited)
+                                            }}
+                                            className={`absolute top-1.5 left-1.5 p-1.5 rounded-full transition-all duration-200 z-20 backdrop-blur-sm ${
+                                              isFavorited
+                                                ? 'bg-yellow-400/20 hover:bg-yellow-400/30'
+                                                : 'bg-black/40 hover:bg-black/60 opacity-90 group-hover:opacity-100'
+                                            }`}
+                                            title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+                                          >
+                                            {isFavorited ? (
+                                              // Favorited state - filled yellow star
+                                              <Star className="w-4 h-4 text-yellow-400 drop-shadow-sm" style={{ fill: 'currentColor' }} />
+                                            ) : (
+                                              // Not favorited state - outline white star
+                                              <Star className="w-4 h-4 text-white drop-shadow-sm hover:text-yellow-300 transition-colors" />
+                                            )}
+                                          </button>
+                                        )
+                                      })()}
+                                      {/* Add to Variants button - appears on hover in top-right */}
+                                      <button
+                                        onClick={async (e) => {
+                                          e.stopPropagation()
+                                          try {
+                                            const response = await fetch('/api/variants/rows/batch-add', {
+                                              method: 'POST',
+                                              headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({
+                                                images: [{
+                                                  outputPath: image.output_url,
+                                                  thumbnailPath: image.thumbnail_url || null,
+                                                  sourceRowId: row.id
+                                                }]
+                                              })
+                                            })
+
+                                            if (!response.ok) {
+                                              throw new Error('Failed to add to variants')
+                                            }
+
+                                            const result = await response.json()
+                                            
+                                            toast({
+                                              title: 'Added to Variants',
+                                              description: `Added to variant row`,
+                                              action: {
+                                                label: 'View',
+                                                onClick: () => window.location.href = '/variants'
+                                              }
+                                            })
+                                          } catch (error) {
+                                            toast({
+                                              title: 'Failed',
+                                              description: 'Could not add to variants',
+                                              variant: 'destructive'
+                                            })
+                                          }
+                                        }}
+                                        className="absolute top-1.5 right-1.5 p-1.5 rounded-full transition-all duration-200 z-20 bg-black/50 hover:bg-black/70 backdrop-blur-sm opacity-0 group-hover:opacity-100 shadow-lg"
+                                        title="Add to Variants"
+                                      >
+                                        <Plus className="w-4 h-4 text-white" />
+                                      </button>
                                   </div>
                                 ) : (
                                   <div 
@@ -3452,17 +3710,25 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                             ))
                           ) : (isActiveStatus(displayStatus) || rowState.isLoadingResults) ? (
                             <div className="flex items-center gap-3">
-                              <div className="h-[72px] w-[72px] rounded-xl bg-muted animate-pulse" />
-                              <div className="h-[72px] w-[72px] rounded-xl bg-muted animate-pulse" />
+                              <div className="h-[88px] w-[88px] rounded-lg bg-gradient-to-br from-muted to-muted/50 border border-border/50 animate-pulse shadow-sm" />
+                              <div className="h-[88px] w-[88px] rounded-lg bg-gradient-to-br from-muted to-muted/50 border border-border/50 animate-pulse shadow-sm" />
                               {rowState.isLoadingResults && (
-                                <span className="text-xs text-muted-foreground">Loading images…</span>
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <Spinner size="sm" />
+                                  <span>Loading images…</span>
+                                </div>
                               )}
                             </div>
                           ) : (
-                            <div className="flex items-center justify-center h-14 px-4 text-xs text-muted-foreground">
-                              No images yet
+                            <div className="flex flex-col items-center justify-center h-full px-4 text-center">
+                              <div className="rounded-full bg-muted/50 p-2 mb-2">
+                                <ImageIcon className="h-5 w-5 text-muted-foreground/50" />
+                              </div>
+                              <p className="text-xs font-medium text-muted-foreground">No images yet</p>
+                              <p className="text-[10px] text-muted-foreground/70 mt-0.5">Generate to see results</p>
                             </div>
                           )}
+                          </div>
                         </div>
                       </TableCell>
                       

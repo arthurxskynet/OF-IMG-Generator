@@ -1,7 +1,65 @@
-// import probe from 'probe-image-size'
+import probe from 'probe-image-size'
 
-// Always return 4096x4096 for best results regardless of input image size
-export async function getRemoteImageSizeAsSeedream(_inputUrl: string, _fallback: string = '4096*4096'): Promise<string> {
-  // Always use 4096x4096 for consistent high-quality output
-  return '4096*4096'
+// Probe remote image dimensions using a signed URL
+export async function getRemoteImageDimensions(inputUrl: string): Promise<{ width: number; height: number }> {
+  const result = await probe(inputUrl)
+  const width = Number(result?.width) || 0
+  const height = Number(result?.height) || 0
+  if (!width || !height) {
+    throw new Error('Could not determine remote image dimensions')
+  }
+  return { width, height }
+}
+
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+const roundToMultiple = (value: number, multiple: number) => Math.round(value / multiple) * multiple
+
+// Compute max-quality dimensions that match target aspect ratio within provider limits
+export function computeMaxQualityDimensionsForRatio(
+  modelWidth: number,
+  modelHeight: number,
+  targetWidth: number,
+  targetHeight: number
+): { width: number; height: number } {
+  // Provider limits (WaveSpeed / Seedream v4 doc): 1024..4096 per side
+  const MIN_DIM = 1024
+  const MAX_DIM = 4096
+  // Use the model's largest configured side as "max quality" baseline
+  const baseMax = clamp(Math.max(modelWidth || MAX_DIM, modelHeight || MAX_DIM), MIN_DIM, MAX_DIM)
+  const r = Math.max(0.0001, targetWidth / Math.max(1, targetHeight))
+
+  let width: number
+  let height: number
+
+  if (r >= 1) {
+    // Landscape or square: fill width first
+    width = baseMax
+    height = Math.floor(width / r)
+  } else {
+    // Portrait: fill height first
+    height = baseMax
+    width = Math.floor(height * r)
+  }
+
+  // Enforce provider constraints and round to convenient step for stability
+  width = clamp(roundToMultiple(width, 64), MIN_DIM, MAX_DIM)
+  height = clamp(roundToMultiple(height, 64), MIN_DIM, MAX_DIM)
+
+  // If rounding/clamping broke the ratio badly (e.g., too small), re-balance:
+  if (r >= 1) {
+    // Recompute height from width to maintain ratio, then clamp again
+    height = clamp(roundToMultiple(Math.floor(width / r), 64), MIN_DIM, MAX_DIM)
+    // If height hit MIN and width is too small for ratio, recompute width from MIN height
+    if (height === MIN_DIM) {
+      width = clamp(roundToMultiple(Math.floor(height * r), 64), MIN_DIM, MAX_DIM)
+    }
+  } else {
+    // Recompute width from height to maintain ratio
+    width = clamp(roundToMultiple(Math.floor(height * r), 64), MIN_DIM, MAX_DIM)
+    if (width === MIN_DIM) {
+      height = clamp(roundToMultiple(Math.floor(width / r), 64), MIN_DIM, MAX_DIM)
+    }
+  }
+
+  return { width, height }
 }

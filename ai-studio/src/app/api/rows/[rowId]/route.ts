@@ -9,6 +9,7 @@ const UpdateRowSchema = z.object({
   target_image_url: z.string().nullable().optional(),
   ref_image_urls: z.array(z.string()).nullable().optional(),
   prompt_override: z.string().nullable().optional(),
+  match_target_ratio: z.boolean().optional(),
   status: z.enum(["idle", "queued", "running", "partial", "done", "error"]).optional()
 });
 
@@ -32,6 +33,7 @@ export async function GET(_: NextRequest, { params }: { params: Promise<{ rowId:
           output_url,
           is_upscaled,
           is_favorited,
+          prompt_text,
           created_at
         )
       `)

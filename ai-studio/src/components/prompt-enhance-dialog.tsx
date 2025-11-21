@@ -193,33 +193,33 @@ export function PromptEnhanceDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent 
-        className="max-w-3xl !max-h-[90vh] flex flex-col overflow-hidden [&>button]:z-10"
+        className="max-w-4xl !max-h-[90vh] flex flex-col overflow-hidden [&>button]:z-10"
         style={{ maxHeight: '90vh' }}
       >
-        <DialogHeader className="flex-shrink-0">
-          <DialogTitle className="flex items-center gap-2">
+        <DialogHeader className="flex-shrink-0 pb-4">
+          <DialogTitle className="flex items-center gap-2 text-xl font-semibold">
             <Wand2 className="h-5 w-5 text-purple-500" />
             Enhance Prompt with AI
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="text-sm mt-1">
             Give instructions to refine the current prompt while keeping the same structure and safety rules.
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto min-h-0 -mx-6 px-6">
-          <div className="grid gap-4 py-2">
+          <div className="grid gap-6 py-2">
               {step === 'input' && (
                 <>
-                  <div className="grid gap-2">
-                    <Label>Current Prompt</Label>
-                    <div className="rounded-md border bg-muted p-3 text-sm text-muted-foreground max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words">
+                  <div className="grid gap-3">
+                    <Label className="text-sm font-semibold">Current Prompt</Label>
+                    <div className="rounded-lg border-2 border-border/50 bg-gradient-to-br from-muted/50 to-muted/30 p-4 text-sm text-muted-foreground max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words font-mono shadow-sm">
                       {currentPrompt}
                     </div>
                   </div>
 
-                  <div className="grid gap-2">
-                    <Label htmlFor="instructions">
-                      Enhancement Instructions <span className="text-red-500">*</span>
+                  <div className="grid gap-3">
+                    <Label htmlFor="instructions" className="text-sm font-semibold">
+                      Enhancement Instructions <span className="text-destructive">*</span>
                     </Label>
                     <Textarea
                       id="instructions"
@@ -227,7 +227,7 @@ export function PromptEnhanceDialog({
                       value={instructions}
                       onChange={(e) => setInstructions(e.target.value)}
                       rows={4}
-                      className="resize-y max-h-[200px] overflow-y-auto"
+                      className="resize-y max-h-[200px] overflow-y-auto border-2 border-border/50 bg-background hover:border-border focus-visible:border-primary focus-visible:ring-primary/20 shadow-sm hover:shadow-md focus-visible:shadow-lg transition-all duration-200"
                     />
                     <p className="text-xs text-muted-foreground">
                       The AI will preserve identity and Seedream format.
@@ -254,22 +254,22 @@ export function PromptEnhanceDialog({
               )}
 
               {step === 'review' && (
-                <div className="grid gap-4">
-                  <div className="grid md:grid-cols-2 gap-4">
-                    <div className="grid gap-2 min-w-0">
-                      <Label className="text-muted-foreground">Original</Label>
-                      <div className="rounded-md border bg-muted/50 p-3 text-xs text-muted-foreground max-h-[400px] min-h-[200px] overflow-y-auto whitespace-pre-wrap break-words">
+                <div className="grid gap-6">
+                  <div className="grid md:grid-cols-2 gap-6">
+                    <div className="grid gap-3 min-w-0">
+                      <Label className="text-sm font-semibold text-muted-foreground">Original</Label>
+                      <div className="rounded-lg border-2 border-border/50 bg-gradient-to-br from-muted/50 to-muted/30 p-4 text-xs text-muted-foreground max-h-[400px] min-h-[200px] overflow-y-auto whitespace-pre-wrap break-words font-mono shadow-sm">
                         {currentPrompt}
                       </div>
                     </div>
-                    <div className="grid gap-2 min-w-0">
-                      <Label className="text-purple-600 font-medium flex items-center gap-2">
-                        <Sparkles className="h-3 w-3" /> Enhanced Result
+                    <div className="grid gap-3 min-w-0">
+                      <Label className="text-sm font-semibold text-purple-600 dark:text-purple-400 flex items-center gap-2">
+                        <Sparkles className="h-4 w-4" /> Enhanced Result
                       </Label>
                       <Textarea
                         value={editableEnhancedPrompt}
                         onChange={(e) => setEditableEnhancedPrompt(e.target.value)}
-                        className="max-h-[400px] min-h-[200px] text-sm resize-y overflow-y-auto"
+                        className="max-h-[400px] min-h-[200px] text-sm resize-y overflow-y-auto border-2 border-purple-200 dark:border-purple-800 bg-purple-50/30 dark:bg-purple-950/20 focus-visible:border-purple-500 focus-visible:ring-purple-500/20 shadow-sm hover:shadow-md focus-visible:shadow-lg transition-all duration-200"
                       />
                     </div>
                   </div>

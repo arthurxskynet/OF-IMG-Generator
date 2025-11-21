@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import Link from "next/link";
 // import { useQueryState, parseAsBoolean } from "nuqs";
 import { ModelCard } from "@/components/model-card";
+import { Sparkles, FolderOpen } from "lucide-react";
 // import { useToast } from "@/hooks/use-toast";
 
 interface DashboardContentProps {
@@ -93,13 +94,15 @@ export function DashboardContent({ initialModels }: DashboardContentProps) {
   };
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-6 space-y-8 bg-gradient-to-br from-background via-background to-muted/20 min-h-screen">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+        <div className="space-y-1">
+          <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">
+            Dashboard
+          </h1>
           <p className="text-sm text-muted-foreground">Welcome to AI Studio</p>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
           {/* Tutorial toggle disabled - causing bugs with new users */}
           {/* <div className="flex items-center gap-2">
             <Switch
@@ -113,10 +116,13 @@ export function DashboardContent({ initialModels }: DashboardContentProps) {
             </Label>
           </div> */}
           <div className="flex gap-3">
-            <Button asChild data-tour="dashboard-create-model">
-              <Link href="/models/new">New Model</Link>
+            <Button asChild data-tour="dashboard-create-model" className="shadow-md hover:shadow-lg transition-shadow">
+              <Link href="/models/new" className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4" />
+                New Model
+              </Link>
             </Button>
-            <Button variant="outline" asChild>
+            <Button variant="outline" asChild className="shadow-sm hover:shadow transition-shadow">
               <Link href="/models">View Models</Link>
             </Button>
           </div>
@@ -124,9 +130,12 @@ export function DashboardContent({ initialModels }: DashboardContentProps) {
       </div>
 
       {models.length > 0 ? (
-        <div>
-          <h2 className="text-lg font-semibold mb-4 tracking-tight">Recent Models</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="space-y-4">
+          <h2 className="text-xl font-semibold tracking-tight flex items-center gap-2">
+            <FolderOpen className="h-5 w-5 text-primary" />
+            Recent Models
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {models.map((model) => (
               <ModelCard
                 key={model.id}
@@ -135,22 +144,27 @@ export function DashboardContent({ initialModels }: DashboardContentProps) {
               />
             ))}
           </div>
-          <div className="mt-4" />
         </div>
       ) : (
-        <Card>
-          <CardHeader>
-            <CardTitle>Get Started</CardTitle>
+        <Card className="border-2 border-dashed border-border/50 bg-gradient-to-br from-card to-card/50">
+          <CardHeader className="text-center pb-4">
+            <div className="mx-auto mb-4 rounded-full bg-primary/10 p-4 w-fit">
+              <Sparkles className="h-8 w-8 text-primary" />
+            </div>
+            <CardTitle className="text-2xl">Get Started</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              Create your first model to start generating images.
+          <CardContent className="space-y-6 text-center">
+            <p className="text-sm text-muted-foreground max-w-md mx-auto">
+              Create your first model to start generating images with AI. Get started by creating a new model and uploading your reference images.
             </p>
-            <div className="flex gap-3">
-              <Button asChild data-tour="dashboard-create-model">
-                <Link href="/models/new">Create Model</Link>
+            <div className="flex gap-3 justify-center">
+              <Button asChild data-tour="dashboard-create-model" size="lg" className="shadow-md hover:shadow-lg">
+                <Link href="/models/new" className="flex items-center gap-2">
+                  <Sparkles className="h-4 w-4" />
+                  Create Model
+                </Link>
               </Button>
-              <Button variant="outline" asChild>
+              <Button variant="outline" asChild size="lg" className="shadow-sm hover:shadow">
                 <Link href="/models">Browse Models</Link>
               </Button>
             </div>

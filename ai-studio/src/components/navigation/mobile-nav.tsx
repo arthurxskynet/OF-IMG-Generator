@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 
 const links = [
   { href: "/dashboard", label: "Dashboard" },
+  { href: "/variants", label: "Variants" },
   { href: "/settings", label: "Settings" },
   { href: "/models", label: "Models" },
 ];

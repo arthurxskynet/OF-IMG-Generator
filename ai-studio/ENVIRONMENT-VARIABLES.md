@@ -81,6 +81,54 @@ PROMPT_USE_LLM_FACESWAP=false
 
 ---
 
+### `PROMPT_VARIANTS_RICH` (Optional)
+
+Controls the prompt generation style specifically for Variant prompts (multi-image style analysis).
+
+```bash
+# Enable rich Seedream v4 variant prompts (DEFAULT)
+PROMPT_VARIANTS_RICH=true
+
+# Use legacy concise variant prompts
+PROMPT_VARIANTS_RICH=false
+```
+
+**Default**: `true` (rich variant prompts enabled)
+
+**Options**:
+- `true` or omitted: Rich multi-section Seedream v4 variant prompts
+  - 150-400 words
+  - Comprehensive sections: Subject & Style, Composition & Framing, Lighting Setup, Color Palette & Atmosphere, Environment & Setting, Technical Quality, Variation Guidelines
+  - Adaptive sampling (temperature 0.35-0.65 based on image count and complexity)
+  - Professional photography terminology
+
+- `false`: Legacy concise variant prompts
+  - 25-60 words
+  - Simple variant instruction format
+  - Fixed temperature 0.4
+
+**Adaptive Sampling**:
+When enabled, temperature automatically adjusts:
+- Baseline: 0.5
+- Single image: -0.05
+- 3+ images: +0.05
+- 5+ images: +0.1
+- Simple enhancements: -0.05
+- Complex enhancements: +0.05
+- Clamped to 0.35-0.65 range
+
+**When to use legacy mode**:
+- Testing/comparison with old variant outputs
+- Reducing API token usage
+- Simpler use cases not requiring detailed style guidance
+
+**Impact**:
+- API token usage: ~3-5x increase with rich variant prompts
+- Response time: Slightly longer (more tokens to process)
+- Variant quality: Better style consistency with rich prompts
+
+---
+
 ## Quick Setup
 
 ### Development / Local Testing
@@ -96,6 +144,7 @@ XAI_API_KEY=your_xai_api_key_here
 # Optional - defaults to rich prompts
 PROMPT_USE_RICH_STYLE=true
 PROMPT_USE_LLM_FACESWAP=true
+PROMPT_VARIANTS_RICH=true
 
 # Your other environment variables...
 ```
@@ -112,6 +161,7 @@ Set environment variables in your Vercel project settings:
 XAI_API_KEY = your_xai_api_key_here
 PROMPT_USE_RICH_STYLE = true
 PROMPT_USE_LLM_FACESWAP = true
+PROMPT_VARIANTS_RICH = true
 ```
 
 4. Redeploy your application

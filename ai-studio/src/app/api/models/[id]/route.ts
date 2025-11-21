@@ -54,12 +54,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
           ref_image_urls,
           target_image_url,
           prompt_override,
+          match_target_ratio,
           status,
           created_at,
           generated_images (
             id,
             output_url,
             is_favorited,
+            prompt_text,
             created_at
           )
         )
