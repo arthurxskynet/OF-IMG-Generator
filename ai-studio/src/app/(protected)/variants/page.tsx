@@ -26,6 +26,7 @@ const VariantsPage = async () => {
         *,
         output_width,
         output_height,
+        match_target_ratio,
         variant_row_images (
           id,
           variant_row_id,
@@ -50,11 +51,41 @@ const VariantsPage = async () => {
         variantRows = []
       }
     } else {
-      variantRows = rows || []
+      variantRows = (rows || []).map(row => {
+        // Validate and normalize variant_row_images
+        const images = (row as any).variant_row_images || []
+        const validatedImages = images.map((img: any) => {
+          // Ensure is_generated is explicitly boolean (never null/undefined)
+          // Default to false if null/undefined (reference image)
+          const isGenerated = img.is_generated === true
+          return {
+            ...img,
+            is_generated: isGenerated
+          }
+        })
+        
+        return {
+          ...row,
+          variant_row_images: validatedImages
+        }
+      })
+      
+      // Log validation results for debugging
+      const totalImages = variantRows.reduce((sum, row) => sum + (row.variant_row_images?.length || 0), 0)
+      const generatedImages = variantRows.reduce((sum, row) => 
+        sum + (row.variant_row_images?.filter((img: any) => img.is_generated === true).length || 0), 0)
+      const referenceImages = totalImages - generatedImages
+      
+      console.log('[VariantsPage] Fetched variant rows with validated images', {
+        rowCount: variantRows.length,
+        totalImages,
+        generatedImages,
+        referenceImages
+      })
     }
 
-    // Separately fetch generated images for each variant row
-    // Jobs table uses variant_row_id to link to variant_rows
+    // Separately fetch jobs for status tracking (used by polling hook)
+    // Note: Images are displayed from variant_row_images, not from jobs.generated_images
     if (variantRows.length > 0) {
       const variantRowIds = variantRows.map(r => r.id)
       
@@ -65,19 +96,12 @@ const VariantsPage = async () => {
           row_id,
           variant_row_id,
           status,
-          created_at,
-          generated_images (
-            id,
-            output_url,
-            thumbnail_url,
-            is_favorited,
-            created_at
-          )
+          created_at
         `)
         .in('variant_row_id', variantRowIds)
         .order('created_at', { ascending: false })
       
-      // Attach jobs to their respective variant rows
+      // Attach jobs to their respective variant rows for status tracking
       if (jobs) {
         variantRows.forEach(row => {
           (row as any).jobs = jobs.filter(j => j.variant_row_id === row.id)

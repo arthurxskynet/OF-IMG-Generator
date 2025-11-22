@@ -64,14 +64,30 @@ export async function POST(req: NextRequest) {
         continue
       }
 
-      // Insert images for this row
-      const imagesToInsert = groupImages.map((img, index) => ({
-        variant_row_id: row.id,
-        output_path: img.outputPath,
-        thumbnail_path: img.thumbnailPath,
-        source_row_id: img.sourceRowId,
-        position: index
-      }))
+      // Insert images for this row - explicitly mark as reference images (not generated)
+      // Validation: All images added via batch-add are reference images
+      const imagesToInsert = groupImages.map((img, index) => {
+        const insertData = {
+          variant_row_id: row.id,
+          output_path: img.outputPath,
+          thumbnail_path: img.thumbnailPath,
+          source_row_id: img.sourceRowId,
+          position: index,
+          is_generated: false as const // Explicitly mark as reference image (never null/undefined)
+        }
+        
+        // Defensive validation
+        if (insertData.is_generated !== false) {
+          console.error('[BatchAdd] CRITICAL: Reference image has incorrect is_generated flag', {
+            rowId: row.id,
+            index,
+            isGenerated: insertData.is_generated
+          })
+          throw new Error('Reference images must have is_generated=false')
+        }
+        
+        return insertData
+      })
 
       const { data: insertedImages, error: imagesError } = await supabase
         .from('variant_row_images')

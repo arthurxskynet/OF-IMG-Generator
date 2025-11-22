@@ -11,13 +11,17 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { VariantRow, VariantRowImage } from '@/types/variants'
 import { getSignedUrl } from '@/lib/jobs'
-import { Wand2, Sparkles, Copy, Trash2, Plus, X, AlertCircle, Play, Eye, EyeOff, ChevronDown, ChevronUp, Star, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Wand2, Sparkles, Copy, Trash2, Plus, X, AlertCircle, Play, Eye, EyeOff, ChevronDown, ChevronUp, Star, ChevronLeft, ChevronRight, ImageIcon } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useJobPolling } from '@/hooks/use-job-polling'
 import { createClient } from '@/lib/supabase-browser'
 import { VariantsDimensionControls } from './variants-dimension-controls'
 import { useThumbnailLoader } from '@/hooks/use-thumbnail-loader'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Switch } from '@/components/ui/switch'
+import { Label } from '@/components/ui/label'
+import { Progress } from '@/components/ui/progress'
+import { Badge } from '@/components/ui/badge'
 
 interface VariantsRowsWorkspaceProps {
   initialRows: VariantRow[]
@@ -98,21 +102,21 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
   const supabase = createClient()
 
   // Collect all generated images for thumbnail loader
+  // Defensive filtering: only images with is_generated === true (explicit check)
   const allGeneratedImages = rows.flatMap(row => {
     const allImages = row.variant_row_images || []
     return allImages
       .filter(img => {
-        if (typeof (img as any).is_generated === 'boolean') {
-          return (img as any).is_generated
-        }
-        return !(img as any).source_row_id
+        // Strict check: only include images explicitly marked as generated
+        // Handle null, undefined, false, and any other falsy values as reference images
+        return img.is_generated === true
       })
       .map(img => ({
         id: img.id,
         output_url: img.output_path,
         thumbnail_url: img.thumbnail_path || null,
-        is_favorited: (img as any).is_favorited || false,
-        created_at: (img as any).created_at || new Date().toISOString()
+        is_favorited: img.is_favorited || false,
+        created_at: img.created_at || new Date().toISOString()
       }))
   })
 
@@ -129,13 +133,13 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
     const initialFavorites: Record<string, boolean> = {}
     rows.forEach(row => {
       const allImages = row.variant_row_images || []
+      // Defensive filtering: only images with is_generated === true
       const generatedImages = allImages.filter(img => {
-        if (typeof (img as any).is_generated === 'boolean') {
-          return (img as any).is_generated
-        }
-        return !(img as any).source_row_id
+        // Strict check: only include images explicitly marked as generated
+        // Exclude null, undefined, false, and any other falsy values
+        return img.is_generated === true
       })
-      generatedImages.forEach((img: any) => {
+      generatedImages.forEach(img => {
         const isFav = img.is_favorited === true
         initialFavorites[img.id] = isFav
       })
@@ -223,13 +227,13 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
       const currentRow = rows.find(row => row.id === prev.rowId)
       if (!currentRow) return prev
       
-      const allImages = currentRow.variant_row_images || []
-      const generatedImages = allImages.filter(img => {
-        if (typeof (img as any).is_generated === 'boolean') {
-          return (img as any).is_generated
-        }
-        return !(img as any).source_row_id
-      })
+            const allImages = currentRow.variant_row_images || []
+            // Defensive filtering: only images with is_generated === true
+            const generatedImages = allImages.filter(img => {
+              // Strict check: only include images explicitly marked as generated
+              // Exclude null, undefined, false, and any other falsy values
+              return img.is_generated === true
+            })
       
       const newIndex = direction === 'prev' 
         ? Math.max(0, prev.imageIndex - 1)
@@ -306,30 +310,20 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
   }, [thumbnailUrls])
 
   // Load thumbnails on mount and when rows change
+  // Note: All images (reference and generated) are in variant_row_images, not in jobs.generated_images
   useEffect(() => {
     if (rows.length === 0) return
 
     const imagesToLoad: Array<{ id: string; path: string }> = []
     
     rows.forEach(row => {
-      // Collect variant row images to load
+      // Collect all variant row images to load (both reference and generated)
+      // All images are stored in variant_row_images with is_generated flag
       row.variant_row_images?.forEach(img => {
         const path = img.thumbnail_path || img.output_path
         if (path && !thumbnailUrls[img.id] && !loadingImagesRef.current.has(img.id)) {
           imagesToLoad.push({ id: img.id, path })
         }
-      })
-      
-      // Collect generated images to load
-      const jobs = (row as any).jobs || []
-      jobs.forEach((job: any) => {
-        const generatedImages = job.generated_images || []
-        generatedImages.forEach((img: any) => {
-          const path = img.thumbnail_url || img.output_url
-          if (path && !thumbnailUrls[img.id] && !loadingImagesRef.current.has(img.id)) {
-            imagesToLoad.push({ id: img.id, path })
-          }
-        })
       })
     })
 
@@ -372,8 +366,8 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
     
     // Realtime subscription to jobs updates for variant rows
     try {
-      const channel = supabase.channel('variant-jobs')
-      channel.on('postgres_changes', {
+      const jobsChannel = supabase.channel('variant-jobs')
+      jobsChannel.on('postgres_changes', {
         event: '*',
         schema: 'public',
         table: 'jobs',
@@ -386,11 +380,65 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
           startPolling(String(next.id), s, String(next.variant_row_id))
         }
         if (['succeeded','failed'].includes(s)) {
-          setTimeout(() => router.refresh(), 300)
+          // Refresh after a short delay to allow database to complete image insertion
+          setTimeout(() => {
+            router.refresh()
+          }, 500)
         }
       })
       .subscribe()
-      ;(window as any).__variantJobsRealtime = channel
+      ;(window as any).__variantJobsRealtime = jobsChannel
+      
+      // Realtime subscription to variant_row_images updates
+      // This ensures UI updates immediately when new generated images are inserted
+      const imagesChannel = supabase.channel('variant-row-images')
+      imagesChannel.on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'variant_row_images',
+        filter: `is_generated=eq.true`
+      }, (payload: any) => {
+        const newImage = payload?.new
+        if (!newImage || !newImage.variant_row_id) return
+        
+        console.log('[Variants] New generated image inserted via realtime', {
+          imageId: newImage.id,
+          variantRowId: newImage.variant_row_id,
+          isGenerated: newImage.is_generated
+        })
+        
+        // Refresh to show new image
+        // Use a small delay to ensure the image is fully committed
+        setTimeout(() => {
+          router.refresh()
+        }, 300)
+      })
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'variant_row_images',
+        filter: `is_generated=eq.true`
+      }, (payload: any) => {
+        const updatedImage = payload?.new
+        if (!updatedImage || !updatedImage.variant_row_id) return
+        
+        console.log('[Variants] Generated image updated via realtime', {
+          imageId: updatedImage.id,
+          variantRowId: updatedImage.variant_row_id
+        })
+        
+        // Refresh to show updated image
+        setTimeout(() => {
+          router.refresh()
+        }, 200)
+      })
+      .subscribe()
+      ;(window as any).__variantImagesRealtime = imagesChannel
+      
+      console.log('[Variants] Realtime subscriptions established', {
+        jobsChannel: 'variant-jobs',
+        imagesChannel: 'variant-row-images'
+      })
     } catch (error) {
       console.error('[Variants] Failed to setup realtime:', error)
     }
@@ -402,6 +450,10 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
           supabase.removeChannel((window as any).__variantJobsRealtime)
           ;(window as any).__variantJobsRealtime = null
         }
+        if ((window as any).__variantImagesRealtime) {
+          supabase.removeChannel((window as any).__variantImagesRealtime)
+          ;(window as any).__variantImagesRealtime = null
+        }
       } catch {}
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -412,6 +464,11 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
     const live = Object.values(pollingState).find(s => s.rowId === rowId && s.polling)
     if (!live) return null
     return live.status
+  }
+
+  // Helper to get live polling state for a row (includes queue position)
+  const getLivePollingState = (rowId: string) => {
+    return Object.values(pollingState).find(s => s.rowId === rowId && s.polling) || null
   }
 
   // Helper to get status label
@@ -427,8 +484,21 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
     }
   }
 
-  // Helper to get status color
+  // Helper to get status color (for Badge variant)
   const getStatusColor = (status: string): string => {
+    switch (status) {
+      case 'queued': return 'secondary'
+      case 'submitted': return 'default'
+      case 'running': return 'default'
+      case 'saving': return 'default'
+      case 'succeeded': return 'default'
+      case 'failed': return 'destructive'
+      default: return 'secondary'
+    }
+  }
+
+  // Helper to get status color class (for legacy div styling)
+  const getStatusColorClass = (status: string): string => {
     switch (status) {
       case 'queued': return 'text-yellow-600 bg-yellow-50 border-yellow-200'
       case 'submitted': return 'text-blue-600 bg-blue-50 border-blue-200'
@@ -437,6 +507,26 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
       case 'succeeded': return 'text-green-600 bg-green-50 border-green-200'
       case 'failed': return 'text-red-600 bg-red-50 border-red-200'
       default: return 'text-gray-600 bg-gray-50 border-gray-200'
+    }
+  }
+
+  // Helper to check if status is active (generating)
+  const isActiveStatus = (status: string | null): boolean => {
+    if (!status) return false
+    return ['queued', 'submitted', 'running', 'saving'].includes(status)
+  }
+
+  // Helper to convert status to progress percentage
+  const statusToProgress = (status: string | null): number => {
+    if (!status) return 0
+    switch (status) {
+      case 'queued': return 10
+      case 'submitted': return 25
+      case 'running': return 60
+      case 'saving': return 90
+      case 'succeeded': return 100
+      case 'failed': return 0
+      default: return 0
     }
   }
 
@@ -598,10 +688,11 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
         description: 'Creating random variation of your images'
       })
 
-      // Refresh to show new results
+      // Refresh to show new results after job is created
+      // The realtime subscription will handle updates when images are inserted
       setTimeout(() => {
         router.refresh()
-      }, 2000)
+      }, 1000)
     } catch (error) {
       toast({
         title: 'Generation failed',
@@ -820,10 +911,11 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
         description: 'Your variant images are being generated'
       })
 
-      // Refresh the page to show new results
+      // Refresh the page to show new results after job is created
+      // The realtime subscription will handle updates when images are inserted
       setTimeout(() => {
         router.refresh()
-      }, 2000)
+      }, 1000)
     } catch (error) {
       toast({
         title: 'Generation failed',
@@ -842,7 +934,7 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
         variantRows={rows} 
         onUpdate={(updatedRows) => {
           setRows(updatedRows)
-          console.log('Variant dimensions updated:', updatedRows)
+          // Dimensions updated - state is already set
         }} 
       />
 
@@ -878,7 +970,7 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                 <TableRow>
                   <TableHead className="w-12 align-top"></TableHead>
                   <TableHead className="w-32 align-top">Reference</TableHead>
-                  <TableHead className="w-[20rem] align-top">Prompt</TableHead>
+                  <TableHead className="w-[36rem] min-w-[36rem] align-top">Prompt</TableHead>
                   <TableHead className="w-28 align-top">Generate</TableHead>
                   <TableHead className="w-full align-top">Results</TableHead>
                   <TableHead className="w-16 align-top">Actions</TableHead>
@@ -888,23 +980,50 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                 {rows.map(row => {
                   const allImages = row.variant_row_images || []
                   
-                  // Split images: reference vs generated
-                  // Use is_generated if available, fallback to checking source_row_id presence
-                  const referenceImages = allImages.filter(img => {
-                    if (typeof (img as any).is_generated === 'boolean') {
-                      return !(img as any).is_generated
-                    }
-                    // Fallback: images with source_row_id are references
-                    return !!(img as any).source_row_id
+                  // Split images: reference vs generated with defensive filtering
+                  // Reference images: is_generated !== true (includes false, null, undefined, or any other value)
+                  // Generated images: is_generated === true (explicit boolean true only)
+                  // IMPORTANT: Only images explicitly marked with is_generated === true are results
+                  
+                  // Defensive check: ensure all images have is_generated property normalized
+                  const normalizedImages = allImages.map(img => ({
+                    ...img,
+                    // Normalize: ensure is_generated is explicitly boolean
+                    // If null/undefined, treat as false (reference image)
+                    is_generated: img.is_generated === true
+                  }))
+                  
+                  const referenceImages = normalizedImages.filter(img => {
+                    // Strictly check: only exclude if explicitly true
+                    // This ensures reference images (false, null, undefined) are included
+                    return img.is_generated !== true
                   })
                   
-                  const generatedImages = allImages.filter(img => {
-                    if (typeof (img as any).is_generated === 'boolean') {
-                      return (img as any).is_generated
-                    }
-                    // Fallback: images without source_row_id are generated
-                    return !(img as any).source_row_id
+                  const generatedImages = normalizedImages.filter(img => {
+                    // Only images explicitly marked as generated (is_generated === true)
+                    // Defensive: double-check it's exactly true, not truthy
+                    return img.is_generated === true
                   })
+                  
+                  // Debug logging in development to catch any misclassification
+                  if (process.env.NODE_ENV === 'development' && allImages.length > 0) {
+                    const misclassified = allImages.filter(img => {
+                      const isGen = img.is_generated === true
+                      const isRef = img.is_generated !== true
+                      return !isGen && !isRef // Should never happen, but log if it does
+                    })
+                    if (misclassified.length > 0) {
+                      console.warn('[VariantsWorkspace] Potential misclassified images', {
+                        rowId: row.id,
+                        misclassifiedCount: misclassified.length,
+                        misclassified: misclassified.map(img => ({
+                          id: img.id,
+                          is_generated: img.is_generated,
+                          type: typeof img.is_generated
+                        }))
+                      })
+                    }
+                  }
                   
                   const isGenerating = generatingPromptRowId === row.id
                   const isEnhancing = enhancingRowId === row.id
@@ -1063,6 +1182,40 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                                 <span className="text-muted-foreground">({row.prompt.split(/\s+/).length} words)</span>
                               </div>
                             )}
+                            
+                            {/* Seedream v4 ratio override */}
+                            <div className="flex items-center gap-2 mt-2">
+                              <Switch
+                                id={`match-target-${row.id}`}
+                                checked={Boolean((row as any).match_target_ratio)}
+                                disabled={referenceImages.length === 0}
+                                onCheckedChange={async (checked) => {
+                                  // Optimistic UI update
+                                  setRows(prev => prev.map(r => r.id === row.id ? { ...r, match_target_ratio: Boolean(checked) } : r))
+                                  try {
+                                    const res = await fetch(`/api/variants/rows/${row.id}`, {
+                                      method: 'PATCH',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ match_target_ratio: Boolean(checked) })
+                                    })
+                                    if (!res.ok) {
+                                      throw new Error(await res.text())
+                                    }
+                                  } catch (e: any) {
+                                    // Revert on failure
+                                    setRows(prev => prev.map(r => r.id === row.id ? { ...r, match_target_ratio: !Boolean(checked) } : r))
+                                    toast({
+                                      title: 'Failed to update setting',
+                                      description: 'Could not update match target ratio',
+                                      variant: 'destructive'
+                                    })
+                                  }
+                                }}
+                              />
+                              <Label htmlFor={`match-target-${row.id}`} className="text-xs text-muted-foreground cursor-pointer">
+                                Match target ratio (v4)
+                              </Label>
+                            </div>
                           </div>
 
                           {/* Enhance section - only show when expanded AND prompt exists */}
@@ -1073,7 +1226,7 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                                 {Object.entries(PRESET_ENHANCEMENTS).map(([category, presets]) => (
                                   <div key={category} className="space-y-1">
                                     <div className="text-xs font-semibold text-muted-foreground capitalize">{category}</div>
-                                    <div className="flex flex-wrap gap-1">
+                                    <div className="flex flex-wrap gap-1.5">
                                       {presets.map((preset) => {
                                         const isSelected = (selectedPresets[row.id] || []).includes(preset.label)
                                         return (
@@ -1139,37 +1292,89 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
 
                       {/* Generate Column */}
                       <TableCell className="align-top p-2">
-                        <div className="flex flex-col gap-1.5">
-                          <Button
-                            onClick={() => handleGenerateImages(row.id)}
-                            disabled={!row.prompt || referenceImages.length < 1 || isGeneratingImages}
-                            size="sm"
-                            variant="default"
-                            className={`transition-all duration-300 ${
-                              isGeneratingImages
-                                ? 'bg-gradient-to-r from-primary to-primary/80 shadow-lg shadow-primary/20'
-                                : 'bg-gradient-to-r from-primary via-primary to-primary/90 hover:from-primary/90 hover:via-primary hover:to-primary shadow-md hover:shadow-lg hover:shadow-primary/30 hover:scale-105'
-                            } font-semibold`}
-                          >
-                            {isGeneratingImages ? (
-                              <>
-                                <Spinner size="sm" className="animate-spin" />
-                                <span>Generating...</span>
-                              </>
-                            ) : (
-                              <>
-                                <Play className="h-3 w-3 mr-1" />
-                                Generate
-                              </>
-                            )}
-                          </Button>
+                        <div className="flex flex-col gap-2">
                           {(() => {
                             const liveStatus = getLiveStatusForRow(row.id)
-                            if (!liveStatus) return null
+                            const livePolling = getLivePollingState(row.id)
+                            const displayStatus = liveStatus || (isGeneratingImages ? 'queued' : null)
+                            const displayProgress = statusToProgress(displayStatus)
+                            const isActive = isActiveStatus(displayStatus) || isGeneratingImages
+                            
                             return (
-                              <div className={`text-xs px-2 py-1 rounded border ${getStatusColor(liveStatus)}`}>
-                                {getStatusLabel(liveStatus)}
-                              </div>
+                              <>
+                                <Button
+                                  onClick={() => handleGenerateImages(row.id)}
+                                  disabled={!row.prompt || referenceImages.length < 1 || isActive}
+                                  size="sm"
+                                  variant="default"
+                                  aria-busy={isActive}
+                                  className={`transition-all duration-300 ${
+                                    !row.prompt || referenceImages.length < 1 || isActive
+                                      ? 'opacity-50 cursor-not-allowed'
+                                      : isActive
+                                      ? 'bg-gradient-to-r from-primary to-primary/80 shadow-lg shadow-primary/20'
+                                      : 'bg-gradient-to-r from-primary via-primary to-primary/90 hover:from-primary/90 hover:via-primary hover:to-primary shadow-md hover:shadow-lg hover:shadow-primary/30 hover:scale-105'
+                                  } font-semibold`}
+                                >
+                                  {isActive ? (
+                                    <>
+                                      <Spinner 
+                                        key={`spinner-${row.id}-${displayStatus}`}
+                                        size="sm" 
+                                        className="animate-spin" 
+                                      />
+                                      <span>{displayStatus ? getStatusLabel(displayStatus) : 'Generating...'}</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Play className="h-3 w-3 mr-1" />
+                                      Generate
+                                    </>
+                                  )}
+                                </Button>
+                                
+                                {livePolling?.queuePosition !== undefined && isActive && (
+                                  <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-muted/50 border border-border/50">
+                                    <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+                                    <span className="text-[10px] font-medium text-muted-foreground">
+                                      {livePolling.queuePosition > 0 ? `#${livePolling.queuePosition} in queue` : 'Processing...'}
+                                    </span>
+                                  </div>
+                                )}
+                                
+                                {displayStatus && (
+                                  <div className="flex flex-col gap-1.5 min-w-[6rem]" aria-live="polite">
+                                    <Badge 
+                                      variant={getStatusColor(displayStatus) as any} 
+                                      className={`w-fit shadow-sm ${
+                                        isActive 
+                                          ? 'ring-2 ring-primary/20' 
+                                          : ''
+                                      }`}
+                                    >
+                                      <span className="inline-flex items-center gap-1.5">
+                                        {isActive && (
+                                          <span className="h-2 w-2 rounded-full bg-current animate-pulse shadow-sm" />
+                                        )}
+                                        <span className="font-medium text-xs">{getStatusLabel(displayStatus)}</span>
+                                      </span>
+                                    </Badge>
+                                    <div className="relative">
+                                      <Progress 
+                                        value={displayProgress} 
+                                        className={`h-2 rounded-full ${
+                                          isActive
+                                            ? 'bg-primary/10'
+                                            : 'bg-muted'
+                                        }`}
+                                      />
+                                      {isActive && displayProgress > 0 && (
+                                        <div className="absolute inset-0 bg-gradient-to-r from-primary/20 via-primary/40 to-primary/20 rounded-full animate-pulse" />
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                              </>
                             )
                           })()}
                         </div>
@@ -1178,17 +1383,99 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                       {/* Results Column */}
                       <TableCell className="align-top p-2">
                         {(() => {
-                          if (isGeneratingImages) {
+                          const liveStatus = getLiveStatusForRow(row.id)
+                          const isActive = isActiveStatus(liveStatus) || isGeneratingImages
+                          
+                          // Show loading skeleton during active generation
+                          if (isActive && generatedImages.length === 0) {
                             return (
-                              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                <Spinner size="sm" />
-                                <span>Generating...</span>
+                              <div className="flex flex-wrap gap-1.5">
+                                <div className="w-16 h-16 rounded-lg bg-gradient-to-br from-muted to-muted/50 border border-border/50 animate-pulse shadow-sm" />
+                                <div className="w-16 h-16 rounded-lg bg-gradient-to-br from-muted to-muted/50 border border-border/50 animate-pulse shadow-sm" />
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <Spinner size="sm" />
+                                  <span>Generating images...</span>
+                                </div>
+                              </div>
+                            )
+                          }
+                          
+                          // Show loading state if generating but have some images
+                          if (isActive && generatedImages.length > 0) {
+                            return (
+                              <div className="flex flex-wrap gap-1.5">
+                                {generatedImages.slice(0, isExpanded ? 10 : 4).map((img: any, index: number) => {
+                                  const isFavorited = favoritesState[img.id] ?? (img.is_favorited === true)
+                                  const displayUrl = thumbnailUrls[img.id] || loaderThumbnailUrls[img.id] || ''
+                                  
+                                  return (
+                                    <div 
+                                      key={img.id} 
+                                      className="relative group w-16 h-16 rounded-lg overflow-hidden bg-muted border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 hover:scale-105 hover:border-primary/50 cursor-zoom-in"
+                                      onClick={async (e) => {
+                                        e.stopPropagation()
+                                        const actualIndex = generatedImages.findIndex(gImg => gImg.id === img.id)
+                                        if (actualIndex !== -1) {
+                                          setDialogState({ isOpen: true, rowId: row.id, imageIndex: actualIndex })
+                                          await loadFullImage(img.id)
+                                        }
+                                      }}
+                                    >
+                                      {displayUrl ? (
+                                        <Image
+                                          src={displayUrl}
+                                          alt="Generated"
+                                          fill
+                                          sizes="64px"
+                                          className="object-cover"
+                                          onError={() => loadThumbnail(img.id, img.thumbnail_path || img.output_path)}
+                                        />
+                                      ) : (
+                                        <div className="w-full h-full flex items-center justify-center">
+                                          <div className="animate-spin rounded-full h-3 w-3 border-2 border-primary border-t-transparent"></div>
+                                        </div>
+                                      )}
+                                      
+                                      <button
+                                        key={`star-${img.id}-${isFavorited}`}
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          handleToggleFavorite(img.id, isFavorited)
+                                        }}
+                                        className={`absolute top-1 left-1 p-1 rounded-full transition-all duration-200 z-20 backdrop-blur-sm ${
+                                          isFavorited
+                                            ? 'bg-yellow-400/20 hover:bg-yellow-400/30'
+                                            : 'bg-black/40 hover:bg-black/60 opacity-90 group-hover:opacity-100'
+                                        }`}
+                                        title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+                                      >
+                                        {isFavorited ? (
+                                          <Star className="w-3.5 h-3.5 text-yellow-400 drop-shadow-sm" style={{ fill: 'currentColor' }} />
+                                        ) : (
+                                          <Star className="w-3.5 h-3.5 text-white drop-shadow-sm hover:text-yellow-300 transition-colors" />
+                                        )}
+                                      </button>
+                                    </div>
+                                  )
+                                })}
+                                {/* Loading indicator for new images */}
+                                <div className="w-16 h-16 rounded-lg bg-gradient-to-br from-muted to-muted/50 border border-border/50 animate-pulse shadow-sm flex items-center justify-center">
+                                  <Spinner size="sm" />
+                                </div>
                               </div>
                             )
                           }
                           
                           if (generatedImages.length === 0) {
-                            return <div className="text-xs text-muted-foreground">No results yet</div>
+                            return (
+                              <div className="flex flex-col items-center justify-center py-4 text-center">
+                                <div className="rounded-full bg-muted/50 p-2 mb-2">
+                                  <ImageIcon className="h-5 w-5 text-muted-foreground/50" />
+                                </div>
+                                <p className="text-xs font-medium text-muted-foreground">No results yet</p>
+                                <p className="text-[10px] text-muted-foreground/70 mt-0.5">Generate to see results</p>
+                              </div>
+                            )
                           }
 
                           return (
@@ -1296,11 +1583,11 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
             if (!currentRow) return null
             
             const allImages = currentRow.variant_row_images || []
+            // Defensive filtering: only images with is_generated === true
             const generatedImages = allImages.filter(img => {
-              if (typeof (img as any).is_generated === 'boolean') {
-                return (img as any).is_generated
-              }
-              return !(img as any).source_row_id
+              // Strict check: only include images explicitly marked as generated
+              // Exclude null, undefined, false, and any other falsy values
+              return img.is_generated === true
             })
             
             if (generatedImages.length === 0) return null

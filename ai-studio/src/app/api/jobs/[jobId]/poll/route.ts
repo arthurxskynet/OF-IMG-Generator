@@ -192,23 +192,58 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
       })
       
       // Check if images already exist for this job (primary duplicate prevention)
-      const { data: existingImages } = await admin
-        .from('generated_images')
-        .select('output_url')
-        .eq('job_id', job.id)
+      // For variant rows, check variant_row_images; for model rows, check generated_images
+      if (job.variant_row_id) {
+        // Check for existing variant images for this job
+        const { data: existingVariantImages } = await admin
+          .from('variant_row_images')
+          .select('output_path, is_generated')
+          .eq('variant_row_id', job.variant_row_id)
+          .eq('is_generated', true) // Only check generated images
+        
+        if (existingVariantImages && existingVariantImages.length > 0) {
+          // Check if any of the new URLs match existing ones
+          const existingPaths = new Set(existingVariantImages.map(img => img.output_path))
+          const willBeDuplicate = urls.some(url => {
+            // We'll check after fetchAndSaveToOutputs, but for now just log
+            return false // Defer actual check until after we have the paths
+          })
+          
+          console.log('[Poll] Variant images already exist for variant row', { 
+            jobId: job.id, 
+            variantRowId: job.variant_row_id,
+            existingCount: existingVariantImages.length,
+            existingPaths: Array.from(existingPaths)
+          })
+          
+          // If we have existing generated images, mark job as succeeded
+          // (This handles the case where images were already saved in a previous poll)
+          await admin.from('jobs').update({ 
+            status: 'succeeded', 
+            updated_at: new Date().toISOString() 
+          }).eq('id', job.id)
+          return NextResponse.json({ status: 'succeeded', step: 'done' })
+        }
+      } else {
+        // Model row duplicate check
+        const { data: existingImages } = await admin
+          .from('generated_images')
+          .select('output_url')
+          .eq('job_id', job.id)
 
-      const existingUrls = new Set((existingImages || []).map(img => img.output_url))
-      if (existingUrls.size > 0) {
-        console.log('[Poll] Images already exist for job', { 
-          jobId: job.id, 
-          existingCount: existingUrls.size 
-        })
-        // Skip to marking job as succeeded
-        await admin.from('jobs').update({ 
-          status: 'succeeded', 
-          updated_at: new Date().toISOString() 
-        }).eq('id', job.id)
-        return NextResponse.json({ status: 'succeeded', step: 'done' })
+        const existingUrls = new Set((existingImages || []).map(img => img.output_url))
+        if (existingUrls.size > 0) {
+          console.log('[Poll] Images already exist for job', { 
+            jobId: job.id, 
+            existingCount: existingUrls.size 
+          })
+          // Skip to marking job as succeeded
+          await admin.from('jobs').update({ 
+            status: 'succeeded', 
+            updated_at: new Date().toISOString() 
+          }).eq('id', job.id)
+          return NextResponse.json({ status: 'succeeded', step: 'done' })
+        }
       }
 
       // No need for additional status check since we atomically transitioned to 'saving'
@@ -255,13 +290,33 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         const uploaded = await fetchAndSaveToOutputs(u, job.user_id)
         
         if (job.variant_row_id) {
-          variantInserts.push({
+          // Defensive check: ensure is_generated is always true for variant images
+          const variantInsert = {
             variant_row_id: job.variant_row_id,
             output_path: uploaded.objectPath,
             thumbnail_path: uploaded.thumbnailPath || null,
             source_row_id: job.row_id || null,
             position: variantStartPosition + i,
-            is_generated: true
+            is_generated: true as const // Explicitly set to true, never null/undefined
+          }
+          
+          // Validate before pushing
+          if (variantInsert.is_generated !== true) {
+            console.error('[Poll] CRITICAL: is_generated is not true for variant image', {
+              jobId: job.id,
+              variantRowId: job.variant_row_id,
+              isGenerated: variantInsert.is_generated
+            })
+            throw new Error('Variant image must have is_generated=true')
+          }
+          
+          variantInserts.push(variantInsert)
+          console.log('[Poll] Prepared variant image insert', {
+            jobId: job.id,
+            variantRowId: job.variant_row_id,
+            outputPath: uploaded.objectPath,
+            isGenerated: variantInsert.is_generated,
+            position: variantInsert.position
           })
         } else {
         inserts.push({
@@ -279,12 +334,50 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
       }
       
       if (variantInserts.length) {
+        // Final validation: ensure all variant inserts have is_generated=true
+        const invalidInserts = variantInserts.filter(insert => insert.is_generated !== true)
+        if (invalidInserts.length > 0) {
+          console.error('[Poll] CRITICAL: Found variant inserts without is_generated=true', {
+            jobId: job.id,
+            invalidCount: invalidInserts.length,
+            totalCount: variantInserts.length
+          })
+          throw new Error('All variant images must have is_generated=true')
+        }
+        
         // Save into variant_row_images
         try {
-          await admin.from('variant_row_images').insert(variantInserts)
-          console.log('[Poll] Saved variant images', { jobId: job.id, count: variantInserts.length })
+          const insertResult = await admin.from('variant_row_images').insert(variantInserts).select('id, is_generated')
+          console.log('[Poll] Saved variant images with is_generated=true', { 
+            jobId: job.id, 
+            variantRowId: job.variant_row_id,
+            count: variantInserts.length,
+            insertedIds: insertResult?.data?.map(img => img.id),
+            verifiedFlags: insertResult?.data?.map(img => img.is_generated)
+          })
+          
+          // Verify inserted images have correct flag
+          if (insertResult?.data) {
+            const incorrectFlags = insertResult.data.filter(img => img.is_generated !== true)
+            if (incorrectFlags.length > 0) {
+              console.error('[Poll] WARNING: Some inserted variant images have incorrect is_generated flag', {
+                jobId: job.id,
+                incorrectCount: incorrectFlags.length,
+                incorrectIds: incorrectFlags.map(img => img.id)
+              })
+            }
+          }
         } catch (error: any) {
-          console.error('[Poll] Failed to save variant images', { jobId: job.id, error: error?.message })
+          console.error('[Poll] Failed to save variant images', { 
+            jobId: job.id, 
+            variantRowId: job.variant_row_id,
+            error: error?.message,
+            variantInserts: variantInserts.map(insert => ({
+              variant_row_id: insert.variant_row_id,
+              is_generated: insert.is_generated,
+              position: insert.position
+            }))
+          })
           throw error
         }
       } else if (inserts.length) {

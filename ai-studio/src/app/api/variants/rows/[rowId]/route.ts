@@ -18,7 +18,7 @@ export async function PATCH(
 
   try {
     const body = await req.json()
-    const { name, prompt, output_width, output_height } = body
+    const { name, prompt, output_width, output_height, match_target_ratio } = body
 
     const updateData: any = {}
     if (name !== undefined) updateData.name = name
@@ -40,6 +40,9 @@ export async function PATCH(
         }, { status: 400 })
       }
       updateData.output_height = output_height
+    }
+    if (match_target_ratio !== undefined) {
+      updateData.match_target_ratio = Boolean(match_target_ratio)
     }
 
     const { data: row, error } = await supabase

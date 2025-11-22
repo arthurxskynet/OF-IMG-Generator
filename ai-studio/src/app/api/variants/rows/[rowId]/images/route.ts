@@ -52,14 +52,36 @@ export async function POST(
       ? existingImages[0].position + 1 
       : 0
 
-    // Insert images
-    const imagesToInsert = images.map((img: any, index: number) => ({
-      variant_row_id: rowId,
-      output_path: img.outputPath,
-      thumbnail_path: img.thumbnailPath || null,
-      source_row_id: img.sourceRowId || null,
-      position: startPosition + index
-    }))
+    // Insert images - explicitly mark as reference images (not generated)
+    // Validation: All images added via this endpoint are reference images
+    const imagesToInsert = images.map((img: any, index: number) => {
+      const insertData = {
+        variant_row_id: rowId,
+        output_path: img.outputPath,
+        thumbnail_path: img.thumbnailPath || null,
+        source_row_id: img.sourceRowId || null,
+        position: startPosition + index,
+        is_generated: false as const // Explicitly mark as reference image (never null/undefined)
+      }
+      
+      // Defensive validation
+      if (insertData.is_generated !== false) {
+        console.error('[VariantRowImages] CRITICAL: Reference image has incorrect is_generated flag', {
+          rowId,
+          index,
+          isGenerated: insertData.is_generated
+        })
+        throw new Error('Reference images must have is_generated=false')
+      }
+      
+      return insertData
+    })
+    
+    console.log('[VariantRowImages] Inserting reference images', {
+      rowId,
+      count: imagesToInsert.length,
+      validatedFlags: imagesToInsert.map(img => ({ position: img.position, is_generated: img.is_generated }))
+    })
 
     const { data: insertedImages, error: insertError } = await supabase
       .from('variant_row_images')

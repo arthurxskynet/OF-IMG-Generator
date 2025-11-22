@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServer } from '@/lib/supabase-server'
 import { signPath } from '@/lib/storage'
+import { getRemoteImageDimensions, computeMaxQualityDimensionsForRatio } from '@/lib/server-utils'
 
 export async function POST(
   req: NextRequest,
@@ -203,6 +204,35 @@ export async function POST(
           }
         }
       } catch {}
+    }
+
+    // Optionally override size to match target aspect ratio at max quality
+    if (row.match_target_ratio && targetPath) {
+      try {
+        // Short-lived signed URL for probing dimensions
+        const signedTargetUrl = await signPath(targetPath, 120)
+        const dims = await getRemoteImageDimensions(signedTargetUrl)
+        const computed = computeMaxQualityDimensionsForRatio(
+          width,  // Use the determined width as baseline
+          height, // Use the determined height as baseline
+          dims.width,
+          dims.height
+        )
+        width = computed.width
+        height = computed.height
+        console.log('[VariantGenerate] Using target ratio override', {
+          rowId,
+          matchTargetRatio: true,
+          targetDims: dims,
+          computedWidth: width,
+          computedHeight: height
+        })
+      } catch (e: any) {
+        console.warn('[VariantGenerate] Failed to probe target dimensions; falling back to variant/model dimensions', {
+          rowId,
+          error: e?.message
+        })
+      }
     }
 
     if (!modelId) {
