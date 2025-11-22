@@ -970,7 +970,7 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                 <TableRow>
                   <TableHead className="w-12 align-top"></TableHead>
                   <TableHead className="w-32 align-top">Reference</TableHead>
-                  <TableHead className="w-[36rem] min-w-[36rem] align-top">Prompt</TableHead>
+                  <TableHead className="w-[50rem] min-w-[50rem] align-top">Prompt</TableHead>
                   <TableHead className="w-28 align-top">Generate</TableHead>
                   <TableHead className="w-full align-top">Results</TableHead>
                   <TableHead className="w-16 align-top">Actions</TableHead>
@@ -1170,9 +1170,9 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                               value={row.prompt || ''}
                               onChange={(e) => handlePromptChange(row.id, e.target.value)}
                               placeholder="Type your variant prompt here, or click Sparkles to generate one from reference images..."
-                              rows={isExpanded ? 4 : 2}
-                              className={`resize-y text-xs font-mono border-2 border-border/50 bg-background hover:border-border focus-visible:border-primary focus-visible:ring-primary/20 shadow-sm hover:shadow-md focus-visible:shadow-lg transition-all duration-300 ${
-                                !isExpanded ? 'max-h-[60px] overflow-hidden' : ''
+                              rows={isExpanded ? 8 : 4}
+                              className={`resize-y text-[11px] font-mono border-2 border-border/50 bg-background hover:border-border focus-visible:border-primary focus-visible:ring-primary/20 shadow-sm hover:shadow-md focus-visible:shadow-lg transition-all duration-300 overflow-y-auto ${
+                                !isExpanded ? 'max-h-[120px]' : 'max-h-[300px]'
                               }`}
                             />
                             
