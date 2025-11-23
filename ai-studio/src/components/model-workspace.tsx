@@ -2104,7 +2104,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       setRows(prev => prev.map(r => r.id === rowId ? { ...r, status: 'queued' as any } : r))
       
       // Create job with optional AI prompt generation
-      const result = await createJobs({ rowId, useAiPrompt })
+      const result = await createJobs({ rowId, useAiPrompt, preserveComposition: true })
       const ids = result.jobIds || []
       if (ids[0]) startPolling(ids[0], 'submitted', rowId)
       

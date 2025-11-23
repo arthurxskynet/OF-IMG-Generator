@@ -279,7 +279,6 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       }
     } catch (error) {
       console.error('Failed to refresh row data:', error)
-    }
     } finally {
       isRefreshingRef.current = false
     }
