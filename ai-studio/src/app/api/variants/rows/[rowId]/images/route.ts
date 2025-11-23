@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServer } from '@/lib/supabase-server'
 
+interface ImageInsertData {
+  variant_row_id: string
+  output_path: string
+  thumbnail_path: string | null
+  source_row_id: string | null
+  position: number
+  is_generated: false
+}
+
 /**
  * POST /api/variants/rows/[rowId]/images - Add images to a variant row
  */
@@ -54,8 +63,8 @@ export async function POST(
 
     // Insert images - explicitly mark as reference images (not generated)
     // Validation: All images added via this endpoint are reference images
-    const imagesToInsert = images.map((img: any, index: number) => {
-      const insertData = {
+    const imagesToInsert: ImageInsertData[] = images.map((img: any, index: number) => {
+      const insertData: ImageInsertData = {
         variant_row_id: rowId,
         output_path: img.outputPath,
         thumbnail_path: img.thumbnailPath || null,
@@ -80,7 +89,7 @@ export async function POST(
     console.log('[VariantRowImages] Inserting reference images', {
       rowId,
       count: imagesToInsert.length,
-      validatedFlags: imagesToInsert.map(img => ({ position: img.position, is_generated: img.is_generated }))
+      validatedFlags: imagesToInsert.map((img) => ({ position: img.position, is_generated: img.is_generated }))
     })
 
     const { data: insertedImages, error: insertError } = await supabase

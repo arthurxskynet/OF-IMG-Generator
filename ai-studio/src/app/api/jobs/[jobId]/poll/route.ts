@@ -4,6 +4,16 @@ import { createServer } from '@/lib/supabase-server'
 import { supabaseAdmin } from '@/lib/supabase-admin'
 import { fetchAndSaveToOutputs } from '@/lib/storage'
 
+interface VariantImageInsert {
+  variant_row_id: string
+  job_id: string
+  output_path: string
+  thumbnail_path: string | null
+  source_row_id: string | null
+  position: number
+  is_generated: true
+}
+
 export async function GET(req: NextRequest, { params }: { params: Promise<{ jobId: string }> }) {
   const { jobId } = await params
   const supabase = await createServer()
@@ -194,36 +204,32 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
       // Check if images already exist for this job (primary duplicate prevention)
       // For variant rows, check variant_row_images; for model rows, check generated_images
       if (job.variant_row_id) {
-        // Check for existing variant images for this job
-        const { data: existingVariantImages } = await admin
+        // Variant row duplicate check - now using job_id like model rows
+        const { data: existingImages } = await admin
           .from('variant_row_images')
-          .select('output_path, is_generated')
-          .eq('variant_row_id', job.variant_row_id)
-          .eq('is_generated', true) // Only check generated images
-        
-        if (existingVariantImages && existingVariantImages.length > 0) {
-          // Check if any of the new URLs match existing ones
-          const existingPaths = new Set(existingVariantImages.map(img => img.output_path))
-          const willBeDuplicate = urls.some(url => {
-            // We'll check after fetchAndSaveToOutputs, but for now just log
-            return false // Defer actual check until after we have the paths
-          })
-          
-          console.log('[Poll] Variant images already exist for variant row', { 
+          .select('id, output_path')
+          .eq('job_id', job.id)
+
+        const existingPaths = new Set((existingImages || []).map(img => img.output_path))
+        if (existingPaths.size > 0) {
+          console.log('[Poll] Images already exist for variant job', { 
             jobId: job.id, 
             variantRowId: job.variant_row_id,
-            existingCount: existingVariantImages.length,
-            existingPaths: Array.from(existingPaths)
+            existingCount: existingPaths.size 
           })
-          
-          // If we have existing generated images, mark job as succeeded
-          // (This handles the case where images were already saved in a previous poll)
+          // Skip to marking job as succeeded
           await admin.from('jobs').update({ 
             status: 'succeeded', 
             updated_at: new Date().toISOString() 
           }).eq('id', job.id)
           return NextResponse.json({ status: 'succeeded', step: 'done' })
         }
+        
+        console.log('[Poll] Processing variant row job', { 
+          jobId: job.id, 
+          variantRowId: job.variant_row_id,
+          urlsCount: urls.length
+        })
       } else {
         // Model row duplicate check
         const { data: existingImages } = await admin
@@ -269,20 +275,24 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
       }
       
       const inserts = []
-      const variantInserts = []
+      const variantInserts: VariantImageInsert[] = []
       let variantStartPosition = 0
       
       // If this is a variant row job, determine the starting position for new images
+      // Also get existing paths to check for duplicates
+      let existingVariantPaths = new Set<string>()
       if (job.variant_row_id) {
         const { data: existingVariantImages } = await admin
           .from('variant_row_images')
-          .select('position')
+          .select('position, output_path')
           .eq('variant_row_id', job.variant_row_id)
           .order('position', { ascending: false })
-          .limit(1)
-        variantStartPosition = existingVariantImages && existingVariantImages.length > 0
-          ? Number(existingVariantImages[0].position) + 1
-          : 0
+        
+        if (existingVariantImages && existingVariantImages.length > 0) {
+          variantStartPosition = Number(existingVariantImages[0].position) + 1
+          // Build set of existing paths for duplicate checking
+          existingVariantPaths = new Set(existingVariantImages.map(img => img.output_path))
+        }
       }
       
       for (let i = 0; i < urls.length; i++) {
@@ -290,13 +300,24 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         const uploaded = await fetchAndSaveToOutputs(u, job.user_id)
         
         if (job.variant_row_id) {
+          // Check if this specific path already exists (duplicate check)
+          if (existingVariantPaths.has(uploaded.objectPath)) {
+            console.log('[Poll] Skipping duplicate variant image', {
+              jobId: job.id,
+              variantRowId: job.variant_row_id,
+              outputPath: uploaded.objectPath
+            })
+            continue // Skip this image, but continue processing others
+          }
+          
           // Defensive check: ensure is_generated is always true for variant images
-          const variantInsert = {
+          const variantInsert: VariantImageInsert = {
             variant_row_id: job.variant_row_id,
+            job_id: job.id, // Track which job created this image
             output_path: uploaded.objectPath,
             thumbnail_path: uploaded.thumbnailPath || null,
             source_row_id: job.row_id || null,
-            position: variantStartPosition + i,
+            position: variantStartPosition + variantInserts.length, // Use current insert count for position
             is_generated: true as const // Explicitly set to true, never null/undefined
           }
           
@@ -311,12 +332,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
           }
           
           variantInserts.push(variantInsert)
+          // Add to existing paths set to prevent duplicates within this batch
+          existingVariantPaths.add(uploaded.objectPath)
           console.log('[Poll] Prepared variant image insert', {
             jobId: job.id,
             variantRowId: job.variant_row_id,
             outputPath: uploaded.objectPath,
             isGenerated: variantInsert.is_generated,
-            position: variantInsert.position
+            position: variantInsert.position,
+            jobIdInInsert: variantInsert.job_id
           })
         } else {
         inserts.push({
@@ -347,13 +371,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         
         // Save into variant_row_images
         try {
-          const insertResult = await admin.from('variant_row_images').insert(variantInserts).select('id, is_generated')
+          const insertResult = await admin.from('variant_row_images').insert(variantInserts).select('id, is_generated, job_id')
           console.log('[Poll] Saved variant images with is_generated=true', { 
             jobId: job.id, 
             variantRowId: job.variant_row_id,
             count: variantInserts.length,
             insertedIds: insertResult?.data?.map(img => img.id),
-            verifiedFlags: insertResult?.data?.map(img => img.is_generated)
+            verifiedFlags: insertResult?.data?.map(img => img.is_generated),
+            verifiedJobIds: insertResult?.data?.map(img => img.job_id)
           })
           
           // Verify inserted images have correct flag

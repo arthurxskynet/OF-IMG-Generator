@@ -7,8 +7,6 @@ const USE_LLM_FACESWAP = process.env.PROMPT_USE_LLM_FACESWAP !== 'false'
 const GROK_MODELS = ['grok-4-fast-reasoning', 'grok-4', 'grok-3-mini', 'grok-2-vision-1212']
 // Enable rich Seedream-style prompts - ALWAYS ENABLED for production quality
 const USE_RICH_PROMPTS = true
-// Enable rich Seedream variant prompts - enable ONLY when explicitly set to 'true'
-const USE_RICH_VARIANT_PROMPTS = process.env.PROMPT_VARIANTS_RICH === 'true'
 
 export type SwapMode = 'face' | 'face-hair'
 
@@ -45,13 +43,12 @@ function buildAdaptiveSamplingParams(options: AdaptiveSamplingOptions): Adaptive
   // Scenario-specific baselines
   switch (scenario) {
     case 'variant-generate':
-      baseTemperature = 0.5
-      // Concise by default; rich mode gets a larger budget to prevent truncation
-      baseMaxTokens = USE_RICH_VARIANT_PROMPTS ? 900 : 300
+      baseTemperature = 0.45 // Lower for more consistent outputs
+      baseMaxTokens = 400 // Optimized for variant generation
       break
     case 'variant-enhance':
-      baseTemperature = 0.5
-      baseMaxTokens = USE_RICH_VARIANT_PROMPTS ? 900 : 300
+      baseTemperature = 0.45 // Lower for more consistent refinement
+      baseMaxTokens = 400 // Optimized for variant enhancement
       break
     case 'face-swap':
       baseTemperature = 0.5
@@ -94,36 +91,70 @@ function buildAdaptiveSamplingParams(options: AdaptiveSamplingOptions): Adaptive
   let finalTemperature = baseTemperature + temperatureAdjustment
   finalTemperature = Math.max(0.35, Math.min(0.65, finalTemperature))
   
-  // Scale max tokens slightly based on image count for rich prompts
+  // Scale max tokens based on image count and mode
   let finalMaxTokens = baseMaxTokens
-  if (USE_RICH_VARIANT_PROMPTS && (scenario === 'variant-generate' || scenario === 'variant-enhance')) {
+  if (scenario === 'variant-generate' || scenario === 'variant-enhance') {
+    // Increase tokens for 3+ images (better quality with more context)
     if (imagesCount >= 5) {
-      finalMaxTokens = Math.min(1000, baseMaxTokens + 100)
+      finalMaxTokens = Math.min(500, baseMaxTokens + 50)
     } else if (imagesCount >= 3) {
-      finalMaxTokens = Math.min(1000, baseMaxTokens + 50)
+      finalMaxTokens = Math.min(450, baseMaxTokens + 50)
     }
+  }
+  
+  // Fine-tune penalty parameters for variant scenarios
+  let frequencyPenalty = 0.3
+  let presencePenalty = 0.2
+  
+  if (scenario === 'variant-generate' || scenario === 'variant-enhance') {
+    // Slightly lower penalties for variants to allow more creative transformations
+    frequencyPenalty = 0.25
+    presencePenalty = 0.15
   }
   
   return {
     temperature: finalTemperature,
     maxTokens: finalMaxTokens,
     topP,
-    frequencyPenalty: 0.3,
-    presencePenalty: 0.2
+    frequencyPenalty,
+    presencePenalty
   }
 }
 
 /**
  * Estimate instruction complexity from user input text
+ * Enhanced with structure and punctuation analysis
  */
 function estimateInstructionComplexity(instructions: string): 'low' | 'medium' | 'high' {
-  const wordCount = instructions.split(/\s+/).length
-  const hasMultipleRequests = /\band\b.*\band\b/i.test(instructions) || 
-                              instructions.split(/[,;]/).length > 2
+  const trimmed = instructions.trim()
+  if (!trimmed) return 'low'
   
+  const wordCount = trimmed.split(/\s+/).length
+  
+  // Early exit for very short instructions
   if (wordCount < 5) return 'low'
-  if (wordCount > 20 || hasMultipleRequests) return 'high'
-  return 'medium'
+  
+  // Detect multiple clauses using punctuation and conjunctions
+  const clauseCount = (trimmed.match(/[,;]/g) || []).length
+  const hasMultipleAnds = (trimmed.match(/\band\b/gi) || []).length >= 2
+  const hasMultipleRequests = hasMultipleAnds || clauseCount > 2
+  
+  // Detect structured instructions (lists, commands with multiple actions)
+  const hasListStructure = /^[^a-z]*[a-z][^.]*[.,]\s*[^a-z]*[a-z]/i.test(trimmed) // Multiple sentences
+  const hasQuestionMark = trimmed.includes('?')
+  const hasMultipleActions = (trimmed.match(/\b(make|change|add|remove|adjust|enhance|improve)\b/gi) || []).length > 1
+  
+  // Complex indicators: multiple clauses, structured format, or multiple action verbs
+  const complexityIndicators = hasMultipleRequests || hasListStructure || hasMultipleActions
+  
+  // High complexity: long instructions OR multiple complexity indicators
+  if (wordCount > 20 || complexityIndicators) return 'high'
+  
+  // Medium complexity: moderate length with some structure
+  if (wordCount > 10 || clauseCount > 0 || hasQuestionMark) return 'medium'
+  
+  // Low complexity: short, simple instructions
+  return 'low'
 }
 
 // Deterministic, single-sentence face-swap prompt builder (legacy fallback only)
@@ -441,7 +472,7 @@ OUTPUT: Refined editing instruction only (20-60 words). No markdown or explanati
 
 
 /**
- * Validate rich Seedream-style prompts
+ * Validate Seedream prompts - simplified to only essential checks
  */
 function validateSeedreamPrompt(
   generatedPrompt: string, 
@@ -449,230 +480,72 @@ function validateSeedreamPrompt(
   hasRefs: boolean,
   model: string
 ): void {
-  // Check for forbidden meta-commentary and markdown
-  // Use word boundaries to avoid false positives (e.g., "here" in "where" or "there")
-  const forbiddenMetaPatterns = [
-    /\bhere's\b/i,
-    /\bhere is\b/i,
-    /\bi've\b/i,
-    /\bnote:\s/i,
-    /\bbelow is\b/i,
-    /\blet me know\b/i,
-    /\bif you need\b/i,
-    /\bhere's the\b/i,
-    /\bhere is the\b/i,
-    /\bi've generated\b/i,
-    /\bgenerated via\b/i
-  ]
-  const forbiddenMarkdown = ['**', '###', '##', '![', '](', '```']
+  // Basic sanity check - must not be empty
+  if (!generatedPrompt || generatedPrompt.trim().length < 5) {
+    console.log(`${model} rejected: empty or too short`)
+    throw new Error('Generated prompt is too brief, retrying with different model')
+  }
   
-  const hasMetaWords = forbiddenMetaPatterns.some(pattern => pattern.test(generatedPrompt))
-  const hasMarkdown = forbiddenMarkdown.some(token => generatedPrompt.includes(token))
+  // Check for forbidden meta-commentary and markdown (formatting issues)
+  const metaPattern = /\b(here's|here is|i've|note:|below is|let me know|if you need|generated via)\b/i
+  const markdownPattern = /(\*\*|###|##|!\[|\]\(|```)/
   
-  if (hasMetaWords || hasMarkdown) {
-    const foundPattern = forbiddenMetaPatterns.find(pattern => pattern.test(generatedPrompt))
-    console.log(`${model} rejected: contains meta-commentary or markdown`, {
-      foundPattern: foundPattern?.toString(),
-      hasMarkdown
-    })
+  if (metaPattern.test(generatedPrompt) || markdownPattern.test(generatedPrompt)) {
+    console.log(`${model} rejected: contains meta-commentary or markdown`)
     throw new Error('Generated prompt must not contain meta-commentary or markdown formatting, retrying with different model')
   }
   
-  // Check length - Seedream v4 editing prompts should be concise (10-100 words)
-  const wordCount = generatedPrompt.split(/\s+/).length
-  if (wordCount < 10) {
-    console.log(`${model} rejected: too short (${wordCount} words, need at least 10)`)
-    throw new Error('Generated prompt is too brief, retrying with different model')
-  }
-  // Seedream v4 editing API prefers concise instructions (max ~100 words for complex cases)
-  if (wordCount > 150) {
-    console.log(`${model} rejected: too long (${wordCount} words, max 150 for editing instructions)`)
-    throw new Error('Generated prompt is too verbose, Seedream v4 prefers concise editing instructions, retrying with different model')
-  }
-  
-  // For Seedream v4: Validate it's an editing instruction, not scene description
-  if (hasRefs) {
-    // Should contain action words for face/hair swapping
-    const hasSwapAction = /\breplace\b/i.test(generatedPrompt) || 
-                          /\bswap\b/i.test(generatedPrompt) ||
-                          /\btransfer\b/i.test(generatedPrompt) ||
-                          /\bface\b/i.test(generatedPrompt)
-    if (!hasSwapAction) {
-      console.log(`${model} rejected: face-swap prompt missing action words (replace/swap/transfer/face)`)
-      throw new Error('Face-swap prompt must include editing action words, retrying with different model')
-    }
-    
-    // Should mention keeping/preserving original elements
-    const hasPreservation = /\bkeep\b/i.test(generatedPrompt) ||
-                            /\bpreserv/i.test(generatedPrompt) ||
-                            /\bmaintain/i.test(generatedPrompt) ||
-                            /\bunchanged\b/i.test(generatedPrompt)
-    if (!hasPreservation) {
-      console.log(`${model} rejected: face-swap prompt should mention preserving/keeping original elements`)
-      throw new Error('Face-swap prompt should clarify what to preserve, retrying with different model')
-    }
-  }
-  
-  // For enhancement prompts: Should contain enhancement/quality action words
-  const isEnhancement = !hasRefs
-  if (isEnhancement) {
-    const hasEnhancementAction = /\benhance\b/i.test(generatedPrompt) ||
-                                 /\bimprove\b/i.test(generatedPrompt) ||
-                                 /\brefine\b/i.test(generatedPrompt) ||
-                                 /\boptimize\b/i.test(generatedPrompt) ||
-                                 /\bquality\b/i.test(generatedPrompt)
-    if (!hasEnhancementAction) {
-      console.log(`${model} rejected: enhancement prompt missing action words (enhance/improve/refine)`)
-      throw new Error('Enhancement prompt must include improvement action words, retrying with different model')
-    }
-  }
-  
-  // No longer checking for structured sections - concise editing instructions don't need them
-  
-  // Mode-specific validation for face-swap
-  if (hasRefs) {
-    const isFaceOnly = swapMode === 'face'
-    
-    // Check for forbidden facial/ethnic descriptions
-    const forbiddenDescriptors = [
-      'eye color', 'eyes are', 'blue eyes', 'brown eyes', 'green eyes',
-      'nose shape', 'mouth shape', 'facial features',
-      'skin tone', 'skin color', 'pale skin', 'dark skin', 'fair skin',
-      'ethnicity', 'ethnic', 'caucasian', 'asian', 'african', 'hispanic'
-    ]
-    
-    const hasForbiddenDescriptor = forbiddenDescriptors.some(desc =>
-      generatedPrompt.toLowerCase().includes(desc.toLowerCase())
-    )
-    
-    if (hasForbiddenDescriptor) {
-      const found = forbiddenDescriptors.filter(desc =>
-        generatedPrompt.toLowerCase().includes(desc.toLowerCase())
-      )
-      console.log(`${model} rejected: contains forbidden facial/ethnic descriptors:`, found)
-      throw new Error(`Generated prompt must not describe facial features, skin tone, or ethnicity, retrying with different model`)
-    }
-    
-    // Face-only mode: for concise prompts, just ensure "hair" is mentioned in preservation context
-    if (isFaceOnly) {
-      const mentionsHair = /\bhair\b/i.test(generatedPrompt)
-      const mentionsKeeping = /\bkeep/i.test(generatedPrompt) || /\boriginal\b/i.test(generatedPrompt) || /\bunchanged\b/i.test(generatedPrompt)
-      
-      if (mentionsHair && !mentionsKeeping) {
-        console.log(`${model} rejected: face-only mode mentions hair but not preservation`)
-        throw new Error('Face-only swap should preserve original hair, retrying with different model')
-      }
-    }
-  }
-  
-  // Safety check
-  const unsafeWords = ['nude', 'naked', 'topless', 'explicit', 'sexual', 'nsfw']
-  const hasUnsafeContent = unsafeWords.some(word => 
-    generatedPrompt.toLowerCase().includes(word)
-  )
-  
-  if (hasUnsafeContent) {
+  // Safety check - forbidden content
+  const unsafePattern = /\b(nude|naked|topless|explicit|sexual|nsfw)\b/i
+  if (unsafePattern.test(generatedPrompt.toLowerCase())) {
     console.log(`${model} rejected due to unsafe content`)
     throw new Error('Generated prompt contains unsafe content, retrying with different model')
+  }
+  
+  // Safety check - forbidden facial/ethnic descriptors
+  const forbiddenPattern = /\b(eye color|eyes are|blue eyes|brown eyes|green eyes|nose shape|mouth shape|facial features|skin tone|skin color|pale skin|dark skin|fair skin|ethnicity|ethnic|caucasian|asian|african|hispanic)\b/i
+  if (forbiddenPattern.test(generatedPrompt.toLowerCase())) {
+    console.log(`${model} rejected: contains forbidden facial/ethnic descriptors`)
+    throw new Error('Generated prompt must not describe facial features, skin tone, or ethnicity, retrying with different model')
   }
 }
 
 /**
- * Validate legacy concise prompts (original validation logic)
+ * Validate legacy concise prompts - simplified to only essential checks
+ * Note: This function is kept for backwards compatibility but may not be actively used
  */
 function validateLegacyPrompt(
   generatedPrompt: string,
   swapMode: SwapMode,
   model: string
 ): void {
-  const isFaceOnly = swapMode === 'face'
-  
-  // Check for camera jargon that should be avoided
-  const cameraJargon = ['lens', 'mm', 'f/', 'ISO', 'bokeh', 'aperture', 'shutter', 'exposure', 'DOF', 'HDR', 'anamorphic']
-  const hasJargon = cameraJargon.some(jargon => 
-    generatedPrompt.toLowerCase().includes(jargon.toLowerCase())
-  )
-  
-  if (hasJargon) {
-    const foundJargon = cameraJargon.filter(jargon => 
-      generatedPrompt.toLowerCase().includes(jargon.toLowerCase())
-    )
-    console.log(`${model} rejected due to jargon:`, foundJargon)
-    throw new Error(`Generated prompt contains camera jargon: ${foundJargon.join(', ')}, retrying with different model`)
+  // Basic sanity check - must not be empty
+  if (!generatedPrompt || generatedPrompt.trim().length < 5) {
+    console.log(`${model} rejected: empty or too short`)
+    throw new Error('Generated prompt is too brief, retrying with different model')
   }
-
-  // Strict enforcement: reject any response that's not a single sentence
-  const forbiddenWords = ['based on', 'i\'ve performed', 'the result', 'here\'s', 'note:', 'if you need', 'let me know', 'generated via', 'simulation', 'placeholder']
-  const forbiddenStructured = ['**', '###', '\n\n', '\r\n', '•', '- ', '1.', '2.', '![', '](', 'Image Descriptions', 'Key Visual Features', 'Below is', 'Here is', '*(', '*)', 'Note:', 'Here\'s']
-  const hasStructured = forbiddenStructured.some(token => generatedPrompt.includes(token))
-  const hasForbiddenWords = forbiddenWords.some(word => generatedPrompt.toLowerCase().includes(word.toLowerCase()))
-  const sentenceTerminators = (generatedPrompt.match(/[.!?]/g) || []).length
-  const lineBreaks = (generatedPrompt.match(/\n/g) || []).length
-  const wordCount = generatedPrompt.split(/\s+/).length
   
-  // Must be exactly one sentence, no explanations, no markdown, under 50 words
-  if (hasStructured || hasForbiddenWords || sentenceTerminators > 1 || lineBreaks > 0 || wordCount > 50) {
-    console.log(`${model} rejected: not a single simple sentence (words: ${wordCount}, sentences: ${sentenceTerminators}, lines: ${lineBreaks})`)
-    throw new Error('Generated prompt must be exactly one sentence under 50 words with no explanations or markdown, retrying with different model')
-  }
-
-  // Validate required format: "first image of" and "second image of"
-  const hasFirstImageOf = /\bfirst image of\b/i.test(generatedPrompt)
-  const hasSecondImageOf = /\bsecond image of\b/i.test(generatedPrompt)
-  if (!hasFirstImageOf || !hasSecondImageOf) {
-    console.log(`${model} rejected: missing "first image of" or "second image of" format`)
-    throw new Error("Generated prompt must use 'first image of' and 'second image of' format, retrying with different model")
-  }
-
-  // Validate descriptors are present (visual descriptions after "of")
-  const firstImageMatch = generatedPrompt.match(/first image of ([^;]+)/i)
-  const secondImageMatch = generatedPrompt.match(/second image of ([^;]+)/i)
+  // Check for forbidden meta-commentary and markdown (formatting issues)
+  const metaPattern = /\b(here's|here is|i've|note:|below is|let me know|if you need|generated via)\b/i
+  const markdownPattern = /(\*\*|###|##|!\[|\]\(|```)/
   
-  if (firstImageMatch && secondImageMatch) {
-    const firstDescriptor = firstImageMatch[1].trim().split(/\s+/).slice(0, 5).join(' ')
-    const secondDescriptor = secondImageMatch[1].trim().split(/\s+/).slice(0, 5).join(' ')
-    
-    const firstWordCount = firstDescriptor.split(/\s+/).length
-    const secondWordCount = secondDescriptor.split(/\s+/).length
-    
-    // Descriptors should be 2-5 words (flexible: 1-6 to account for variations)
-    if (firstWordCount < 1 || firstWordCount > 6 || secondWordCount < 1 || secondWordCount > 6) {
-      console.log(`${model} rejected: descriptors out of valid range (first: ${firstWordCount}, second: ${secondWordCount} words)`)
-      throw new Error('Generated prompt descriptors should be 1-6 words each, retrying with different model')
-    }
-  } else {
-    console.log(`${model} rejected: missing descriptor extraction`)
-    throw new Error('Generated prompt must include descriptors after "first image of" and "second image of", retrying with different model')
+  if (metaPattern.test(generatedPrompt) || markdownPattern.test(generatedPrompt)) {
+    console.log(`${model} rejected: contains meta-commentary or markdown`)
+    throw new Error('Generated prompt must not contain meta-commentary or markdown formatting, retrying with different model')
   }
-
-  // Mode-specific validation
-  if (isFaceOnly) {
-    if (!/\bonly the face\b/i.test(generatedPrompt)) {
-      console.log(`${model} rejected: face-only missing "only the face"`)
-      throw new Error('Face-only prompt must include "only the face", retrying')
-    }
-    if (!/\bkeep.*hair.*unchanged\b/i.test(generatedPrompt) && !/\bhair.*unchanged\b/i.test(generatedPrompt)) {
-      console.log(`${model} rejected: face-only missing hair unchanged phrase`)
-      throw new Error('Face-only prompt must keep hair unchanged, retrying')
-    }
-    if (/\bface and hair\b/i.test(generatedPrompt)) {
-      console.log(`${model} rejected: face-only mentions "face and hair"`)
-      throw new Error('Face-only prompt should not mention "face and hair", retrying')
-    }
-  } else {
-    if (!/\bface and hair\b/i.test(generatedPrompt)) {
-      console.log(`${model} rejected: face-hair missing "face and hair"`)
-      throw new Error('Face+hair prompt must include "face and hair", retrying')
-    }
-  }
-
-  // Additional safety check for inappropriate content
-  const unsafeWords = ['nude', 'naked', 'topless', 'explicit', 'sexual']
-  const hasUnsafeContent = unsafeWords.some(word => generatedPrompt.toLowerCase().includes(word))
   
-  if (hasUnsafeContent) {
+  // Safety check - forbidden content
+  const unsafePattern = /\b(nude|naked|topless|explicit|sexual|nsfw)\b/i
+  if (unsafePattern.test(generatedPrompt.toLowerCase())) {
     console.log(`${model} rejected due to unsafe content`)
-    throw new Error(`Generated prompt contains unsafe content, retrying with different model`)
+    throw new Error('Generated prompt contains unsafe content, retrying with different model')
+  }
+  
+  // Safety check - forbidden facial/ethnic descriptors
+  const forbiddenPattern = /\b(eye color|eyes are|blue eyes|brown eyes|green eyes|nose shape|mouth shape|facial features|skin tone|skin color|pale skin|dark skin|fair skin|ethnicity|ethnic|caucasian|asian|african|hispanic)\b/i
+  if (forbiddenPattern.test(generatedPrompt.toLowerCase())) {
+    console.log(`${model} rejected: contains forbidden facial/ethnic descriptors`)
+    throw new Error('Generated prompt must not describe facial features, skin tone, or ethnicity, retrying with different model')
   }
 }
 
@@ -853,7 +726,7 @@ async function enhancePromptWithModel(
   }
 
   console.log(`${model} sending enhancement request to Grok:`, {
-    promptStyle: 'seedream-v4-concise',
+    promptStyle: 'seedream-4.0',
     operationType: hasRefs ? 'face-swap-enhancement' : 'target-only-enhancement',
     maxTokens: requestBody.max_tokens,
     temperature: requestBody.temperature,
@@ -1214,497 +1087,171 @@ function generateFallbackPrompt(refUrls: string[], swapMode: SwapMode = 'face-ha
 
 /**
  * Build system prompt for variant prompt generation
- * Analyzes multiple images to extract shared style/composition cues
+ * Simple, focused prompt similar to face-swap logic
  */
 function buildVariantSystemPrompt(imagesCount: number): string {
-  return `You are an expert at analyzing reference images and writing concise Seedream-ready reference variation instructions.
+  return `Create a simple Seedream v4 variant prompt.
 
-OUTPUT MUST BEGIN WITH:
-"Use the provided reference image${imagesCount > 1 ? 's' : ''} as the base content. Preserve the subject, identity, environment and primary composition while generating a consistent variant."
+FORMAT: "Take [relative reference] and [action], keeping everything else the exact same."
 
-Then write ONE additional sentence (20–50 words) that:
-- Captures shared style/lighting/composition/mood seen in the reference${imagesCount > 1 ? 's' : ''}
-- States what to maintain, and what can subtly vary (pose/expression/angle/background blur only)
-- Uses generation verbs (create/generate/produce) and preservation verbs (maintain/preserve/keep)
+RELATIVE REFERENCE (identify subject with 1 key element):
+- Clothing: "the woman with a white tank top"
+- Setting: "the person in the pink room"
+- Pose: "the woman looking at camera"
+- Choose ONE most distinctive element only
 
-CONSTRAINTS:
-- Total length target: 30–80 words (directive + one sentence)
-- No markdown or meta text
-- Do NOT describe facial features, skin tone, or ethnicity
-- Focus on style, lighting quality, color palette, composition, atmosphere
+ACTION (what to change):
+- "return her looking to the left"
+- "make her smile"
+- "change her pose to face sideways"
+- Or allow subtle variations if no specific change needed
 
-OUTPUT: Exactly two sentences: the directive above + one concise instruction sentence.`
+RULES:
+- 15-30 words total
+- Use relative reference (the woman, the person)
+- End with "keeping everything else the exact same"
+- NEVER describe facial features, skin tone, or ethnicity
+
+EXAMPLES:
+✅ "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same."
+✅ "Take the person in the pink room and make them smile, keeping everything else the exact same."
+
+OUTPUT: One sentence only. No markdown.`
 }
 
 /**
  * Build user message for variant prompt generation
+ * Simple, focused like face-swap user prompt
  */
 function buildVariantUserText(imagesCount: number): string {
-  return `ANALYZE THESE ${imagesCount} IMAGE${imagesCount > 1 ? 'S' : ''} and produce a concise Seedream reference variation instruction.
+  return `Look at the image${imagesCount > 1 ? 's' : ''} and create a simple variant prompt.
 
-FORMAT (exactly two sentences):
-1) Directive (must match exactly): "Use the provided reference image${imagesCount > 1 ? 's' : ''} as the base content. Preserve the subject, identity, environment and primary composition while generating a consistent variant."
-2) One follow-up sentence (20–50 words) that: 
-   - Describes shared style/lighting/composition/mood
-   - Says what to maintain and what can subtly vary (pose/expression/angle/background blur)
-   - Uses create/generate/produce and maintain/preserve/keep language
+FORMAT: "Take [relative reference] and [action], keeping everything else the exact same."
+
+STEPS:
+1. Identify ONE key element: clothing item, setting, or pose
+2. Create relative reference: "the woman with [clothing]" OR "the person in [setting]" OR "the woman [pose]"
+3. Add action: what to change (or allow subtle variations)
+4. End with: "keeping everything else the exact same"
+
+EXAMPLES:
+✅ "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same."
+✅ "Take the person in the pink room and make them smile, keeping everything else the exact same."
 
 RULES:
-- Total 30–80 words. No markdown. No meta text.
-- Never describe facial features, skin tone, or ethnicity.
-- Be specific to what is visible in the reference${imagesCount > 1 ? 's' : ''}.
+- 15-30 words
+- One sentence only
+- Use relative reference (the woman, the person)
+- End with "keeping everything else the exact same"
+- NEVER describe facial features, skin tone, or ethnicity
 
-OUTPUT: The two-sentence instruction only.`
+OUTPUT: One sentence only.`
 }
 
 /**
  * Build system prompt for variant prompt enhancement
+ * Simple, focused like face-swap enhancement
  */
 function buildVariantEnhanceSystemPrompt(): string {
-  return `You are an expert at refining generative variant prompts.
+  return `Add the user's requested change to the existing prompt.
 
-YOUR TASK: Refine an existing variant generation prompt based on user instructions while keeping it concise (25-60 words).
+FORMAT: "Take [relative reference] and [original action] [new action], keeping everything else the exact same."
 
-VARIANT PROMPT CONTEXT:
-- These prompts are for generating IMAGE VARIANTS with consistent style
-- Focus on STYLE and ATMOSPHERE (lighting, mood, composition)
-- Preserve identity-neutral approach
+HOW TO ADD:
+- Keep the existing relative reference unchanged
+- Keep the existing action
+- Add the new action from user's request
+- Always end with "keeping everything else the exact same"
 
-ENHANCEMENT PRINCIPLES:
-1. **Apply user's requested changes** faithfully (lighting, style, mood, atmosphere, quality)
-2. **Use visual context**: Analyze images to ensure changes are relevant
-3. **Keep instruction concise**: 25-60 words, action-focused
-4. **Maintain variant format**: "Create/Generate [type] with [style], maintaining [qualities], while [variations]"
+EXAMPLES:
+- Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
+  User: "make lighting more dramatic"
+  Result: "Take the woman with a white tank top and return her looking to the left with more dramatic lighting, keeping everything else the exact same"
 
-USER INSTRUCTIONS EXAMPLES & HOW TO APPLY:
-- "Make lighting more dramatic" → Adjust lighting description to "dramatic high-contrast lighting"
-- "Add sunset atmosphere" → Include "warm golden sunset lighting" or "golden hour atmosphere"
-- "More professional look" → Add "professional studio quality" or "polished editorial quality"
-- "Increase vibrancy" → Add "vibrant saturated colors" or "bold color palette"
+- Original: "Take the person in the pink room and make them smile, keeping everything else the exact same"
+  User: "change pose to look right"
+  Result: "Take the person in the pink room and make them smile looking to the right, keeping everything else the exact same"
 
-CRITICAL SAFETY RULES:
+RULES:
+- Keep existing relative reference
+- Add new action to existing actions
+- 15-35 words total
+- End with "keeping everything else the exact same"
 - NEVER describe facial features, skin tone, or ethnicity
-- Keep concise (25-60 words total)
-- Focus on STYLE/ATMOSPHERE, not identity
-- Output ONLY the refined prompt
 
-OUTPUT: Refined variant generation instruction. No markdown, no explanations.`
+OUTPUT: One sentence only.`
 }
 
 /**
  * Build user message for variant prompt enhancement
+ * Simple, focused like face-swap enhancement
  */
 function buildVariantEnhanceUserText(existingPrompt: string, userInstructions: string): string {
   return `EXISTING PROMPT:
 "${existingPrompt}"
 
-USER'S REQUESTED CHANGES:
+USER'S REQUEST:
 "${userInstructions}"
 
-YOUR TASK:
-Refine the existing variant prompt by applying the user's requested changes. Keep the output concise (25-60 words) and style-focused.
+TASK: Add the user's request to the existing prompt.
 
-INSTRUCTIONS:
-1. **Analyze the images** to understand current style/atmosphere
-2. **Apply user's changes** appropriately based on visual context
-3. **Keep concise**: 25-60 words total
-4. **Maintain format**: "Create/Generate [type] with [style], maintaining [qualities], while [variations]"
-5. **Safety first**: NEVER describe facial features, skin tone, or ethnicity
+HOW:
+1. Keep the existing relative reference (the woman with..., the person in...)
+2. Keep the existing action(s)
+3. Add the new action from user's request
+4. Keep "keeping everything else the exact same" at the end
 
-EXAMPLES OF GOOD REFINEMENTS:
-- Original: "Generate portraits with natural lighting"
-  User wants: "more dramatic lighting"
-  Refined: "Generate portrait variants with dramatic high-contrast lighting and deep shadows, maintaining the professional quality and composition, while allowing subtle pose variations."
+EXAMPLES:
+- Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
+  User: "make lighting more dramatic"
+  Result: "Take the woman with a white tank top and return her looking to the left with more dramatic lighting, keeping everything else the exact same"
 
-- Original: "Create lifestyle images with bright colors"
-  User wants: "add sunset mood"
-  Refined: "Create lifestyle variants with warm golden sunset lighting and rich amber tones, maintaining the energetic outdoor atmosphere, while allowing natural pose and setting variations."
+- Original: "Take the person in the pink room and make them smile, keeping everything else the exact same"
+  User: "change pose to look right"
+  Result: "Take the person in the pink room and make them smile looking to the right, keeping everything else the exact same"
 
-OUTPUT: Refined variant instruction only (25-60 words). No markdown or explanations.`
-}
-
-// ============================================================================
-// SEEDREAM V4 VARIANT PROMPT GENERATION - Rich multi-section outputs
-// ============================================================================
-
-/**
- * Build Seedream v4 rich system prompt for variant prompt generation
- * Analyzes multiple images to extract comprehensive style/composition details
- */
-function buildSeedreamVariantSystemPrompt(imagesCount: number): string {
-  return `You are an expert at analyzing images and creating comprehensive Seedream v4 variant generation prompts.
-
-SEEDREAM V4 VARIANT CONTEXT:
-- You will receive ${imagesCount} image${imagesCount > 1 ? 's' : ''} showing similar style/composition
-- Your task: create a DETAILED multi-section prompt that captures all shared visual characteristics
-- This prompt will be used with Seedream v4 to generate NEW images with consistent style/mood/atmosphere
- - Output should be comprehensive (150-400 words) covering all relevant aspects (HARD LIMIT: do not exceed 450 words)
-
-SEEDREAM V4 PRINCIPLES (from official guide):
-1. **Natural Language**: Combine subject + action + environment with concise style/color/lighting/composition words
-2. **Be Specific**: Use concrete, detailed language over abstract descriptions
-3. **Reference Images**: You're analyzing references to extract shared characteristics for variant generation
-4. **Context Definition**: Specify style + context + purpose for accurate output
-
-REQUIRED OUTPUT STRUCTURE:
-Begin the prompt with a single directive line referencing the input images:
-\"Use the provided reference image${imagesCount > 1 ? 's' : ''} as the base content. Preserve the subject, identity, environment and primary composition while generating a consistent variant.\"
-Then continue with the detailed sections below.
-Generate variant images based on the following shared characteristics across the reference images:
-
-**Subject & Style**: [Detailed description of the subject type, style patterns, quality level, and consistent visual approach across images]
-
-**Composition & Framing**: [Camera angles, perspective, depth of field, focal points, composition rules (rule of thirds, centered, etc.), distance from subject, framing patterns]
-
-**Lighting Setup**: [Light source types and positions, direction, quality (soft/hard/diffused), shadows, time of day if applicable, color temperature, lighting mood, highlights and contrast patterns]
-
-**Color Palette & Atmosphere**: [Dominant colors throughout, color harmony, saturation levels, color temperature (warm/cool), mood/ambiance, emotional tone, weather effects if applicable]
-
-**Environment & Setting**: [Location type (indoor/outdoor/studio), setting details, architectural elements if present, background characteristics, spatial relationships, environmental props]
-
-**Technical Quality**: [Image sharpness, resolution feel, professional photography terms, clarity level, detail rendering]
-
-**Variation Guidelines**: [What should remain consistent vs. what can vary - typically preserve style/lighting/mood while allowing subtle pose/expression/angle variations]
-
-CRITICAL SAFETY RULES:
+RULES:
+- Keep existing relative reference unchanged
+- Add new action to existing actions
+- 15-35 words total
+- End with "keeping everything else the exact same"
 - NEVER describe facial features, skin tone, or ethnicity
-- Focus on STYLE, ATMOSPHERE, and TECHNICAL QUALITIES
-- Use concrete, specific language
-- Cover ALL relevant visual sections
-- Output direct prompt content only
 
-EXAMPLE OUTPUT:
-"Generate portrait variants featuring professional editorial style with consistent high-quality production values and sophisticated aesthetic.
-
-Subject & Style: Professional portrait photography with editorial fashion quality, polished and refined visual approach, contemporary style with timeless elegance.
-
-Composition & Framing: Eye-level to slightly elevated camera angles, medium-close framing showing head and shoulders, centered composition with balanced negative space, shallow depth of field creating subject isolation, professional portrait distance maintaining intimacy.
-
-Lighting Setup: Soft diffused key lighting from 45-degree angle creating gentle shadows, subtle rim lighting for depth, even illumination with professional studio quality, minimal harsh shadows, color temperature around 5000K for natural warmth, flattering and dimensional lighting mood.
-
-Color Palette & Atmosphere: Muted earth tones with warm undertones, desaturated palette maintaining sophistication, subtle color grading with film-like quality, calm and professional atmosphere, refined and approachable mood.
-
-Environment & Setting: Neutral solid backgrounds in soft grays or warm beiges, minimal distraction studio setting, clean professional backdrop, controlled indoor environment with studio setup.
-
-Technical Quality: Sharp focus on subject, high resolution with fine detail rendering, professional color grading, clean image quality with low noise, polished post-production feel.
-
-Variation Guidelines: Maintain lighting setup, color palette, framing style, and background consistency across all variants. Allow subtle variations in head angle, expression, and exact pose while preserving the professional editorial aesthetic."
-
-OUTPUT: Comprehensive Seedream v4 variant generation prompt. No meta-commentary or markdown formatting.`
+OUTPUT: One sentence only.`
 }
 
-/**
- * Build Seedream v4 rich user message for variant prompt generation
- */
-function buildSeedreamVariantUserText(imagesCount: number): string {
-  return `ANALYZE THESE ${imagesCount} IMAGE${imagesCount > 1 ? 'S' : ''} IN DETAIL and create a comprehensive Seedream v4 variant generation prompt (150-400 words).
-
-YOUR ANALYSIS TASK:
-1. **Study each image carefully** - identify ALL shared visual characteristics
-2. **Extract consistent patterns** across:
-   - Subject type and style approach
-   - Composition and framing techniques  
-   - Lighting setup and quality
-   - Color palette and atmosphere
-   - Environment and setting details
-   - Technical quality indicators
-3. **Create comprehensive prompt** covering all sections with specific, concrete details
-
-REQUIRED SECTIONS TO COVER:
-✅ Subject & Style: What type of images, quality level, style approach
-✅ Composition & Framing: Camera work, angles, depth of field, framing patterns
-✅ Lighting Setup: Source, direction, quality, mood, color temperature
-✅ Color Palette & Atmosphere: Dominant colors, mood, emotional tone
-✅ Environment & Setting: Location type, background, spatial elements
-✅ Technical Quality: Sharpness, resolution feel, professional markers
-✅ Variation Guidelines: What to preserve vs. what can vary
-
-SEEDREAM V4 BEST PRACTICES:
-- Use natural language combining subject + action + environment
-- Be specific and concrete, not abstract
-- Describe only what you actually see in the images
-- Use professional photography terminology
-- Focus on STYLE and ATMOSPHERE, never identity
-
-CRITICAL RULES:
-- The prompt MUST begin with: "Use the provided reference image${imagesCount > 1 ? 's' : ''} as the base content. Preserve the subject, identity, environment and primary composition while generating a consistent variant."
-- Output 150-400 words covering all sections
-- HARD LIMIT: Do not exceed 450 words under any circumstance
-- NEVER describe facial features, skin tone, or ethnicity
-- Be specific to these actual reference images
-- Use concrete, detailed language
-- No markdown formatting or meta-commentary
-
-OUTPUT: Complete Seedream v4 variant generation prompt with all sections. Direct content only.`
-}
 
 /**
- * Build Seedream v4 rich system prompt for variant prompt enhancement
- */
-function buildSeedreamVariantEnhanceSystemPrompt(): string {
-  return `You are an expert at refining comprehensive Seedream v4 variant generation prompts.
-
-YOUR TASK: Enhance an existing Seedream v4 variant prompt by applying user instructions while maintaining comprehensive detail (150-400 words).
-
-SEEDREAM V4 VARIANT CONTEXT:
-- These prompts generate IMAGE VARIANTS with consistent style/atmosphere
-- Prompts follow Seedream v4 principles: natural language, specific details, proper context
-- Multi-section structure covering all visual aspects
-- Focus on STYLE and ATMOSPHERE, identity-neutral
-
-ENHANCEMENT APPROACH:
-1. **Understand user's intent** - what aspect they want to change/improve
-2. **Apply changes precisely** - modify relevant sections while preserving others
-3. **Maintain comprehensiveness** - keep 150-400 word detailed structure
-4. **Preserve Seedream v4 structure** - keep all relevant sections
-5. **Use visual context** - analyze images to ensure changes align with actual content
-6. **Keep the opening directive** - Ensure the first line explicitly references using the reference image(s) as base content and preserving subject and composition.
-
-COMMON ENHANCEMENT TYPES & HOW TO APPLY:
-- "More dramatic lighting" → Update Lighting Setup section: change to "dramatic high-contrast lighting with deep shadows, strong directional key light, bold lighting ratio"
-- "Add golden hour feel" → Update Lighting Setup + Color Palette: add "warm golden hour lighting, late afternoon sun angle" and "warm amber/golden tones"
-- "Increase professional quality" → Update Subject & Style + Technical Quality: enhance to "premium editorial quality, polished commercial production values" and "pristine high-resolution rendering"
-- "Make more cinematic" → Update multiple sections: "cinematic framing with widescreen composition" + "atmospheric lighting with mood" + "film-like color grading"
-- "Change to studio setting" → Update Environment & Setting: replace with "controlled studio environment, professional backdrop, indoor lighting setup"
-
-SECTION PRESERVATION:
-- Keep sections user didn't request changes to
-- Maintain overall structure and comprehensiveness
-- Preserve safety constraints
-
-CRITICAL SAFETY RULES:
-- NEVER describe facial features, skin tone, or ethnicity
-- Maintain 150-400 word comprehensive coverage
-- Focus on STYLE/ATMOSPHERE/TECHNICAL aspects
-- Output direct refined prompt only
-
-OUTPUT: Enhanced Seedream v4 variant generation prompt. No markdown or meta-commentary.`
-}
-
-/**
- * Build Seedream v4 rich user message for variant prompt enhancement  
- */
-function buildSeedreamVariantEnhanceUserText(existingPrompt: string, userInstructions: string): string {
-  return `EXISTING SEEDREAM V4 VARIANT PROMPT:
-"${existingPrompt}"
-
-USER'S REQUESTED CHANGES:
-"${userInstructions}"
-
-YOUR ENHANCEMENT TASK:
-Apply the user's requested changes to the existing prompt while maintaining Seedream v4 comprehensive structure (150-400 words).
-
-INSTRUCTIONS:
-1. **Analyze the images** to understand current visual characteristics
-2. **Identify which sections need modification** based on user's instructions
-3. **Apply changes precisely** to relevant sections (Lighting, Color Palette, Style, Composition, etc.)
-4. **Preserve unchanged sections** that user didn't request modifications to
-5. **Maintain comprehensiveness** with all relevant detail sections
-6. **Keep Seedream v4 principles**: natural language, specific details, concrete descriptions
-7. **Preserve the opening directive** referencing the reference image(s) as base content and preserving subject/environment/composition.
-
-ENHANCEMENT EXAMPLES:
-
-Example 1: "make lighting more dramatic"
-→ Update Lighting Setup section to: "Dramatic high-contrast lighting with strong directional key light from side, creating bold shadows and striking lighting ratio, hard light quality with defined shadow edges, chiaroscuro effect for maximum impact..."
-
-Example 2: "add sunset atmosphere"  
-→ Update Lighting Setup: "Warm golden hour lighting from low sun angle, late afternoon natural light with soft quality..."
-→ Update Color Palette: "Warm color palette dominated by golden amber tones, orange and pink hues, sunset color grading..."
-
-Example 3: "more professional studio look"
-→ Update Subject & Style: "Premium commercial editorial quality, polished professional production..."
-→ Update Environment & Setting: "Controlled professional studio environment with neutral backdrop..."
-→ Update Technical Quality: "Pristine high-resolution professional photography, commercial-grade post-production..."
-
-CRITICAL RULES:
-- Analyze images to ensure changes fit actual visual content
-- Output 150-400 words maintaining comprehensive structure
-- NEVER describe facial features, skin tone, or ethnicity  
-- Focus on STYLE and ATMOSPHERE modifications
-- No markdown formatting or meta-commentary
-
-OUTPUT: Enhanced Seedream v4 variant prompt with user's changes applied. Direct content only.`
-}
-
-/**
- * Validate Seedream v4 rich variant prompts
- * More lenient on length, still strict on safety
- */
-function validateSeedreamVariantPrompt(generatedPrompt: string, model: string): void {
-  // Check for forbidden meta-commentary and markdown
-  const forbiddenMetaPatterns = [
-    /\bhere's\b/i,
-    /\bhere is\b/i,
-    /\bi've\b/i,
-    /\bnote:\s/i,
-    /\bbelow is\b/i,
-    /\blet me know\b/i,
-    /\bif you need\b/i,
-  ]
-  const forbiddenMarkdown = ['**', '###', '##', '![', '](', '```']
-  
-  const hasMetaWords = forbiddenMetaPatterns.some(pattern => pattern.test(generatedPrompt))
-  const hasMarkdown = forbiddenMarkdown.some(token => generatedPrompt.includes(token))
-  
-  if (hasMetaWords || hasMarkdown) {
-    console.log(`${model} rejected: contains meta-commentary or markdown`)
-    throw new Error('Generated prompt must not contain meta-commentary or markdown formatting')
-  }
-  
-  // Check length - rich variant prompts should be comprehensive but bounded
-  const wordCount = generatedPrompt.split(/\s+/).length
-  if (wordCount < 50) {
-    console.log(`${model} rejected: too short (${wordCount} words, need at least 50 for rich prompts)`)
-    throw new Error('Generated prompt is too brief for Seedream v4 rich format')
-  }
-  // Be slightly lenient to avoid over-rejection on minor overshoot while we reduce max_tokens upstream
-  if (wordCount > 520) {
-    console.log(`${model} rejected: too long (${wordCount} words, max 520)`)
-    throw new Error('Generated prompt is too verbose')
-  }
-  
-  // Check for key Seedream v4 section indicators
-  const hasSeedreamSections = /\b(subject|style|composition|framing|lighting|color|palette|atmosphere|environment|setting|technical|quality|variation)\b/i.test(generatedPrompt)
-  if (!hasSeedreamSections) {
-    console.log(`${model} rejected: missing Seedream v4 section indicators`)
-    throw new Error('Variant prompt should include comprehensive Seedream v4 sections')
-  }
-  
-  // Check for variant/generation language
-  const hasVariantLanguage = /\b(variant|generate|create|produce|maintain|preserv|consistent)\b/i.test(generatedPrompt)
-  if (!hasVariantLanguage) {
-    console.log(`${model} rejected: missing variant generation language`)
-    throw new Error('Variant prompt must include generation/preservation language')
-  }
-  
-  // Check for forbidden facial/ethnic descriptions
-  const forbiddenDescriptors = [
-    'eye color', 'eyes are', 'blue eyes', 'brown eyes', 'green eyes',
-    'nose shape', 'mouth shape', 'facial features',
-    'skin tone', 'skin color', 'pale skin', 'dark skin', 'fair skin',
-    'ethnicity', 'ethnic', 'caucasian', 'asian', 'african', 'hispanic'
-  ]
-  
-  const hasForbiddenDescriptor = forbiddenDescriptors.some(desc =>
-    generatedPrompt.toLowerCase().includes(desc.toLowerCase())
-  )
-  
-  if (hasForbiddenDescriptor) {
-    const found = forbiddenDescriptors.filter(desc =>
-      generatedPrompt.toLowerCase().includes(desc.toLowerCase())
-    )
-    console.log(`${model} rejected: contains forbidden facial/ethnic descriptors:`, found)
-    throw new Error('Generated prompt must not describe facial features, skin tone, or ethnicity')
-  }
-  
-  // Safety check for unsafe content
-  const unsafeWords = ['nude', 'naked', 'topless', 'explicit', 'sexual', 'nsfw']
-  const hasUnsafeContent = unsafeWords.some(word => 
-    generatedPrompt.toLowerCase().includes(word)
-  )
-  
-  if (hasUnsafeContent) {
-    console.log(`${model} rejected due to unsafe content`)
-    throw new Error('Generated prompt contains unsafe content')
-  }
-}
-
-/**
- * Validate variant prompts (legacy concise format)
+ * Validate variant prompts - simplified to only essential checks
  */
 function validateVariantPrompt(generatedPrompt: string, model: string): void {
-  // Check for forbidden meta-commentary and markdown
-  const forbiddenMetaPatterns = [
-    /\bhere's\b/i,
-    /\bhere is\b/i,
-    /\bi've\b/i,
-    /\bnote:\s/i,
-    /\bbelow is\b/i,
-    /\blet me know\b/i,
-    /\bif you need\b/i,
-  ]
-  const forbiddenMarkdown = ['**', '###', '##', '![', '](', '```']
+  // Basic sanity check - must not be empty
+  if (!generatedPrompt || generatedPrompt.trim().length < 5) {
+    console.log(`${model} rejected: empty or too short`)
+    throw new Error('Generated prompt is too brief')
+  }
   
-  const hasMetaWords = forbiddenMetaPatterns.some(pattern => pattern.test(generatedPrompt))
-  const hasMarkdown = forbiddenMarkdown.some(token => generatedPrompt.includes(token))
+  // Check for forbidden meta-commentary and markdown (formatting issues)
+  const metaPattern = /\b(here's|here is|i've|note:|below is|let me know|if you need|generated via)\b/i
+  const markdownPattern = /(\*\*|###|##|!\[|\]\(|```)/
   
-  if (hasMetaWords || hasMarkdown) {
+  if (metaPattern.test(generatedPrompt) || markdownPattern.test(generatedPrompt)) {
     console.log(`${model} rejected: contains meta-commentary or markdown`)
     throw new Error('Generated prompt must not contain meta-commentary or markdown formatting')
   }
   
-  // Must start with the reference directive (singular or plural)
-  const normalized = generatedPrompt.trim().toLowerCase()
-  const directiveSingular = 'use the provided reference image as the base content.'
-  const directivePlural = 'use the provided reference images as the base content.'
-  const startsWithDirective =
-    normalized.startsWith(directiveSingular) || normalized.startsWith(directivePlural)
-  if (!startsWithDirective) {
-    console.log(`${model} rejected: missing required reference directive at start`)
-    throw new Error('Variant prompt must start with the reference directive line')
-  }
-  
-  // Check length - concise reference variation (directive + one sentence)
-  const wordCount = generatedPrompt.split(/\s+/).length
-  if (wordCount < 25) {
-    console.log(`${model} rejected: too short (${wordCount} words, need at least 25)`)
-    throw new Error('Generated prompt is too brief')
-  }
-  if (wordCount > 90) {
-    console.log(`${model} rejected: too long (${wordCount} words, max 90)`)
-    throw new Error('Generated prompt is too verbose')
-  }
-  
-  // Check for required action words
-  const hasActionWord = /\bcreate\b/i.test(generatedPrompt) || 
-                        /\bgenerate\b/i.test(generatedPrompt) ||
-                        /\bproduce\b/i.test(generatedPrompt) ||
-                        /\bvariant\b/i.test(generatedPrompt)
-  if (!hasActionWord) {
-    console.log(`${model} rejected: missing action words (create/generate/produce/variant)`)
-    throw new Error('Variant prompt must include generation action words')
-  }
-  
-  // Check for preservation guidance
-  const hasPreservation = /\bmaintain/i.test(generatedPrompt) ||
-                          /\bpreserv/i.test(generatedPrompt) ||
-                          /\bkeep/i.test(generatedPrompt) ||
-                          /\bconsistent\b/i.test(generatedPrompt)
-  if (!hasPreservation) {
-    console.log(`${model} rejected: missing preservation guidance (maintain/preserve/keep)`)
-    throw new Error('Variant prompt should clarify what to preserve')
-  }
-  
-  // Check for forbidden facial/ethnic descriptions
-  const forbiddenDescriptors = [
-    'eye color', 'eyes are', 'blue eyes', 'brown eyes', 'green eyes',
-    'nose shape', 'mouth shape', 'facial features',
-    'skin tone', 'skin color', 'pale skin', 'dark skin', 'fair skin',
-    'ethnicity', 'ethnic', 'caucasian', 'asian', 'african', 'hispanic'
-  ]
-  
-  const hasForbiddenDescriptor = forbiddenDescriptors.some(desc =>
-    generatedPrompt.toLowerCase().includes(desc.toLowerCase())
-  )
-  
-  if (hasForbiddenDescriptor) {
-    const found = forbiddenDescriptors.filter(desc =>
-      generatedPrompt.toLowerCase().includes(desc.toLowerCase())
-    )
-    console.log(`${model} rejected: contains forbidden facial/ethnic descriptors:`, found)
-    throw new Error('Generated prompt must not describe facial features, skin tone, or ethnicity')
-  }
-  
-  // Safety check for unsafe content
-  const unsafeWords = ['nude', 'naked', 'topless', 'explicit', 'sexual', 'nsfw']
-  const hasUnsafeContent = unsafeWords.some(word => 
-    generatedPrompt.toLowerCase().includes(word)
-  )
-  
-  if (hasUnsafeContent) {
+  // Safety check - forbidden content
+  const unsafePattern = /\b(nude|naked|topless|explicit|sexual|nsfw)\b/i
+  if (unsafePattern.test(generatedPrompt.toLowerCase())) {
     console.log(`${model} rejected due to unsafe content`)
     throw new Error('Generated prompt contains unsafe content')
+  }
+  
+  // Safety check - forbidden facial/ethnic descriptors
+  const forbiddenPattern = /\b(eye color|eyes are|blue eyes|brown eyes|green eyes|nose shape|mouth shape|facial features|skin tone|skin color|pale skin|dark skin|fair skin|ethnicity|ethnic|caucasian|asian|african|hispanic)\b/i
+  if (forbiddenPattern.test(generatedPrompt.toLowerCase())) {
+    console.log(`${model} rejected: contains forbidden facial/ethnic descriptors`)
+    throw new Error('Generated prompt must not describe facial features, skin tone, or ethnicity')
   }
 }
 
@@ -1726,14 +1273,26 @@ export async function generateVariantPromptWithGrok(imageUrls: string[]): Promis
   }
 
   // Try each model in order until one works
+  const errors: Array<{ model: string; error: string }> = []
   for (const model of GROK_MODELS) {
     try {
       return await generateVariantPromptWithModel(model, imageUrls, apiKey)
     } catch (error) {
-      console.warn(`Model ${model} failed for variant generation, trying next model:`, error instanceof Error ? error.message : error)
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      errors.push({ model, error: errorMessage })
+      console.warn(`Model ${model} failed for variant generation, trying next model:`, {
+        model,
+        imagesCount: imageUrls.length,
+        promptStyle: 'variant',
+        error: errorMessage
+      })
       if (model === GROK_MODELS[GROK_MODELS.length - 1]) {
-        console.warn('All models failed for variant generation')
-        throw new Error('All Grok models failed to generate variant prompt')
+        console.error('All models failed for variant generation', {
+          imagesCount: imageUrls.length,
+          promptStyle: 'variant',
+          errors: errors.map(e => `${e.model}: ${e.error}`)
+        })
+        throw new Error(`All Grok models failed to generate variant prompt. Errors: ${errors.map(e => `${e.model}: ${e.error}`).join('; ')}`)
       }
     }
   }
@@ -1753,13 +1312,9 @@ async function generateVariantPromptWithModel(
     throw new Error(`Model ${model} does not support vision capabilities`)
   }
 
-  // Use Seedream-rich templates if enabled, otherwise legacy
-  const systemPrompt = USE_RICH_VARIANT_PROMPTS 
-    ? buildSeedreamVariantSystemPrompt(imageUrls.length)
-    : buildVariantSystemPrompt(imageUrls.length)
-  const userText = USE_RICH_VARIANT_PROMPTS
-    ? buildSeedreamVariantUserText(imageUrls.length)
-    : buildVariantUserText(imageUrls.length)
+  // Use simplified variant templates
+  const systemPrompt = buildVariantSystemPrompt(imageUrls.length)
+  const userText = buildVariantUserText(imageUrls.length)
 
   // Build user message content with all images
   const userContent: GrokVisionContent[] = [
@@ -1802,7 +1357,7 @@ async function generateVariantPromptWithModel(
   }
 
   console.log(`${model} sending variant generation request to Grok:`, {
-    promptStyle: USE_RICH_VARIANT_PROMPTS ? 'seedream-v4-rich' : 'legacy-concise',
+        promptStyle: 'variant',
     imagesCount: imageUrls.length,
     adaptiveParams: {
       temperature: samplingParams.temperature,
@@ -1822,30 +1377,61 @@ async function generateVariantPromptWithModel(
 
   if (!response.ok) {
     const errorText = await response.text()
-    throw new Error(`${model} API error: ${response.status} ${response.statusText} - ${errorText}`)
+    const errorContext = {
+      model,
+      status: response.status,
+      statusText: response.statusText,
+        promptStyle: 'variant',
+      imagesCount: imageUrls.length,
+      error: errorText
+    }
+    console.error(`${model} variant generation API error:`, errorContext)
+    throw new Error(`Variant generation failed with ${model}: ${response.status} ${response.statusText} - ${errorText}`)
   }
 
   const data: GrokVisionResponse = await response.json()
   
   if (!data.choices || data.choices.length === 0) {
-    throw new Error(`No response from ${model} API`)
+    const errorContext = {
+      model,
+        promptStyle: 'variant',
+      imagesCount: imageUrls.length,
+      responseData: data
+    }
+    console.error(`${model} variant generation: no choices in response`, errorContext)
+    throw new Error(`Variant generation failed: ${model} returned no response choices`)
   }
 
   const generatedPrompt = data.choices[0].message.content.trim()
   
   if (!generatedPrompt) {
-    throw new Error(`Empty prompt generated by ${model}`)
+    const errorContext = {
+      model,
+        promptStyle: 'variant',
+      imagesCount: imageUrls.length
+    }
+    console.error(`${model} variant generation: empty prompt`, errorContext)
+    throw new Error(`Variant generation failed: ${model} returned empty prompt`)
   }
 
-  // Use appropriate validator based on prompt style
-  if (USE_RICH_VARIANT_PROMPTS) {
-    validateSeedreamVariantPrompt(generatedPrompt, model)
-  } else {
+  // Validate variant prompt
+  try {
     validateVariantPrompt(generatedPrompt, model)
+  } catch (validationError) {
+    const errorContext = {
+      model,
+      promptStyle: 'variant',
+      imagesCount: imageUrls.length,
+      promptLength: generatedPrompt.length,
+      wordCount: generatedPrompt.split(/\s+/).length,
+      validationError: validationError instanceof Error ? validationError.message : String(validationError)
+    }
+    console.error(`${model} variant generation: validation failed`, errorContext)
+    throw new Error(`Variant prompt validation failed: ${validationError instanceof Error ? validationError.message : String(validationError)}`)
   }
 
   console.log(`${model} variant prompt generated:`, {
-    promptStyle: USE_RICH_VARIANT_PROMPTS ? 'seedream-v4-rich' : 'legacy-concise',
+    promptStyle: 'variant',
     promptLength: generatedPrompt.length,
     wordCount: generatedPrompt.split(/\s+/).length
   })
@@ -1855,17 +1441,22 @@ async function generateVariantPromptWithModel(
 
 /**
  * Enhance variant prompt with user instructions
+ * For text-only enhancements (presets), images are not needed and will speed up the request
  */
 export async function enhanceVariantPromptWithGrok(
   existingPrompt: string,
   userInstructions: string,
-  imageUrls: string[]
+  imageUrls?: string[]
 ): Promise<string> {
+  const hasImages = imageUrls && imageUrls.length > 0
+  
   console.log('[enhanceVariantPromptWithGrok] Entry point:', {
     existingPromptLength: existingPrompt.length,
     instructionsLength: userInstructions.length,
-    imageUrlsCount: imageUrls.length,
-    useRichPrompts: USE_RICH_VARIANT_PROMPTS
+    imageUrlsCount: imageUrls?.length || 0,
+    hasImages,
+    promptStyle: 'variant',
+    mode: hasImages ? 'with-images' : 'text-only'
   })
 
   const apiKey = process.env.XAI_API_KEY
@@ -1873,15 +1464,11 @@ export async function enhanceVariantPromptWithGrok(
     throw new Error('XAI_API_KEY environment variable is not set')
   }
 
-  // Use Seedream-rich templates if enabled, otherwise legacy
-  const systemPrompt = USE_RICH_VARIANT_PROMPTS
-    ? buildSeedreamVariantEnhanceSystemPrompt()
-    : buildVariantEnhanceSystemPrompt()
-  const userText = USE_RICH_VARIANT_PROMPTS
-    ? buildSeedreamVariantEnhanceUserText(existingPrompt, userInstructions)
-    : buildVariantEnhanceUserText(existingPrompt, userInstructions)
+  // Use simplified variant enhancement templates
+  const systemPrompt = buildVariantEnhanceSystemPrompt()
+  const userText = buildVariantEnhanceUserText(existingPrompt, userInstructions)
 
-  // Build user message content with images
+  // Build user message content - only include images if provided
   const userContent: GrokVisionContent[] = [
     {
       type: 'text',
@@ -1889,17 +1476,21 @@ export async function enhanceVariantPromptWithGrok(
     }
   ]
 
-  imageUrls.forEach((url) => {
-    userContent.push({
-      type: 'image_url',
-      image_url: { url }
+  // Only add images if provided (skip for text-only enhancements like presets)
+  if (hasImages) {
+    imageUrls!.forEach((url) => {
+      userContent.push({
+        type: 'image_url',
+        image_url: { url }
+      })
     })
-  })
+  }
 
   // Estimate instruction complexity for adaptive sampling
   const complexity = estimateInstructionComplexity(userInstructions)
 
   // Try each model until one succeeds
+  const errors: Array<{ model: string; error: string }> = []
   for (const model of GROK_MODELS) {
     try {
       return await enhanceVariantPromptWithModel(
@@ -1907,15 +1498,29 @@ export async function enhanceVariantPromptWithGrok(
         systemPrompt, 
         userContent, 
         apiKey,
-        imageUrls.length,
+        imageUrls?.length || 0,
         complexity
       )
     } catch (error) {
-      console.warn(`Model ${model} variant enhancement failed, trying next model:`, error)
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      errors.push({ model, error: errorMessage })
+      console.warn(`Model ${model} variant enhancement failed, trying next model:`, {
+        model,
+        imagesCount: imageUrls?.length || 0,
+        promptStyle: 'variant',
+        instructionComplexity: complexity,
+        error: errorMessage
+      })
     }
   }
 
-  throw new Error('All Grok models failed to enhance variant prompt')
+  console.error('All models failed for variant enhancement', {
+    imagesCount: imageUrls?.length || 0,
+        promptStyle: 'variant',
+    instructionComplexity: complexity,
+    errors: errors.map(e => `${e.model}: ${e.error}`)
+  })
+  throw new Error(`All Grok models failed to enhance variant prompt. Errors: ${errors.map(e => `${e.model}: ${e.error}`).join('; ')}`)
 }
 
 async function enhanceVariantPromptWithModel(
@@ -1926,11 +1531,15 @@ async function enhanceVariantPromptWithModel(
   imagesCount: number,
   instructionComplexity: 'low' | 'medium' | 'high'
 ): Promise<string> {
-  const isVisionModel = model.includes('vision') || 
-                       ['grok-4-fast-reasoning', 'grok-4', 'grok-3-mini'].includes(model)
+  // For text-only requests, we can use any model (vision models work fine with text-only)
+  // For requests with images, we need vision-capable models
+  if (imagesCount > 0) {
+    const isVisionModel = model.includes('vision') || 
+                         ['grok-4-fast-reasoning', 'grok-4', 'grok-3-mini'].includes(model)
 
-  if (!isVisionModel) {
-    throw new Error(`Model ${model} does not support vision capabilities`)
+    if (!isVisionModel) {
+      throw new Error(`Model ${model} does not support vision capabilities`)
+    }
   }
 
   // Get adaptive sampling parameters
@@ -1960,8 +1569,10 @@ async function enhanceVariantPromptWithModel(
   }
 
   console.log(`${model} sending variant enhancement request to Grok:`, {
-    promptStyle: USE_RICH_VARIANT_PROMPTS ? 'seedream-v4-rich' : 'legacy-concise',
+        promptStyle: 'variant',
     imagesCount,
+    hasImages: imagesCount > 0,
+    mode: imagesCount > 0 ? 'with-images' : 'text-only',
     instructionComplexity,
     adaptiveParams: {
       temperature: samplingParams.temperature,
@@ -1981,30 +1592,65 @@ async function enhanceVariantPromptWithModel(
 
   if (!response.ok) {
     const errorText = await response.text()
-    throw new Error(`${model} API error: ${response.status} ${response.statusText} - ${errorText}`)
+    const errorContext = {
+      model,
+      status: response.status,
+      statusText: response.statusText,
+        promptStyle: 'variant',
+      imagesCount,
+      instructionComplexity,
+      error: errorText
+    }
+    console.error(`${model} variant enhancement API error:`, errorContext)
+    throw new Error(`Variant enhancement failed with ${model}: ${response.status} ${response.statusText} - ${errorText}`)
   }
 
   const data: GrokVisionResponse = await response.json()
   
   if (!data.choices || data.choices.length === 0) {
-    throw new Error(`No response from ${model} API`)
+    const errorContext = {
+      model,
+        promptStyle: 'variant',
+      imagesCount,
+      instructionComplexity,
+      responseData: data
+    }
+    console.error(`${model} variant enhancement: no choices in response`, errorContext)
+    throw new Error(`Variant enhancement failed: ${model} returned no response choices`)
   }
 
   const enhancedPrompt = data.choices[0].message.content.trim()
   
   if (!enhancedPrompt) {
-    throw new Error(`Empty enhancement generated by ${model}`)
+    const errorContext = {
+      model,
+        promptStyle: 'variant',
+      imagesCount,
+      instructionComplexity
+    }
+    console.error(`${model} variant enhancement: empty prompt`, errorContext)
+    throw new Error(`Variant enhancement failed: ${model} returned empty prompt`)
   }
 
-  // Use appropriate validator based on prompt style
-  if (USE_RICH_VARIANT_PROMPTS) {
-    validateSeedreamVariantPrompt(enhancedPrompt, model)
-  } else {
+  // Validate variant prompt
+  try {
     validateVariantPrompt(enhancedPrompt, model)
+  } catch (validationError) {
+    const errorContext = {
+      model,
+      promptStyle: 'variant',
+      imagesCount,
+      instructionComplexity,
+      promptLength: enhancedPrompt.length,
+      wordCount: enhancedPrompt.split(/\s+/).length,
+      validationError: validationError instanceof Error ? validationError.message : String(validationError)
+    }
+    console.error(`${model} variant enhancement: validation failed`, errorContext)
+    throw new Error(`Variant prompt validation failed: ${validationError instanceof Error ? validationError.message : String(validationError)}`)
   }
 
   console.log(`${model} variant enhancement successful:`, {
-    promptStyle: USE_RICH_VARIANT_PROMPTS ? 'seedream-v4-rich' : 'legacy-concise',
+        promptStyle: 'variant',
     enhancedLength: enhancedPrompt.length,
     wordCount: enhancedPrompt.split(/\s+/).length
   })

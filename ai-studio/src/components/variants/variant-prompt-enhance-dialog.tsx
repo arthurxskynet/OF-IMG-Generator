@@ -11,42 +11,59 @@ import { Loader2, Wand2, Copy, RefreshCw, Check, Sparkles } from 'lucide-react'
 // Preset enhancement chips for quick access - organized by category
 const PRESET_ENHANCEMENTS = {
   quality: [
-    { label: '✨ Professional studio', value: 'Enhance to professional studio quality with polished lighting and clean composition' },
-    { label: '📸 Casual snapshot', value: 'Make it look like a casual low-effort snapshot with natural imperfections, amateur lighting, and everyday quality' },
-    { label: '🎥 Film grain', value: 'Add film grain texture and slightly reduced sharpness for analog film aesthetic' }
+    { label: '✨ Professional studio', value: 'Apply professional studio quality with polished lighting' },
+    { label: '📸 Casual snapshot', value: 'Make casual snapshot with natural imperfections and amateur lighting' },
+    { label: '🎥 Film grain', value: 'Add film grain texture with reduced sharpness' },
+    { label: '📱 iPhone selfie', value: 'Apply iPhone front camera selfie with wide-angle distortion and arm\'s length perspective' }
   ],
   lighting: [
-    { label: '🔥 Dramatic lighting', value: 'Make lighting more dramatic with high contrast, bold shadows, and striking directional light' },
-    { label: '🌅 Golden hour', value: 'Add golden hour sunset atmosphere with warm amber tones and soft natural lighting' },
-    { label: '💡 Harsh overhead', value: 'Change to harsh overhead lighting with unflattering shadows, typical of casual indoor photos' },
-    { label: '🌙 Low light', value: 'Simulate low light conditions with increased grain, softer details, and dim ambient lighting' }
+    { label: '🔥 Dramatic lighting', value: 'Apply dramatic lighting with high contrast and bold shadows' },
+    { label: '🌅 Golden hour', value: 'Add golden hour lighting with warm color temperature and amber tones' },
+    { label: '💡 Harsh overhead', value: 'Change to harsh overhead lighting with unflattering shadows' },
+    { label: '🌙 Low-key lighting', value: 'Apply low-key lighting with underexposed shadows and high ISO noise' },
+    { label: '🎭 Rembrandt lighting', value: 'Apply Rembrandt lighting with triangle of light under eye' },
+    { label: '🪟 Natural window light', value: 'Change to natural window lighting with soft directional illumination' }
+  ],
+  degradation: [
+    { label: '🎨 Lo-fi aesthetic', value: 'Add lo-fi aesthetic with chromatic aberration and lens distortion' },
+    { label: '💨 Motion blur artifacts', value: 'Apply motion blur with camera shake and streaking' },
+    { label: '✨ Lens flare', value: 'Add lens flare artifacts with washed-out highlights' },
+    { label: '🎞️ Film grain texture', value: 'Add film grain with color shifts and reduced dynamic range' }
+  ],
+  composition: [
+    { label: '📷 Casual snap', value: 'Apply candid composition with off-center framing and partial face crop' },
+    { label: '🎯 Off-center framing', value: 'Create off-center framing with informal composition' }
   ],
   motion: [
-    { label: '💨 Motion blur', value: 'Add slight motion blur suggesting movement, with subtle streaking effect as if captured mid-action' },
-    { label: '🎯 Tack sharp', value: 'Ensure perfectly sharp focus with crystal clear details throughout' }
+    { label: '💨 Motion blur', value: 'Add motion blur with subtle streaking effect' },
+    { label: '🎯 Tack sharp', value: 'Apply sharp focus with crystal clear details' },
+    { label: '🌫️ Soft focus', value: 'Apply soft focus with gentle blur and reduced sharpness' }
   ],
   gaze: [
-    { label: '👈 Look left', value: 'Have subject looking to the left side, gaze directed away from camera' },
-    { label: '👉 Look right', value: 'Have subject looking to the right side, gaze directed away from camera' },
+    { label: '👈 Look left', value: 'Have subject looking left, gaze away from camera' },
+    { label: '👉 Look right', value: 'Have subject looking right, gaze away from camera' },
     { label: '👁️ Camera gaze', value: 'Subject looking directly at camera with engaged eye contact' },
     { label: '👇 Look down', value: 'Subject looking downward with contemplative gaze' }
   ],
   expression: [
-    { label: '😊 Smiling', value: 'Add genuine smiling expression with warm, happy demeanor' },
-    { label: '😢 Sad', value: 'Change to sad, melancholic expression with downcast mood' },
-    { label: '😗 Pouting', value: 'Add playful pouting expression with pursed lips' },
-    { label: '😐 Neutral', value: 'Keep neutral, serious expression with calm composure' },
-    { label: '😮 Surprised', value: 'Show surprised, animated expression with wide-eyed look' },
-    { label: '💪 Confident pose', value: 'Add confident, powerful posing with strong body language' }
+    { label: '😊 Subtle smile', value: 'Add subtle smile with natural warmth' },
+    { label: '😢 Melancholic', value: 'Apply melancholic expression with downcast gaze' },
+    { label: '😗 Playful pout', value: 'Add playful pout with pursed lips' },
+    { label: '😐 Neutral', value: 'Maintain neutral expression with relaxed features' },
+    { label: '😮 Subtle surprise', value: 'Show subtle surprise with raised eyebrows' },
+    { label: '💪 Confident pose', value: 'Apply confident body language with strong posture' },
+    { label: '🤔 Pensive look', value: 'Add pensive expression with contemplative gaze' },
+    { label: '😌 Gentle smile', value: 'Apply gentle smile with natural warmth' },
+    { label: '😊 Relaxed gaze', value: 'Maintain relaxed gaze with natural expression' }
   ],
   color: [
-    { label: '🎨 Muted palette', value: 'Use muted earth tone color palette with desaturated, sophisticated colors' },
-    { label: '🌈 Vibrant colors', value: 'Increase color vibrancy and saturation for bold, eye-catching palette' },
-    { label: '⚫ Monochrome', value: 'Convert to black and white monochrome with strong tonal contrast' }
+    { label: '🎨 Muted palette', value: 'Apply muted earth tone palette with desaturated colors' },
+    { label: '🌈 Vibrant colors', value: 'Increase color vibrancy and saturation' },
+    { label: '⚫ Monochrome', value: 'Convert to black and white with strong tonal contrast' }
   ],
   depth: [
-    { label: '📷 Shallow DOF', value: 'Add shallow depth of field with blurred background for subject isolation' },
-    { label: '🌄 Deep focus', value: 'Use deep depth of field with sharp focus throughout entire scene' }
+    { label: '📷 Shallow DOF', value: 'Add shallow depth of field with bokeh background blur' },
+    { label: '🌄 Deep focus', value: 'Apply deep depth of field with sharp focus throughout' }
   ]
 }
 

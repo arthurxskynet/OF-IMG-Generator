@@ -214,7 +214,7 @@ This will check:
 1. Is `PROMPT_USE_RICH_STYLE=true`? (or omitted)
 2. Is `PROMPT_USE_LLM_FACESWAP=true`?
 3. Did you restart/redeploy after changing env vars?
-4. Check logs for `promptStyle: 'rich-seedream'`
+4. Check logs for `promptStyle: 'seedream-4.0'`
 
 ### Issue: API costs are too high
 

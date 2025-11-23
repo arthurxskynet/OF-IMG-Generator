@@ -8,6 +8,7 @@ export interface VariantImage {
 export interface VariantRowImage {
   id: string
   variant_row_id: string
+  job_id?: string | null
   output_path: string
   thumbnail_path: string | null
   source_row_id: string | null
@@ -72,7 +73,7 @@ export interface VariantPromptGenerateResponse {
 export interface VariantPromptEnhanceRequest {
   existingPrompt: string
   userInstructions: string
-  imagePaths: string[]
+  imagePaths?: string[] // Optional - text-only enhancement is faster for presets
 }
 
 export interface VariantPromptEnhanceResponse {

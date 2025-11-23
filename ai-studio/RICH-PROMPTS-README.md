@@ -162,18 +162,25 @@ curl -X POST http://localhost:3000/api/prompt/generate \
 Look for these indicators:
 
 ```javascript
-// Rich prompts enabled
+// Face-swap prompts (always Seedream 4.0)
 {
-  promptStyle: 'rich-seedream',
-  maxTokens: 350,
-  temperature: 0.5
+  promptStyle: 'seedream-4.0',
+  maxTokens: 1500,
+  temperature: 0.3
 }
 
-// Legacy prompts enabled
+// Variant prompts (rich mode enabled)
+{
+  promptStyle: 'seedream-v4-rich',
+  maxTokens: 400-500,
+  temperature: 0.45
+}
+
+// Variant prompts (legacy mode)
 {
   promptStyle: 'legacy-concise',
-  maxTokens: 50,
-  temperature: 0.1
+  maxTokens: 350-400,
+  temperature: 0.45
 }
 ```
 

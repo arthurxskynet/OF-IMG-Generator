@@ -13,24 +13,12 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    // Fetch variant rows separately from images to avoid nested query limits
     const { data: rows, error } = await supabase
       .from('variant_rows')
-      .select(`
-        *,
-        variant_row_images (
-          id,
-          variant_row_id,
-          output_path,
-          thumbnail_path,
-          source_row_id,
-          position,
-          is_generated,
-          created_at
-        )
-      `)
+      .select('*')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
-      .order('position', { referencedTable: 'variant_row_images', ascending: true })
 
     if (error) {
       console.error('[VariantRows] Failed to fetch rows:', error)
@@ -39,7 +27,31 @@ export async function GET(req: NextRequest) {
       }, { status: 500 })
     }
 
-    return NextResponse.json({ rows: rows || [] })
+    // Fetch all images separately to ensure we get all images
+    let allImages: any[] = []
+    if (rows && rows.length > 0) {
+      const rowIds = rows.map(r => r.id)
+      const { data: images, error: imagesError } = await supabase
+        .from('variant_row_images')
+        .select('*')
+        .in('variant_row_id', rowIds)
+        .order('position', { ascending: true })
+      
+      if (!imagesError && images) {
+        allImages = images
+      }
+    }
+
+    // Attach images to their respective rows
+    const rowsWithImages = (rows || []).map(row => {
+      const rowImages = allImages.filter(img => img.variant_row_id === row.id)
+      return {
+        ...row,
+        variant_row_images: rowImages
+      }
+    })
+
+    return NextResponse.json({ rows: rowsWithImages })
 
   } catch (error) {
     console.error('[VariantRows] Error:', error)

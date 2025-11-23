@@ -25,7 +25,13 @@ export async function POST(
       }, { status: 400 })
     }
 
-    // Get variant row with images
+    // For enhancement, we don't need images - we're just modifying the prompt text
+    // This speeds up the request significantly, especially for preset enhancements
+    // Only fetch images if we need them (for future use cases that might require visual context)
+    // Optional: Get images only if needed (currently skipping for speed)
+    // Uncomment below if visual context is needed for specific enhancement types
+    /*
+    let signedUrls: string[] | undefined = undefined
     const { data: row, error: rowError } = await supabase
       .from('variant_rows')
       .select(`
@@ -47,30 +53,28 @@ export async function POST(
     }
 
     const images = (row as any).variant_row_images || []
-    if (images.length === 0) {
-      return NextResponse.json({ 
-        error: 'No images in this variant row' 
-      }, { status: 400 })
+    if (images.length > 0) {
+      const sortedImages = images.sort((a: any, b: any) => a.position - b.position)
+      const imagePaths = sortedImages.map((img: any) => img.output_path)
+      signedUrls = await Promise.all(
+        imagePaths.map((path: string) => signPath(path, 600))
+      )
     }
+    */
 
-    // Sort by position and get image paths
-    const sortedImages = images.sort((a: any, b: any) => a.position - b.position)
-    const imagePaths = sortedImages.map((img: any) => img.output_path)
-
-    // Sign URLs for the images
-    const signedUrls = await Promise.all(
-      imagePaths.map((path: string) => signPath(path, 600))
-    )
+    const signedUrls: string[] | undefined = undefined as string[] | undefined
+    const imagesCount = signedUrls ? signedUrls.length : 0
 
     console.log('[VariantRowPromptEnhance] Enhancing with Grok', {
       rowId,
       existingPromptLength: existingPrompt.length,
       instructionsLength: userInstructions.length,
-      imagesCount: signedUrls.length,
+      imagesCount,
+      mode: signedUrls ? 'with-images' : 'text-only',
       useRichPrompts: process.env.PROMPT_VARIANTS_RICH !== 'false'
     })
 
-    // Enhance variant prompt (with adaptive sampling)
+    // Enhance variant prompt (text-only for speed, images optional)
     const enhancedPrompt = await enhanceVariantPromptWithGrok(
       existingPrompt,
       userInstructions,

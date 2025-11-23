@@ -22,25 +22,24 @@ export async function POST(req: NextRequest) {
       }, { status: 400 })
     }
 
-    if (!imagePaths || imagePaths.length === 0) {
-      return NextResponse.json({ 
-        error: 'At least one image is required' 
-      }, { status: 400 })
+    // Images are optional for enhancement - text-only is faster for preset enhancements
+    let signedUrls: string[] | undefined = undefined
+    if (imagePaths && imagePaths.length > 0) {
+      // Sign URLs for the images (600s expiry for external API call)
+      signedUrls = await Promise.all(
+        imagePaths.map((path: string) => signPath(path, 600))
+      )
     }
-
-    // Sign URLs for the images (600s expiry for external API call)
-    const signedUrls = await Promise.all(
-      imagePaths.map((path: string) => signPath(path, 600))
-    )
 
     console.log('[VariantPromptEnhance] Enhancing with Grok', {
       existingPromptLength: existingPrompt.length,
       instructionsLength: userInstructions.length,
-      imagesCount: signedUrls.length,
+      imagesCount: signedUrls?.length || 0,
+      mode: signedUrls ? 'with-images' : 'text-only',
       useRichPrompts: process.env.PROMPT_VARIANTS_RICH !== 'false'
     })
 
-    // Enhance variant prompt using Grok (with adaptive sampling)
+    // Enhance variant prompt using Grok (text-only for speed, images optional)
     const enhancedPrompt = await enhanceVariantPromptWithGrok(
       existingPrompt,
       userInstructions,

@@ -115,26 +115,22 @@ XAI_API_KEY=your_api_key_here
 Look for these log entries:
 
 ```javascript
-// Feature flag status
+// Face-swap generation (always Seedream 4.0)
 {
-  promptStyle: 'rich-seedream' // or 'legacy-concise'
+  promptStyle: 'seedream-4.0',
+  promptType: 'face-swap'
 }
 
-// Generation success
+// Variant generation (rich mode)
 {
-  model: 'grok-4-fast-reasoning',
-  promptLength: 245,
-  wordCount: 189,
-  validationPassed: true,
-  promptStyle: 'rich-seedream'
+  promptStyle: 'seedream-v4-rich',
+  imagesCount: 3
 }
 
-// Validation details
+// Variant generation (legacy mode)
 {
-  refUrlsCount: 1,
-  promptLength: 245,
-  promptPreview: 'Use the first reference image for face structure and hair style...',
-  promptStyle: 'rich-seedream'
+  promptStyle: 'legacy-concise',
+  imagesCount: 3
 }
 ```
 

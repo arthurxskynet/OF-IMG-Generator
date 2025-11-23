@@ -2518,11 +2518,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       
       toast({
         title: 'Added to Variants',
-        description: `Created ${result.rowsCreated} variant row${result.rowsCreated === 1 ? '' : 's'} with ${result.imagesAdded} image${result.imagesAdded === 1 ? '' : 's'}`,
-        action: {
-          label: 'View Variants',
-          onClick: () => window.location.href = '/variants'
-        }
+        description: `Created ${result.rowsCreated} variant row${result.rowsCreated === 1 ? '' : 's'} with ${result.imagesAdded} image${result.imagesAdded === 1 ? '' : 's'}`
       })
     } catch (error) {
       toast({
@@ -2702,7 +2698,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                       )}
                     </div>
                   </TableHead>
-                  <TableHead className="w-[16rem] md:w-[18rem] lg:w-[20rem] xl:w-[22rem] shrink-0 align-top">Prompt</TableHead>
+                  <TableHead className="w-[20rem] md:w-[24rem] lg:w-[28rem] xl:w-[32rem] shrink-0 align-top">Prompt</TableHead>
                   
                   <TableHead className="w-28 align-top">Generate</TableHead>
                   <TableHead className="w-20 align-top">Status</TableHead>
@@ -3220,7 +3216,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                 data-tour="workspace-prompt"
                                 value={getCurrentPrompt(row.id)}
                                 placeholder="Enter prompt... (Cmd/Ctrl+Enter to generate)"
-                                className={`min-h-[80px] md:min-h-[88px] resize-y w-[16rem] md:w-[18rem] lg:w-[20rem] xl:w-[22rem] select-text shrink-0 border-2 transition-all duration-200 ${
+                                className={`min-h-[80px] md:min-h-[88px] resize-y w-[20rem] md:w-[24rem] lg:w-[28rem] xl:w-[32rem] select-text shrink-0 border-2 transition-all duration-200 ${
                                   dirtyPrompts.has(row.id)
                                     ? 'border-amber-400/50 bg-amber-50/30 dark:bg-amber-950/20 focus-visible:border-amber-500 focus-visible:ring-amber-500/20'
                                     : savingPrompts.has(row.id)
@@ -3607,11 +3603,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                             
                                             toast({
                                               title: 'Added to Variants',
-                                              description: `Added to variant row`,
-                                              action: {
-                                                label: 'View',
-                                                onClick: () => window.location.href = '/variants'
-                                              }
+                                              description: `Added to variant row`
                                             })
                                           } catch (error) {
                                             toast({

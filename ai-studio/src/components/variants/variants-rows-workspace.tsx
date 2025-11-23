@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect } from 'react'
+import React, { useState, useCallback, useRef, useEffect } from 'react'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -32,42 +32,59 @@ const INTERNAL_IMAGE_MIME = 'application/x-ai-studio-image'
 // Preset enhancement chips for quick access - organized by category
 const PRESET_ENHANCEMENTS = {
   quality: [
-    { label: '✨ Professional studio', value: 'Enhance to professional studio quality with polished lighting and clean composition' },
-    { label: '📸 Casual snapshot', value: 'Make it look like a casual low-effort snapshot with natural imperfections, amateur lighting, and everyday quality' },
-    { label: '🎥 Film grain', value: 'Add film grain texture and slightly reduced sharpness for analog film aesthetic' }
+    { label: '✨ Professional studio', value: 'Apply professional studio quality with polished lighting' },
+    { label: '📸 Casual snapshot', value: 'Make casual snapshot with natural imperfections and amateur lighting' },
+    { label: '🎥 Film grain', value: 'Add film grain texture with reduced sharpness' },
+    { label: '📱 iPhone selfie', value: 'Apply iPhone front camera selfie with wide-angle distortion and arm\'s length perspective' }
   ],
   lighting: [
-    { label: '🔥 Dramatic lighting', value: 'Make lighting more dramatic with high contrast, bold shadows, and striking directional light' },
-    { label: '🌅 Golden hour', value: 'Add golden hour sunset atmosphere with warm amber tones and soft natural lighting' },
-    { label: '💡 Harsh overhead', value: 'Change to harsh overhead lighting with unflattering shadows, typical of casual indoor photos' },
-    { label: '🌙 Low light', value: 'Simulate low light conditions with increased grain, softer details, and dim ambient lighting' }
+    { label: '🔥 Dramatic lighting', value: 'Apply dramatic lighting with high contrast and bold shadows' },
+    { label: '🌅 Golden hour', value: 'Add golden hour lighting with warm color temperature and amber tones' },
+    { label: '💡 Harsh overhead', value: 'Change to harsh overhead lighting with unflattering shadows' },
+    { label: '🌙 Low-key lighting', value: 'Apply low-key lighting with underexposed shadows and high ISO noise' },
+    { label: '🎭 Rembrandt lighting', value: 'Apply Rembrandt lighting with triangle of light under eye' },
+    { label: '🪟 Natural window light', value: 'Change to natural window lighting with soft directional illumination' }
+  ],
+  degradation: [
+    { label: '🎨 Lo-fi aesthetic', value: 'Add lo-fi aesthetic with chromatic aberration and lens distortion' },
+    { label: '💨 Motion blur artifacts', value: 'Apply motion blur with camera shake and streaking' },
+    { label: '✨ Lens flare', value: 'Add lens flare artifacts with washed-out highlights' },
+    { label: '🎞️ Film grain texture', value: 'Add film grain with color shifts and reduced dynamic range' }
+  ],
+  composition: [
+    { label: '📷 Casual snap', value: 'Apply candid composition with off-center framing and partial face crop' },
+    { label: '🎯 Off-center framing', value: 'Create off-center framing with informal composition' }
   ],
   motion: [
-    { label: '💨 Motion blur', value: 'Add slight motion blur suggesting movement, with subtle streaking effect as if captured mid-action' },
-    { label: '🎯 Tack sharp', value: 'Ensure perfectly sharp focus with crystal clear details throughout' }
+    { label: '💨 Motion blur', value: 'Add motion blur with subtle streaking effect' },
+    { label: '🎯 Tack sharp', value: 'Apply sharp focus with crystal clear details' },
+    { label: '🌫️ Soft focus', value: 'Apply soft focus with gentle blur and reduced sharpness' }
   ],
   gaze: [
-    { label: '👈 Look left', value: 'Have subject looking to the left side, gaze directed away from camera' },
-    { label: '👉 Look right', value: 'Have subject looking to the right side, gaze directed away from camera' },
+    { label: '👈 Look left', value: 'Have subject looking left, gaze away from camera' },
+    { label: '👉 Look right', value: 'Have subject looking right, gaze away from camera' },
     { label: '👁️ Camera gaze', value: 'Subject looking directly at camera with engaged eye contact' },
     { label: '👇 Look down', value: 'Subject looking downward with contemplative gaze' }
   ],
   expression: [
-    { label: '😊 Smiling', value: 'Add genuine smiling expression with warm, happy demeanor' },
-    { label: '😢 Sad', value: 'Change to sad, melancholic expression with downcast mood' },
-    { label: '😗 Pouting', value: 'Add playful pouting expression with pursed lips' },
-    { label: '😐 Neutral', value: 'Keep neutral, serious expression with calm composure' },
-    { label: '😮 Surprised', value: 'Show surprised, animated expression with wide-eyed look' },
-    { label: '💪 Confident pose', value: 'Add confident, powerful posing with strong body language' }
+    { label: '😊 Subtle smile', value: 'Add subtle smile with natural warmth' },
+    { label: '😢 Melancholic', value: 'Apply melancholic expression with downcast gaze' },
+    { label: '😗 Playful pout', value: 'Add playful pout with pursed lips' },
+    { label: '😐 Neutral', value: 'Maintain neutral expression with relaxed features' },
+    { label: '😮 Subtle surprise', value: 'Show subtle surprise with raised eyebrows' },
+    { label: '💪 Confident pose', value: 'Apply confident body language with strong posture' },
+    { label: '🤔 Pensive look', value: 'Add pensive expression with contemplative gaze' },
+    { label: '😌 Gentle smile', value: 'Apply gentle smile with natural warmth' },
+    { label: '😊 Relaxed gaze', value: 'Maintain relaxed gaze with natural expression' }
   ],
   color: [
-    { label: '🎨 Muted palette', value: 'Use muted earth tone color palette with desaturated, sophisticated colors' },
-    { label: '🌈 Vibrant colors', value: 'Increase color vibrancy and saturation for bold, eye-catching palette' },
-    { label: '⚫ Monochrome', value: 'Convert to black and white monochrome with strong tonal contrast' }
+    { label: '🎨 Muted palette', value: 'Apply muted earth tone palette with desaturated colors' },
+    { label: '🌈 Vibrant colors', value: 'Increase color vibrancy and saturation' },
+    { label: '⚫ Monochrome', value: 'Convert to black and white with strong tonal contrast' }
   ],
   depth: [
-    { label: '📷 Shallow DOF', value: 'Add shallow depth of field with blurred background for subject isolation' },
-    { label: '🌄 Deep focus', value: 'Use deep depth of field with sharp focus throughout entire scene' }
+    { label: '📷 Shallow DOF', value: 'Add shallow depth of field with bokeh background blur' },
+    { label: '🌄 Deep focus', value: 'Apply deep depth of field with sharp focus throughout' }
   ]
 }
 
@@ -77,7 +94,6 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
   const [rows, setRows] = useState(initialRows)
   const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({})
   const [generatingPromptRowId, setGeneratingPromptRowId] = useState<string | null>(null)
-  const [generatingQuickRowId, setGeneratingQuickRowId] = useState<string | null>(null)
   const [enhancingRowId, setEnhancingRowId] = useState<string | null>(null)
   const [enhanceInstructions, setEnhanceInstructions] = useState<Record<string, string>>({})
   const [selectedPresets, setSelectedPresets] = useState<Record<string, string[]>>({})
@@ -90,14 +106,86 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
     isOpen: boolean;
     rowId: string | null;
     imageIndex: number;
-  }>({ isOpen: false, rowId: null, imageIndex: 0 })
+    imageType: 'generated' | 'reference'; // Track which type of images we're viewing
+  }>({ isOpen: false, rowId: null, imageIndex: 0, imageType: 'generated' })
   const saveTimeoutRef = useRef<Record<string, NodeJS.Timeout>>({})
   const loadingImagesRef = useRef<Set<string>>(new Set())
-  const { startPolling, pollingState } = useJobPolling(() => {
-    // Refresh on completion
-    setTimeout(() => {
-      router.refresh()
-    }, 300)
+  const refreshTimeout = useRef<number | null>(null)
+  
+  // Refresh row data after generation
+  const refreshRowData = useCallback(async () => {
+    try {
+      const url = new URL('/api/variants/rows', window.location.origin)
+      // Add cache-busting timestamp
+      url.searchParams.set('_t', Date.now().toString())
+      
+      const response = await fetch(url.toString(), { 
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache'
+        }
+      })
+      if (response.ok) {
+        const { rows: refreshedRows } = await response.json()
+        setRows(refreshedRows || [])
+      }
+    } catch (error) {
+      console.error('Failed to refresh row data:', error)
+    }
+  }, [])
+
+  // Refresh a single row and update local state
+  const refreshSingleRow = useCallback(async (rowId: string) => {
+    try {
+      // Add cache-busting timestamp
+      const url = new URL(`/api/variants/rows/${rowId}`, window.location.origin)
+      url.searchParams.set('_t', Date.now().toString())
+      
+      const res = await fetch(url.toString(), { 
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache'
+        }
+      })
+      if (!res.ok) return
+      const { row } = await res.json()
+      
+      // Update the specific row in state
+      setRows(prev => prev.map(r => {
+        if (r.id === rowId) {
+          return row
+        }
+        return r
+      }))
+    } catch (e) {
+      console.error('Failed to refresh single row:', e)
+    }
+  }, [])
+
+  // Debounce refresh to avoid redundant fetches when many jobs complete together
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimeout.current) window.clearTimeout(refreshTimeout.current)
+    refreshTimeout.current = window.setTimeout(() => {
+      refreshRowData()
+      refreshTimeout.current = null
+    }, 500)
+  }, [refreshRowData])
+
+  const { startPolling, pollingState } = useJobPolling((jobId, status) => {
+    if (['succeeded', 'failed'].includes(status)) {
+      const variantRowId = (pollingState as any)[jobId]?.rowId as string | undefined
+      if (status === 'succeeded' && variantRowId) {
+        // Immediately refresh the specific row when job succeeds
+        refreshSingleRow(variantRowId).catch(() => {})
+      }
+      toast({
+        title: status === 'succeeded' ? 'Generation Complete' : 'Generation Failed',
+        description: `Job ${jobId.slice(0, 8)}... has ${status}`,
+        variant: status === 'failed' ? 'destructive' : 'default'
+      })
+      // Schedule a debounced full refresh as backup
+      scheduleRefresh()
+    }
   })
   const supabase = createClient()
 
@@ -113,8 +201,12 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
       })
       .map(img => ({
         id: img.id,
+        row_id: row.id, // Use variant row id
+        model_id: '', // Not applicable for variant rows
+        team_id: row.team_id,
+        user_id: row.user_id,
         output_url: img.output_path,
-        thumbnail_url: img.thumbnail_path || null,
+        thumbnail_url: img.thumbnail_path || undefined,
         is_favorited: img.is_favorited || false,
         created_at: img.created_at || new Date().toISOString()
       }))
@@ -219,54 +311,6 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
     }
   }, [toast])
 
-  // Navigation handlers for image dialog
-  const handleNavigateImage = useCallback(async (direction: 'prev' | 'next') => {
-    setDialogState(prev => {
-      if (!prev.rowId) return prev
-      
-      const currentRow = rows.find(row => row.id === prev.rowId)
-      if (!currentRow) return prev
-      
-            const allImages = currentRow.variant_row_images || []
-            // Defensive filtering: only images with is_generated === true
-            const generatedImages = allImages.filter(img => {
-              // Strict check: only include images explicitly marked as generated
-              // Exclude null, undefined, false, and any other falsy values
-              return img.is_generated === true
-            })
-      
-      const newIndex = direction === 'prev' 
-        ? Math.max(0, prev.imageIndex - 1)
-        : Math.min(generatedImages.length - 1, prev.imageIndex + 1)
-      
-      // Load full resolution for new image
-      const newImage = generatedImages[newIndex]
-      if (newImage) {
-        loadFullImage(newImage.id).catch(() => {})
-      }
-      
-      return { ...prev, imageIndex: newIndex }
-    })
-  }, [rows, loadFullImage])
-
-  // Handle keyboard navigation in dialog
-  useEffect(() => {
-    if (!dialogState.isOpen) return
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowLeft') {
-        handleNavigateImage('prev')
-      } else if (e.key === 'ArrowRight') {
-        handleNavigateImage('next')
-      } else if (e.key === 'Escape') {
-        setDialogState({ isOpen: false, rowId: null, imageIndex: 0 })
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [dialogState.isOpen, handleNavigateImage])
-
   // Load thumbnail URLs
   const loadThumbnail = useCallback(async (imageId: string, path: string) => {
     if (!path) {
@@ -308,6 +352,68 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
       loadingImagesRef.current.delete(imageId)
     }
   }, [thumbnailUrls])
+
+  // Navigation handlers for image dialog
+  const handleNavigateImage = useCallback(async (direction: 'prev' | 'next') => {
+    setDialogState(prev => {
+      if (!prev.rowId) return prev
+      
+      const currentRow = rows.find(row => row.id === prev.rowId)
+      if (!currentRow) return prev
+      
+      const allImages = currentRow.variant_row_images || []
+      
+      // Get the appropriate image array based on imageType
+      let images: any[] = []
+      if (prev.imageType === 'generated') {
+        // Defensive filtering: only images with is_generated === true
+        images = allImages.filter(img => {
+          // Strict check: only include images explicitly marked as generated
+          // Exclude null, undefined, false, and any other falsy values
+          return img.is_generated === true
+        })
+      } else {
+        // Reference images: is_generated !== true
+        images = allImages.filter(img => {
+          return img.is_generated !== true
+        })
+      }
+      
+      const newIndex = direction === 'prev' 
+        ? Math.max(0, prev.imageIndex - 1)
+        : Math.min(images.length - 1, prev.imageIndex + 1)
+      
+      // Load full resolution for new image
+      const newImage = images[newIndex]
+      if (newImage) {
+        if (prev.imageType === 'generated') {
+          loadFullImage(newImage.id).catch(() => {})
+        } else {
+          loadThumbnail(newImage.id, newImage.output_path).catch(() => {})
+        }
+      }
+      
+      return { ...prev, imageIndex: newIndex }
+    })
+  }, [rows, loadFullImage, loadThumbnail])
+
+  // Handle keyboard navigation in dialog
+  useEffect(() => {
+    if (!dialogState.isOpen) return
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') {
+        handleNavigateImage('prev')
+      } else if (e.key === 'ArrowRight') {
+        handleNavigateImage('next')
+      } else if (e.key === 'Escape') {
+        setDialogState({ isOpen: false, rowId: null, imageIndex: 0, imageType: 'generated' })
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [dialogState.isOpen, handleNavigateImage])
 
   // Load thumbnails on mount and when rows change
   // Note: All images (reference and generated) are in variant_row_images, not in jobs.generated_images
@@ -380,10 +486,12 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
           startPolling(String(next.id), s, String(next.variant_row_id))
         }
         if (['succeeded','failed'].includes(s)) {
-          // Refresh after a short delay to allow database to complete image insertion
-          setTimeout(() => {
-            router.refresh()
-          }, 500)
+          // Refresh the specific row when job completes
+          const variantRowId = String(next.variant_row_id)
+          if (variantRowId) {
+            refreshSingleRow(variantRowId).catch(() => {})
+            scheduleRefresh()
+          }
         }
       })
       .subscribe()
@@ -407,11 +515,14 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
           isGenerated: newImage.is_generated
         })
         
-        // Refresh to show new image
+        // Refresh the specific row to show new image
         // Use a small delay to ensure the image is fully committed
-        setTimeout(() => {
-          router.refresh()
-        }, 300)
+        const variantRowId = String(newImage.variant_row_id)
+        if (variantRowId) {
+          setTimeout(() => {
+            refreshSingleRow(variantRowId).catch(() => {})
+          }, 300)
+        }
       })
       .on('postgres_changes', {
         event: 'UPDATE',
@@ -427,10 +538,13 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
           variantRowId: updatedImage.variant_row_id
         })
         
-        // Refresh to show updated image
-        setTimeout(() => {
-          router.refresh()
-        }, 200)
+        // Refresh the specific row to show updated image
+        const variantRowId = String(updatedImage.variant_row_id)
+        if (variantRowId) {
+          setTimeout(() => {
+            refreshSingleRow(variantRowId).catch(() => {})
+          }, 200)
+        }
       })
       .subscribe()
       ;(window as any).__variantImagesRealtime = imagesChannel
@@ -655,54 +769,6 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
     }
   }
 
-  const handleGenerateVariant = async (rowId: string) => {
-    setGeneratingQuickRowId(rowId)
-    
-    const row = rows.find(r => r.id === rowId)
-    if (!row?.variant_row_images || row.variant_row_images.length < 1) {
-      toast({
-        title: 'Add an image',
-        description: 'Seedream edit supports target-only. Add at least one image to proceed.',
-        variant: 'destructive'
-      })
-      setGeneratingQuickRowId(null)
-      return
-    }
-    
-    try {
-      // Directly generate variant image using image model (bypassing LLM prompt generation)
-      const response = await fetch(`/api/variants/rows/${rowId}/generate-direct`, {
-        method: 'POST'
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to generate variant')
-      }
-
-      const { jobId } = await response.json()
-      if (jobId) startPolling(jobId, 'queued', rowId)
-      
-      toast({
-        title: 'Variant generation started',
-        description: 'Creating random variation of your images'
-      })
-
-      // Refresh to show new results after job is created
-      // The realtime subscription will handle updates when images are inserted
-      setTimeout(() => {
-        router.refresh()
-      }, 1000)
-    } catch (error) {
-      toast({
-        title: 'Generation failed',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive'
-      })
-    } finally {
-      setGeneratingQuickRowId(null)
-    }
-  }
 
   const handleEnhancePrompt = async (rowId: string) => {
     const instructions = enhanceInstructions[rowId]
@@ -911,11 +977,9 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
         description: 'Your variant images are being generated'
       })
 
-      // Refresh the page to show new results after job is created
-      // The realtime subscription will handle updates when images are inserted
-      setTimeout(() => {
-        router.refresh()
-      }, 1000)
+      // Schedule a refresh after job is created
+      // The polling and realtime subscriptions will handle updates when images are inserted
+      scheduleRefresh()
     } catch (error) {
       toast({
         title: 'Generation failed',
@@ -970,14 +1034,14 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                 <TableRow>
                   <TableHead className="w-12 align-top"></TableHead>
                   <TableHead className="w-32 align-top">Reference</TableHead>
-                  <TableHead className="w-[50rem] min-w-[50rem] align-top">Prompt</TableHead>
+                  <TableHead className="w-[75rem] min-w-[75rem] align-top">Prompt</TableHead>
                   <TableHead className="w-28 align-top">Generate</TableHead>
                   <TableHead className="w-full align-top">Results</TableHead>
                   <TableHead className="w-16 align-top">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rows.map(row => {
+                {rows.flatMap(row => {
                   const allImages = row.variant_row_images || []
                   
                   // Split images: reference vs generated with defensive filtering
@@ -999,14 +1063,42 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                     return img.is_generated !== true
                   })
                   
-                  const generatedImages = normalizedImages.filter(img => {
-                    // Only images explicitly marked as generated (is_generated === true)
-                    // Defensive: double-check it's exactly true, not truthy
-                    return img.is_generated === true
-                  })
+                  const generatedImages = normalizedImages
+                    .filter(img => {
+                      // Only images explicitly marked as generated (is_generated === true)
+                      // Defensive: double-check it's exactly true, not truthy
+                      return img.is_generated === true
+                    })
+                    .sort((a, b) => {
+                      // Sort generated images by created_at (oldest first) for display
+                      const dateA = new Date(a.created_at || 0).getTime()
+                      const dateB = new Date(b.created_at || 0).getTime()
+                      return dateA - dateB // Ascending (oldest first)
+                    })
                   
-                  // Debug logging in development to catch any misclassification
-                  if (process.env.NODE_ENV === 'development' && allImages.length > 0) {
+                  // Debug logging to help diagnose display issues - always log in development
+                  if (process.env.NODE_ENV === 'development') {
+                    console.log('[VariantsWorkspace] Image classification', {
+                      rowId: row.id,
+                      totalImages: allImages.length,
+                      referenceImages: referenceImages.length,
+                      generatedImages: generatedImages.length,
+                      generatedImageIds: generatedImages.map(img => img.id),
+                      generatedImageFlags: generatedImages.map(img => ({ 
+                        id: img.id, 
+                        is_generated: img.is_generated, 
+                        is_generated_type: typeof img.is_generated,
+                        created_at: img.created_at,
+                        output_path: img.output_path
+                      })),
+                      allImageFlags: allImages.map(img => ({ 
+                        id: img.id, 
+                        is_generated: img.is_generated,
+                        is_generated_type: typeof img.is_generated,
+                        is_generated_raw: (img as any).is_generated
+                      }))
+                    })
+                    
                     const misclassified = allImages.filter(img => {
                       const isGen = img.is_generated === true
                       const isRef = img.is_generated !== true
@@ -1030,7 +1122,7 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                   const isGeneratingImages = generatingImageRowId === row.id
                   const isExpanded = expandedRows.has(row.id)
 
-                  return (
+                  const mainRow = (
                     <TableRow 
                       key={row.id} 
                       className={`transition-all duration-300 ${
@@ -1059,14 +1151,26 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                       {/* Reference Images Column */}
                       <TableCell className="align-top p-2">
                         <div className="flex flex-col gap-1.5">
-                          {referenceImages.slice(0, isExpanded ? 4 : 2).map(image => (
-                            <div key={image.id} className="group relative w-16 h-16 rounded overflow-hidden bg-muted border border-border/50 shadow-sm hover:shadow transition-all duration-200">
+                          {referenceImages.slice(0, isExpanded ? 4 : 2).map((image, refIndex) => (
+                            <div 
+                              key={image.id} 
+                              className="group relative w-32 h-32 rounded overflow-hidden bg-muted border border-border/50 shadow-sm hover:shadow-md transition-all duration-200 hover:scale-105 hover:border-primary/50 cursor-zoom-in"
+                              onClick={async (e) => {
+                                e.stopPropagation()
+                                const actualIndex = referenceImages.findIndex(refImg => refImg.id === image.id)
+                                if (actualIndex !== -1) {
+                                  setDialogState({ isOpen: true, rowId: row.id, imageIndex: actualIndex, imageType: 'reference' })
+                                  // Load full resolution when opening dialog
+                                  await loadThumbnail(image.id, image.output_path)
+                                }
+                              }}
+                            >
                               {thumbnailUrls[image.id] ? (
                                 <Image
                                   src={thumbnailUrls[image.id]}
                                   alt="Reference"
                                   fill
-                                  sizes="64px"
+                                  sizes="128px"
                                   className="object-cover"
                                   onError={() => loadThumbnail(image.id, image.output_path)}
                                 />
@@ -1076,8 +1180,11 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                                 </div>
                               )}
                               <button
-                                onClick={() => handleDeleteImage(row.id, image.id)}
-                                className="absolute top-0.5 right-0.5 p-0.5 rounded bg-black/60 hover:bg-black/80 opacity-0 group-hover:opacity-100 transition-opacity"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleDeleteImage(row.id, image.id)
+                                }}
+                                className="absolute top-0.5 right-0.5 p-0.5 rounded bg-black/60 hover:bg-black/80 opacity-0 group-hover:opacity-100 transition-opacity z-10"
                               >
                                 <X className="h-2.5 w-2.5 text-white" />
                               </button>
@@ -1109,22 +1216,6 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                                 <>
                                   <Sparkles className="h-3 w-3 mr-1" />
                                   Generate Prompt
-                                </>
-                              )}
-                            </Button>
-                            <Button
-                              onClick={() => handleGenerateVariant(row.id)}
-                              disabled={generatingQuickRowId === row.id || isGeneratingImages || referenceImages.length < 1}
-                              variant="outline"
-                              size="sm"
-                              title="Generate random variant image directly (no text prompt)"
-                            >
-                              {generatingQuickRowId === row.id ? (
-                                <Spinner size="sm" />
-                              ) : (
-                                <>
-                                  <Wand2 className="h-3 w-3 mr-1" />
-                                  Quick Variant
                                 </>
                               )}
                             </Button>
@@ -1182,111 +1273,7 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                                 <span className="text-muted-foreground">({row.prompt.split(/\s+/).length} words)</span>
                               </div>
                             )}
-                            
-                            {/* Seedream v4 ratio override */}
-                            <div className="flex items-center gap-2 mt-2">
-                              <Switch
-                                id={`match-target-${row.id}`}
-                                checked={Boolean((row as any).match_target_ratio)}
-                                disabled={referenceImages.length === 0}
-                                onCheckedChange={async (checked) => {
-                                  // Optimistic UI update
-                                  setRows(prev => prev.map(r => r.id === row.id ? { ...r, match_target_ratio: Boolean(checked) } : r))
-                                  try {
-                                    const res = await fetch(`/api/variants/rows/${row.id}`, {
-                                      method: 'PATCH',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ match_target_ratio: Boolean(checked) })
-                                    })
-                                    if (!res.ok) {
-                                      throw new Error(await res.text())
-                                    }
-                                  } catch (e: any) {
-                                    // Revert on failure
-                                    setRows(prev => prev.map(r => r.id === row.id ? { ...r, match_target_ratio: !Boolean(checked) } : r))
-                                    toast({
-                                      title: 'Failed to update setting',
-                                      description: 'Could not update match target ratio',
-                                      variant: 'destructive'
-                                    })
-                                  }
-                                }}
-                              />
-                              <Label htmlFor={`match-target-${row.id}`} className="text-xs text-muted-foreground cursor-pointer">
-                                Match target ratio (v4)
-                              </Label>
-                            </div>
                           </div>
-
-                          {/* Enhance section - only show when expanded AND prompt exists */}
-                          {isExpanded && row.prompt && (
-                            <div className="space-y-2.5 pt-2 border-t border-border/50 transition-all duration-300">
-                              {/* Preset chips - organized by category in compact grid */}
-                              <div className="space-y-2">
-                                {Object.entries(PRESET_ENHANCEMENTS).map(([category, presets]) => (
-                                  <div key={category} className="space-y-1">
-                                    <div className="text-xs font-semibold text-muted-foreground capitalize">{category}</div>
-                                    <div className="flex flex-wrap gap-1.5">
-                                      {presets.map((preset) => {
-                                        const isSelected = (selectedPresets[row.id] || []).includes(preset.label)
-                                        return (
-                                          <button
-                                            key={preset.label}
-                                            onClick={() => handlePresetChip(row.id, preset.value, preset.label)}
-                                            className={`px-2 py-1 text-xs rounded-md transition-all duration-200 shadow-sm ${
-                                              isSelected 
-                                                ? 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-md ring-2 ring-primary/20' 
-                                                : 'bg-secondary hover:bg-secondary/80 hover:shadow'
-                                            }`}
-                                            title={preset.value}
-                                          >
-                                            {preset.label}
-                                          </button>
-                                        )
-                                      })}
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                              
-                              {/* Clear selections button */}
-                              {(selectedPresets[row.id]?.length || 0) > 0 && (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => clearPresets(row.id)}
-                                  className="h-7 px-2 text-xs"
-                                >
-                                  Clear {selectedPresets[row.id].length} selection{selectedPresets[row.id].length > 1 ? 's' : ''}
-                                </Button>
-                              )}
-                              
-                              {/* Enhancement input */}
-                              <div className="flex gap-1">
-                                <Textarea
-                                  value={enhanceInstructions[row.id] || ''}
-                                  onChange={(e) => setEnhanceInstructions(prev => ({ ...prev, [row.id]: e.target.value }))}
-                                  placeholder="Combined instructions from selected presets (or type custom)..."
-                                  rows={3}
-                                  className="resize-y text-xs flex-1 font-mono border-2 border-border/50 bg-background hover:border-border focus-visible:border-primary focus-visible:ring-primary/20 shadow-sm"
-                                />
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => handleEnhancePrompt(row.id)}
-                                  disabled={isEnhancing || !enhanceInstructions[row.id]?.trim()}
-                                  className="self-end"
-                                  title="Enhance current prompt with AI"
-                                >
-                                  {isEnhancing ? (
-                                    <Spinner size="sm" />
-                                  ) : (
-                                    <Wand2 className="h-3 w-3" />
-                                  )}
-                                </Button>
-                              </div>
-                            </div>
-                          )}
                         </div>
                       </TableCell>
 
@@ -1374,6 +1361,40 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                                     </div>
                                   </div>
                                 )}
+                                
+                                {/* Match target ratio toggle - below status indicators */}
+                                <div className="flex items-center gap-2 mt-2 pt-2 border-t border-border/50">
+                                  <Switch
+                                    id={`match-target-${row.id}`}
+                                    checked={Boolean((row as any).match_target_ratio)}
+                                    disabled={referenceImages.length === 0}
+                                    onCheckedChange={async (checked) => {
+                                      // Optimistic UI update
+                                      setRows(prev => prev.map(r => r.id === row.id ? { ...r, match_target_ratio: Boolean(checked) } : r))
+                                      try {
+                                        const res = await fetch(`/api/variants/rows/${row.id}`, {
+                                          method: 'PATCH',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ match_target_ratio: Boolean(checked) })
+                                        })
+                                        if (!res.ok) {
+                                          throw new Error(await res.text())
+                                        }
+                                      } catch (e: any) {
+                                        // Revert on failure
+                                        setRows(prev => prev.map(r => r.id === row.id ? { ...r, match_target_ratio: !Boolean(checked) } : r))
+                                        toast({
+                                          title: 'Failed to update setting',
+                                          description: 'Could not update match target ratio',
+                                          variant: 'destructive'
+                                        })
+                                      }
+                                    }}
+                                  />
+                                  <Label htmlFor={`match-target-${row.id}`} className="text-xs text-muted-foreground cursor-pointer">
+                                    Match target ratio (v4)
+                                  </Label>
+                                </div>
                               </>
                             )
                           })()}
@@ -1390,8 +1411,8 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                           if (isActive && generatedImages.length === 0) {
                             return (
                               <div className="flex flex-wrap gap-1.5">
-                                <div className="w-16 h-16 rounded-lg bg-gradient-to-br from-muted to-muted/50 border border-border/50 animate-pulse shadow-sm" />
-                                <div className="w-16 h-16 rounded-lg bg-gradient-to-br from-muted to-muted/50 border border-border/50 animate-pulse shadow-sm" />
+                                <div className="w-32 h-32 rounded-lg bg-gradient-to-br from-muted to-muted/50 border border-border/50 animate-pulse shadow-sm" />
+                                <div className="w-32 h-32 rounded-lg bg-gradient-to-br from-muted to-muted/50 border border-border/50 animate-pulse shadow-sm" />
                                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                                   <Spinner size="sm" />
                                   <span>Generating images...</span>
@@ -1411,12 +1432,12 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                                   return (
                                     <div 
                                       key={img.id} 
-                                      className="relative group w-16 h-16 rounded-lg overflow-hidden bg-muted border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 hover:scale-105 hover:border-primary/50 cursor-zoom-in"
+                                      className="relative group w-32 h-32 rounded-lg overflow-hidden bg-muted border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 hover:scale-105 hover:border-primary/50 cursor-zoom-in"
                                       onClick={async (e) => {
                                         e.stopPropagation()
                                         const actualIndex = generatedImages.findIndex(gImg => gImg.id === img.id)
                                         if (actualIndex !== -1) {
-                                          setDialogState({ isOpen: true, rowId: row.id, imageIndex: actualIndex })
+                                          setDialogState({ isOpen: true, rowId: row.id, imageIndex: actualIndex, imageType: 'generated' })
                                           await loadFullImage(img.id)
                                         }
                                       }}
@@ -1426,7 +1447,7 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                                           src={displayUrl}
                                           alt="Generated"
                                           fill
-                                          sizes="64px"
+                                          sizes="128px"
                                           className="object-cover"
                                           onError={() => loadThumbnail(img.id, img.thumbnail_path || img.output_path)}
                                         />
@@ -1459,7 +1480,7 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                                   )
                                 })}
                                 {/* Loading indicator for new images */}
-                                <div className="w-16 h-16 rounded-lg bg-gradient-to-br from-muted to-muted/50 border border-border/50 animate-pulse shadow-sm flex items-center justify-center">
+                                <div className="w-32 h-32 rounded-lg bg-gradient-to-br from-muted to-muted/50 border border-border/50 animate-pulse shadow-sm flex items-center justify-center">
                                   <Spinner size="sm" />
                                 </div>
                               </div>
@@ -1478,22 +1499,52 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                             )
                           }
 
+                          // Ensure we have the images array - defensive check
+                          const imagesToDisplay = Array.isArray(generatedImages) 
+                            ? generatedImages.slice(0, isExpanded ? 10 : 4)
+                            : []
+
+                          // Debug: Log what we're about to render
+                          if (process.env.NODE_ENV === 'development') {
+                            console.log('[VariantsWorkspace] Rendering results column', {
+                              rowId: row.id,
+                              generatedImagesCount: generatedImages.length,
+                              generatedImagesIsArray: Array.isArray(generatedImages),
+                              isExpanded,
+                              sliceLimit: isExpanded ? 10 : 4,
+                              imagesToRender: imagesToDisplay.length,
+                              imageIds: imagesToDisplay.map(img => img.id),
+                              allGeneratedImageIds: generatedImages.map(img => img.id)
+                            })
+                          }
+
                           return (
                             <div className="flex flex-wrap gap-1.5">
-                              {generatedImages.slice(0, isExpanded ? 10 : 4).map((img: any, index: number) => {
+                              {imagesToDisplay.map((img: any, index: number) => {
                                 const isFavorited = favoritesState[img.id] ?? (img.is_favorited === true)
                                 const displayUrl = thumbnailUrls[img.id] || loaderThumbnailUrls[img.id] || ''
                                 
+                                // Debug: Log each image being rendered
+                                if (process.env.NODE_ENV === 'development') {
+                                  console.log('[VariantsWorkspace] Rendering image', {
+                                    rowId: row.id,
+                                    imageId: img.id,
+                                    index,
+                                    hasDisplayUrl: !!displayUrl,
+                                    is_generated: img.is_generated
+                                  })
+                                }
+                                
                                 return (
                                   <div 
-                                    key={img.id} 
-                                    className="relative group w-16 h-16 rounded-lg overflow-hidden bg-muted border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 hover:scale-105 hover:border-primary/50 cursor-zoom-in"
+                                    key={`${row.id}-${img.id}-${index}`} 
+                                    className="relative group w-32 h-32 rounded-lg overflow-hidden bg-muted border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 hover:scale-105 hover:border-primary/50 cursor-zoom-in"
                                     onClick={async (e) => {
                                       e.stopPropagation()
                                       // Find the actual index in the generatedImages array
                                       const actualIndex = generatedImages.findIndex(gImg => gImg.id === img.id)
                                       if (actualIndex !== -1) {
-                                        setDialogState({ isOpen: true, rowId: row.id, imageIndex: actualIndex })
+                                        setDialogState({ isOpen: true, rowId: row.id, imageIndex: actualIndex, imageType: 'generated' })
                                         // Load full resolution when opening dialog
                                         await loadFullImage(img.id)
                                       }
@@ -1504,7 +1555,7 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                                         src={displayUrl}
                                         alt="Generated"
                                         fill
-                                        sizes="64px"
+                                        sizes="128px"
                                         className="object-cover"
                                         onError={() => loadThumbnail(img.id, img.thumbnail_path || img.output_path)}
                                       />
@@ -1538,7 +1589,7 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                                 )
                               })}
                               {generatedImages.length > (isExpanded ? 10 : 4) && (
-                                <div className="flex items-center justify-center w-16 h-16 rounded bg-muted/50 border border-border/50 text-[10px] text-muted-foreground">
+                                <div className="flex items-center justify-center w-32 h-32 rounded bg-muted/50 border border-border/50 text-[10px] text-muted-foreground">
                                   +{generatedImages.length - (isExpanded ? 10 : 4)}
                                 </div>
                               )}
@@ -1561,6 +1612,92 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                       </TableCell>
                     </TableRow>
                   )
+
+                  const enhancementRow = isExpanded && row.prompt ? (
+                    <TableRow key={`enhancement-${row.id}`} className="bg-muted/20 border-t-2 border-t-primary/30">
+                      <TableCell colSpan={6} className="p-4">
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 transition-all duration-300">
+                          {/* Left side: Preset chips - organized by category */}
+                          <div className="space-y-2.5">
+                            <div className="space-y-2">
+                              {Object.entries(PRESET_ENHANCEMENTS).map(([category, presets]) => (
+                                <div key={category} className="space-y-1.5">
+                                  <div className="text-xs font-semibold text-muted-foreground capitalize">{category}</div>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {presets.map((preset) => {
+                                      const isSelected = (selectedPresets[row.id] || []).includes(preset.label)
+                                      return (
+                                        <button
+                                          key={preset.label}
+                                          onClick={() => handlePresetChip(row.id, preset.value, preset.label)}
+                                          className={`px-2 py-1 text-xs rounded-md transition-all duration-200 shadow-sm ${
+                                            isSelected 
+                                              ? 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-md ring-2 ring-primary/20' 
+                                              : 'bg-secondary hover:bg-secondary/80 hover:shadow'
+                                          }`}
+                                          title={preset.value}
+                                        >
+                                          {preset.label}
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                            
+                            {/* Clear selections button */}
+                            {(selectedPresets[row.id]?.length || 0) > 0 && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => clearPresets(row.id)}
+                                className="h-7 px-2 text-xs"
+                              >
+                                Clear {selectedPresets[row.id].length} selection{selectedPresets[row.id].length > 1 ? 's' : ''}
+                              </Button>
+                            )}
+                          </div>
+                          
+                          {/* Right side: Enhancement input */}
+                          <div className="flex flex-col gap-2">
+                            <div className="text-xs font-semibold text-muted-foreground">Enhancement Instructions</div>
+                            <div className="flex flex-col gap-2 flex-1">
+                              <Textarea
+                                value={enhanceInstructions[row.id] || ''}
+                                onChange={(e) => setEnhanceInstructions(prev => ({ ...prev, [row.id]: e.target.value }))}
+                                placeholder="Combined instructions from selected presets (or type custom)..."
+                                rows={8}
+                                className="resize-y text-xs flex-1 font-mono border-2 border-border/50 bg-background hover:border-border focus-visible:border-primary focus-visible:ring-primary/20 shadow-sm min-h-[200px]"
+                              />
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleEnhancePrompt(row.id)}
+                                disabled={isEnhancing || !enhanceInstructions[row.id]?.trim()}
+                                className="self-end"
+                                title="Enhance current prompt with AI"
+                              >
+                                {isEnhancing ? (
+                                  <>
+                                    <Spinner size="sm" className="mr-2" />
+                                    Enhancing...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Wand2 className="h-3 w-3 mr-2" />
+                                    Enhance Prompt
+                                  </>
+                                )}
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : null
+
+                  return [mainRow, enhancementRow].filter(Boolean)
                 })}
               </TableBody>
             </Table>
@@ -1573,7 +1710,7 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
         open={dialogState.isOpen} 
         onOpenChange={(open) => {
           if (!open) {
-            setDialogState({ isOpen: false, rowId: null, imageIndex: 0 })
+            setDialogState({ isOpen: false, rowId: null, imageIndex: 0, imageType: 'generated' })
           }
         }}
       >
@@ -1583,39 +1720,60 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
             if (!currentRow) return null
             
             const allImages = currentRow.variant_row_images || []
-            // Defensive filtering: only images with is_generated === true
-            const generatedImages = allImages.filter(img => {
-              // Strict check: only include images explicitly marked as generated
-              // Exclude null, undefined, false, and any other falsy values
-              return img.is_generated === true
-            })
             
-            if (generatedImages.length === 0) return null
+            // Get the appropriate image array based on imageType
+            let images: any[] = []
+            let imageTypeLabel = ''
+            if (dialogState.imageType === 'generated') {
+              // Defensive filtering: only images with is_generated === true
+              images = allImages.filter(img => {
+                // Strict check: only include images explicitly marked as generated
+                // Exclude null, undefined, false, and any other falsy values
+                return img.is_generated === true
+              })
+              imageTypeLabel = 'Generated Image'
+            } else {
+              // Reference images: is_generated !== true
+              images = allImages.filter(img => {
+                return img.is_generated !== true
+              })
+              imageTypeLabel = 'Reference Image'
+            }
             
-            const currentImage = generatedImages[dialogState.imageIndex]
+            if (images.length === 0) return null
+            
+            const currentImage = images[dialogState.imageIndex]
             if (!currentImage) return null
             
-            const isFavorited = getCurrentFavoriteStatus(currentImage.id, currentImage.is_favorited)
-            const fullImageUrl = fullUrls[currentImage.id] || thumbnailUrls[currentImage.id] || loaderThumbnailUrls[currentImage.id] || ''
+            const isFavorited = dialogState.imageType === 'generated' 
+              ? getCurrentFavoriteStatus(currentImage.id, currentImage.is_favorited)
+              : false // Reference images don't have favorites
+            
+            // For reference images, use thumbnailUrls; for generated, prefer fullUrls
+            const fullImageUrl = dialogState.imageType === 'generated'
+              ? (fullUrls[currentImage.id] || thumbnailUrls[currentImage.id] || loaderThumbnailUrls[currentImage.id] || '')
+              : (thumbnailUrls[currentImage.id] || '')
             
             return (
               <>
                 <DialogHeader>
                   <DialogTitle>
-                    Generated Image {dialogState.imageIndex + 1} of {generatedImages.length}
+                    {imageTypeLabel} {dialogState.imageIndex + 1} of {images.length}
                   </DialogTitle>
                 </DialogHeader>
                 
-                {/* Favorites button - top-left overlay */}
-                <button 
-                  onClick={() => handleToggleFavorite(currentImage.id, isFavorited)}
-                  className="absolute top-4 left-4 z-50 p-2 rounded-full bg-black/50 hover:bg-black/70 transition-colors"
-                  title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
-                >
-                  <Star 
-                    className={`w-5 h-5 ${isFavorited ? 'fill-yellow-400 text-yellow-400' : 'text-white hover:text-yellow-300'}`} 
-                  />
-                </button>
+                {/* Favorites button - top-left overlay (only for generated images) */}
+                {dialogState.imageType === 'generated' && (
+                  <button 
+                    onClick={() => handleToggleFavorite(currentImage.id, isFavorited)}
+                    className="absolute top-4 left-4 z-50 p-2 rounded-full bg-black/50 hover:bg-black/70 transition-colors"
+                    title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+                  >
+                    <Star 
+                      className={`w-5 h-5 ${isFavorited ? 'fill-yellow-400 text-yellow-400' : 'text-white hover:text-yellow-300'}`} 
+                    />
+                  </button>
+                )}
                 
                 {/* Image container with navigation arrows */}
                 <div className="relative w-full min-h-[400px]">
@@ -1660,7 +1818,7 @@ export function VariantsRowsWorkspace({ initialRows }: VariantsRowsWorkspaceProp
                   </div>
                   
                   {/* Right arrow */}
-                  {dialogState.imageIndex < generatedImages.length - 1 && (
+                  {dialogState.imageIndex < images.length - 1 && (
                     <Button
                       variant="ghost"
                       size="icon"

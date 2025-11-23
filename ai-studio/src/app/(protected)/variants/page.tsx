@@ -20,28 +20,17 @@ const VariantsPage = async () => {
   let variantRows: VariantRow[] = []
   
   try {
+    // Fetch variant rows - use separate query for images to avoid any nested query limits
     const { data: rows, error } = await supabase
       .from('variant_rows')
       .select(`
         *,
         output_width,
         output_height,
-        match_target_ratio,
-        variant_row_images (
-          id,
-          variant_row_id,
-          output_path,
-          thumbnail_path,
-          source_row_id,
-          position,
-          is_favorited,
-          is_generated,
-          created_at
-        )
+        match_target_ratio
       `)
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
-      .order('position', { referencedTable: 'variant_row_images', ascending: true })
 
     if (error) {
       console.error('Failed to fetch variant rows:', error)
@@ -50,8 +39,33 @@ const VariantsPage = async () => {
         console.warn('variant_rows table does not exist yet. Please run migrations.')
         variantRows = []
       }
-    } else {
-      variantRows = (rows || []).map(row => {
+    } else if (rows && rows.length > 0) {
+      // Fetch all variant_row_images separately to ensure we get all images
+      const rowIds = rows.map(r => r.id)
+      const { data: images, error: imagesError } = await supabase
+        .from('variant_row_images')
+        .select('*')
+        .in('variant_row_id', rowIds)
+        // Order by position for reference images, but we'll sort generated images by created_at in the component
+        .order('position', { ascending: true })
+        .order('created_at', { ascending: false, nullsFirst: false })
+      
+      const allImages = images || []
+      
+      if (imagesError) {
+        console.error('Failed to fetch variant row images:', imagesError)
+      }
+
+      // Attach images to their respective rows
+      const rowsWithImages = rows.map(row => {
+        const rowImages = allImages.filter(img => img.variant_row_id === row.id)
+        return {
+          ...row,
+          variant_row_images: rowImages
+        }
+      })
+
+      variantRows = rowsWithImages.map(row => {
         // Validate and normalize variant_row_images
         const images = (row as any).variant_row_images || []
         const validatedImages = images.map((img: any) => {

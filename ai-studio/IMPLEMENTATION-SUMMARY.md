@@ -149,9 +149,9 @@ Enhanced logging shows:
 
 ```javascript
 {
-  promptStyle: 'rich-seedream' | 'legacy-concise',
-  maxTokens: 350,
-  temperature: 0.5,
+  promptStyle: 'seedream-4.0' | 'seedream-v4-rich' | 'legacy-concise',
+  maxTokens: 1500, // face-swap, 400-500 for variants
+  temperature: 0.3, // face-swap, 0.45 for variants
   promptLength: 245,
   wordCount: 189,
   refImagesCount: 1,
