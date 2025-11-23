@@ -25,7 +25,8 @@ export async function POST(
           output_path,
           thumbnail_path,
           position,
-          source_row_id
+          source_row_id,
+          is_generated
         )
       `)
       .eq('id', rowId)
@@ -51,24 +52,32 @@ export async function POST(
       }, { status: 400 })
     }
 
-    // Sort by position and get image paths
+    // Sort by position for consistent ordering
     const sortedImages = images.sort((a: any, b: any) => a.position - b.position)
-    const imagePaths = sortedImages.map((img: any) => img.output_path)
-
-    // Require at least 1 image (target-only allowed for Seedream edit)
-    if (imagePaths.length < 1) {
+    
+    // Identify reference images by is_generated flag (not by position)
+    // Reference images: is_generated !== true (includes false, null, undefined)
+    const referenceImages = sortedImages.filter((img: any) => img.is_generated !== true)
+    const generatedImages = sortedImages.filter((img: any) => img.is_generated === true)
+    
+    // Require at least 1 reference image (target-only allowed for Seedream edit)
+    if (referenceImages.length === 0) {
       return NextResponse.json({ 
-        error: 'Need at least 1 image in the variant row to generate a new variant' 
+        error: 'Need at least 1 reference image in the variant row to generate a new variant' 
       }, { status: 400 })
     }
 
-    // Use all but last as reference images, last as target image (works with 1 image -> target only)
-    const refPaths = imagePaths.length > 1 ? imagePaths.slice(0, -1) : []
-    const targetPath = imagePaths[imagePaths.length - 1]
+    // For Seedream API: use all but last reference image as refs, last reference as target
+    // This maintains backward compatibility with existing behavior
+    const refPaths = referenceImages.length > 1 ? referenceImages.slice(0, -1).map((img: any) => img.output_path) : []
+    const targetPath = referenceImages[referenceImages.length - 1].output_path
 
     console.log('[VariantGenerate] Creating job', {
       rowId,
+      referenceImagesCount: referenceImages.length,
       refImagesCount: refPaths.length,
+      generatedImagesCount: generatedImages.length,
+      matchTargetRatio: row.match_target_ratio || false,
       prompt: row.prompt.substring(0, 100) + '...'
     })
 
@@ -171,67 +180,95 @@ export async function POST(
       }
     }
 
-    // Determine output dimensions from variant row (preferred) or model (fallback to 4096)
+    // Determine output dimensions
+    // Priority: match_target_ratio (if enabled) > variant row > model > default
     let width = 4096
     let height = 4096
+    let usedReferenceRatio = false
     
-    // First, try to get dimensions from variant row
-    const variantWidth = Number(row.output_width) || 0
-    const variantHeight = Number(row.output_height) || 0
-    if (variantWidth > 0 && variantHeight > 0) {
-      width = variantWidth
-      height = variantHeight
-    } else if (modelId) {
-      // Fallback to model dimensions if variant row doesn't have dimensions set
-      try {
-        const { data: modelDims } = await supabase
-          .from('models')
-          .select('output_width, output_height, size')
-          .eq('id', modelId)
-          .single()
-        const ow = Number((modelDims as any)?.output_width) || 0
-        const oh = Number((modelDims as any)?.output_height) || 0
-        if (ow > 0 && oh > 0) {
-          width = ow
-          height = oh
-        } else if ((modelDims as any)?.size?.includes('*')) {
-          const [wStr, hStr] = (modelDims as any).size.split('*')
-          const pw = Number(wStr)
-          const ph = Number(hStr)
-          if (pw > 0 && ph > 0) {
-            width = pw
-            height = ph
-          }
+    // If match_target_ratio is enabled, use first reference image dimensions to override controls
+    if (row.match_target_ratio) {
+      // Validate that we have at least one reference image
+      if (referenceImages.length === 0) {
+        return NextResponse.json({ 
+          error: 'Match target ratio is enabled but no reference images found. Add reference images first.' 
+        }, { status: 400 })
+      }
+      
+      // Use the first reference image (by position) for dimension matching
+      const firstReferenceImage = referenceImages[0]
+      const referenceImagePath = firstReferenceImage.output_path
+      
+      if (referenceImagePath) {
+        try {
+          // Short-lived signed URL for probing dimensions
+          const signedRefUrl = await signPath(referenceImagePath, 120)
+          const dims = await getRemoteImageDimensions(signedRefUrl)
+          
+          // Use reference image dimensions as baseline for max quality computation
+          // Start with a high-quality baseline (4096) to compute max quality dimensions
+          // This completely overrides variant row output_width/output_height values
+          const computed = computeMaxQualityDimensionsForRatio(
+            4096,  // Use high-quality baseline
+            4096,  // Use high-quality baseline
+            dims.width,
+            dims.height
+          )
+          width = computed.width
+          height = computed.height
+          usedReferenceRatio = true
+          
+          console.log('[VariantGenerate] Using reference image ratio override (toggle enabled)', {
+            rowId,
+            matchTargetRatio: true,
+            referenceImagePath,
+            referenceDims: dims,
+            computedWidth: width,
+            computedHeight: height,
+            overridesVariantRowDimensions: true
+          })
+        } catch (e: any) {
+          console.warn('[VariantGenerate] Failed to probe reference image dimensions; falling back to variant/model dimensions', {
+            rowId,
+            referenceImagePath,
+            error: e?.message
+          })
+          // Fall through to variant row / model dimensions if probe fails
         }
-      } catch {}
+      }
     }
-
-    // Optionally override size to match target aspect ratio at max quality
-    if (row.match_target_ratio && targetPath) {
-      try {
-        // Short-lived signed URL for probing dimensions
-        const signedTargetUrl = await signPath(targetPath, 120)
-        const dims = await getRemoteImageDimensions(signedTargetUrl)
-        const computed = computeMaxQualityDimensionsForRatio(
-          width,  // Use the determined width as baseline
-          height, // Use the determined height as baseline
-          dims.width,
-          dims.height
-        )
-        width = computed.width
-        height = computed.height
-        console.log('[VariantGenerate] Using target ratio override', {
-          rowId,
-          matchTargetRatio: true,
-          targetDims: dims,
-          computedWidth: width,
-          computedHeight: height
-        })
-      } catch (e: any) {
-        console.warn('[VariantGenerate] Failed to probe target dimensions; falling back to variant/model dimensions', {
-          rowId,
-          error: e?.message
-        })
+    
+    // Only use variant row / model dimensions if match_target_ratio is disabled or failed
+    if (!usedReferenceRatio) {
+      // First, try to get dimensions from variant row
+      const variantWidth = Number(row.output_width) || 0
+      const variantHeight = Number(row.output_height) || 0
+      if (variantWidth > 0 && variantHeight > 0) {
+        width = variantWidth
+        height = variantHeight
+      } else if (modelId) {
+        // Fallback to model dimensions if variant row doesn't have dimensions set
+        try {
+          const { data: modelDims } = await supabase
+            .from('models')
+            .select('output_width, output_height, size')
+            .eq('id', modelId)
+            .single()
+          const ow = Number((modelDims as any)?.output_width) || 0
+          const oh = Number((modelDims as any)?.output_height) || 0
+          if (ow > 0 && oh > 0) {
+            width = ow
+            height = oh
+          } else if ((modelDims as any)?.size?.includes('*')) {
+            const [wStr, hStr] = (modelDims as any).size.split('*')
+            const pw = Number(wStr)
+            const ph = Number(hStr)
+            if (pw > 0 && ph > 0) {
+              width = pw
+              height = ph
+            }
+          }
+        } catch {}
       }
     }
 
