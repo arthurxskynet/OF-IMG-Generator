@@ -8,8 +8,12 @@ create extension if not exists "uuid-ossp";
 create table if not exists public.profiles (
   user_id uuid primary key references auth.users(id) on delete cascade,
   full_name text,
+  is_admin boolean not null default false,
   created_at timestamptz default now()
 );
+
+-- Create index for admin lookups
+create index if not exists idx_profiles_is_admin on public.profiles(is_admin) where is_admin = true;
 
 -- Teams and membership
 create table if not exists public.teams (
@@ -111,89 +115,140 @@ returns boolean language sql as $$
   );
 $$;
 
+-- helper function to check if current user is admin
+create or replace function public.is_admin_user()
+returns boolean
+language sql
+security definer
+stable
+as $$
+  select exists (
+    select 1 from public.profiles 
+    where user_id = auth.uid() and is_admin = true
+  );
+$$;
+
+-- Grant execute permission
+grant execute on function public.is_admin_user() to authenticated, anon;
+
 -- Policies
 -- profiles
 drop policy if exists "profiles self" on public.profiles;
-create policy "profiles self" on public.profiles
-  for select using (auth.uid() = user_id);
+drop policy if exists "profiles self or admin" on public.profiles;
+create policy "profiles self or admin" on public.profiles
+  for select using (auth.uid() = user_id or public.is_admin_user());
 drop policy if exists "profiles insert self" on public.profiles;
-create policy "profiles insert self" on public.profiles
-  for insert with check (auth.uid() = user_id);
+drop policy if exists "profiles insert self or admin" on public.profiles;
+create policy "profiles insert self or admin" on public.profiles
+  for insert with check (auth.uid() = user_id or public.is_admin_user());
 drop policy if exists "profiles update self" on public.profiles;
-create policy "profiles update self" on public.profiles
-  for update using (auth.uid() = user_id);
+drop policy if exists "profiles update self or admin" on public.profiles;
+create policy "profiles update self or admin" on public.profiles
+  for update using (auth.uid() = user_id or public.is_admin_user());
 
 -- teams
 drop policy if exists "team owner or member can read" on public.teams;
-create policy "team owner or member can read" on public.teams
-  for select using (owner_id = auth.uid() or public.is_team_member(auth.uid(), id));
+drop policy if exists "team owner or member or admin can read" on public.teams;
+create policy "team owner or member or admin can read" on public.teams
+  for select using (owner_id = auth.uid() or public.is_team_member(auth.uid(), id) or public.is_admin_user());
 drop policy if exists "create team" on public.teams;
-create policy "create team" on public.teams
-  for insert with check (owner_id = auth.uid());
+drop policy if exists "create team or admin" on public.teams;
+create policy "create team or admin" on public.teams
+  for insert with check (owner_id = auth.uid() or public.is_admin_user());
 drop policy if exists "owner can update" on public.teams;
-create policy "owner can update" on public.teams
-  for update using (owner_id = auth.uid());
+drop policy if exists "owner or admin can update" on public.teams;
+create policy "owner or admin can update" on public.teams
+  for update using (owner_id = auth.uid() or public.is_admin_user());
+drop policy if exists "owner can delete" on public.teams;
+drop policy if exists "owner or admin can delete" on public.teams;
+create policy "owner or admin can delete" on public.teams
+  for delete using (owner_id = auth.uid() or public.is_admin_user());
 
 -- team_members
 drop policy if exists "members read their teams" on public.team_members;
-create policy "members read their teams" on public.team_members
-  for select using (public.is_team_member(auth.uid(), team_id) or exists (select 1 from public.teams t where t.id = team_id and t.owner_id = auth.uid()));
+drop policy if exists "members or admin read their teams" on public.team_members;
+create policy "members or admin read their teams" on public.team_members
+  for select using (public.is_team_member(auth.uid(), team_id) or exists (select 1 from public.teams t where t.id = team_id and t.owner_id = auth.uid()) or public.is_admin_user());
 drop policy if exists "owner add members" on public.team_members;
-create policy "owner add members" on public.team_members
-  for insert with check (exists (select 1 from public.teams t where t.id = team_id and t.owner_id = auth.uid()));
+drop policy if exists "owner or admin add members" on public.team_members;
+create policy "owner or admin add members" on public.team_members
+  for insert with check (exists (select 1 from public.teams t where t.id = team_id and t.owner_id = auth.uid()) or public.is_admin_user());
 drop policy if exists "owner remove members" on public.team_members;
-create policy "owner remove members" on public.team_members
-  for delete using (exists (select 1 from public.teams t where t.id = team_id and t.owner_id = auth.uid()));
+drop policy if exists "owner or admin remove members" on public.team_members;
+create policy "owner or admin remove members" on public.team_members
+  for delete using (exists (select 1 from public.teams t where t.id = team_id and t.owner_id = auth.uid()) or public.is_admin_user());
 
 -- models
 drop policy if exists "read models if team member or owner" on public.models;
-create policy "read models if team member or owner" on public.models
-  for select using ((team_id is null and owner_id = auth.uid()) or public.is_team_member(auth.uid(), team_id) or exists (select 1 from public.teams t where t.id = team_id and t.owner_id = auth.uid()));
+drop policy if exists "read models if team member or owner or admin" on public.models;
+create policy "read models if team member or owner or admin" on public.models
+  for select using ((team_id is null and owner_id = auth.uid()) or public.is_team_member(auth.uid(), team_id) or exists (select 1 from public.teams t where t.id = team_id and t.owner_id = auth.uid()) or public.is_admin_user());
 drop policy if exists "insert models owner or team owner" on public.models;
-create policy "insert models owner or team owner" on public.models
-  for insert with check (owner_id = auth.uid() and (team_id is null or exists (select 1 from public.teams t where t.id = team_id and t.owner_id = auth.uid())));
+drop policy if exists "insert models owner or team owner or admin" on public.models;
+create policy "insert models owner or team owner or admin" on public.models
+  for insert with check ((owner_id = auth.uid() and (team_id is null or exists (select 1 from public.teams t where t.id = team_id and t.owner_id = auth.uid()))) or public.is_admin_user());
 drop policy if exists "update models owner or team owner" on public.models;
-create policy "update models owner or team owner" on public.models
-  for update using (owner_id = auth.uid() or exists (select 1 from public.teams t where t.id = team_id and t.owner_id = auth.uid()));
+drop policy if exists "update models owner or team owner or admin" on public.models;
+create policy "update models owner or team owner or admin" on public.models
+  for update using (owner_id = auth.uid() or exists (select 1 from public.teams t where t.id = team_id and t.owner_id = auth.uid()) or public.is_admin_user());
 drop policy if exists "delete models owner or team owner" on public.models;
-create policy "delete models owner or team owner" on public.models
-  for delete using (owner_id = auth.uid() or exists (select 1 from public.teams t where t.id = team_id and t.owner_id = auth.uid()));
+drop policy if exists "delete models owner or team owner or admin" on public.models;
+create policy "delete models owner or team owner or admin" on public.models
+  for delete using (owner_id = auth.uid() or exists (select 1 from public.teams t where t.id = team_id and t.owner_id = auth.uid()) or public.is_admin_user());
 
 -- model_rows
 drop policy if exists "read rows if member" on public.model_rows;
-create policy "read rows if member" on public.model_rows
-  for select using (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))));
+drop policy if exists "read rows if member or admin" on public.model_rows;
+create policy "read rows if member or admin" on public.model_rows
+  for select using (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))) or public.is_admin_user());
 drop policy if exists "insert rows if member" on public.model_rows;
-create policy "insert rows if member" on public.model_rows
-  for insert with check (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))));
+drop policy if exists "insert rows if member or admin" on public.model_rows;
+create policy "insert rows if member or admin" on public.model_rows
+  for insert with check (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))) or public.is_admin_user());
 drop policy if exists "update rows if member" on public.model_rows;
-create policy "update rows if member" on public.model_rows
-  for update using (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))));
+drop policy if exists "update rows if member or admin" on public.model_rows;
+create policy "update rows if member or admin" on public.model_rows
+  for update using (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))) or public.is_admin_user());
 drop policy if exists "delete rows if member" on public.model_rows;
-create policy "delete rows if member" on public.model_rows
-  for delete using (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))));
+drop policy if exists "delete rows if member or admin" on public.model_rows;
+create policy "delete rows if member or admin" on public.model_rows
+  for delete using (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))) or public.is_admin_user());
 
 -- jobs
 drop policy if exists "read jobs if member" on public.jobs;
-create policy "read jobs if member" on public.jobs
-  for select using (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id));
+drop policy if exists "read jobs if member or admin" on public.jobs;
+create policy "read jobs if member or admin" on public.jobs
+  for select using (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id) or public.is_admin_user());
 drop policy if exists "insert jobs if member" on public.jobs;
-create policy "insert jobs if member" on public.jobs
-  for insert with check (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id));
+drop policy if exists "insert jobs if member or admin" on public.jobs;
+create policy "insert jobs if member or admin" on public.jobs
+  for insert with check (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id) or public.is_admin_user());
 drop policy if exists "update jobs if member" on public.jobs;
-create policy "update jobs if member" on public.jobs
-  for update using (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id));
+drop policy if exists "update jobs if member or admin" on public.jobs;
+create policy "update jobs if member or admin" on public.jobs
+  for update using (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id) or public.is_admin_user());
+drop policy if exists "delete jobs if member" on public.jobs;
+drop policy if exists "delete jobs if member or admin" on public.jobs;
+create policy "delete jobs if member or admin" on public.jobs
+  for delete using (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id) or public.is_admin_user());
 
 -- generated_images
 drop policy if exists "read images if member" on public.generated_images;
-create policy "read images if member" on public.generated_images
-  for select using (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id));
+drop policy if exists "read images if member or admin" on public.generated_images;
+create policy "read images if member or admin" on public.generated_images
+  for select using (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id) or public.is_admin_user());
 drop policy if exists "insert images if member" on public.generated_images;
-create policy "insert images if member" on public.generated_images
-  for insert with check (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id));
+drop policy if exists "insert images if member or admin" on public.generated_images;
+create policy "insert images if member or admin" on public.generated_images
+  for insert with check (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id) or public.is_admin_user());
 drop policy if exists "update images if member" on public.generated_images;
-create policy "update images if member" on public.generated_images
-  for update using (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id));
+drop policy if exists "update images if member or admin" on public.generated_images;
+create policy "update images if member or admin" on public.generated_images
+  for update using (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id) or public.is_admin_user());
+drop policy if exists "delete images if member" on public.generated_images;
+drop policy if exists "delete images if member or admin" on public.generated_images;
+create policy "delete images if member or admin" on public.generated_images
+  for delete using (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id) or public.is_admin_user());
 
 commit;
 

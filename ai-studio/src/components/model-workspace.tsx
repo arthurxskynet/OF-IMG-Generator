@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect, useMemo, memo } from 'react'
+import { useRouter } from 'next/navigation'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -60,6 +61,7 @@ const INTERNAL_IMAGE_MIME = 'application/x-ai-studio-image'
 
 export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspaceProps) {
   const { toast } = useToast()
+  const router = useRouter()
   const supabase = createClient()
   const [enhanceOpenRowId, setEnhanceOpenRowId] = useState<string | null>(null)
   const [rows, setRows] = useState(initialRows)
@@ -95,15 +97,13 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
   const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set())
   const [isDownloading, setIsDownloading] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [isAddingToVariants, setIsAddingToVariants] = useState(false)
   
   // Delete confirmation dialog state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   
   // Favorites state for immediate UI updates
   const [favoritesState, setFavoritesState] = useState<Record<string, boolean>>({})
-  
-  // Preserve composition state (default to true)
-  const [preserveComposition, setPreserveComposition] = useState(true)
   
   // Collect all images from all rows for thumbnail loading
   const allImages = useMemo(() => {
@@ -2103,8 +2103,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       // Optimistically mark status as queued for instant feedback
       setRows(prev => prev.map(r => r.id === rowId ? { ...r, status: 'queued' as any } : r))
       
-      // Create job with optional AI prompt generation and composition preservation
-      const result = await createJobs({ rowId, useAiPrompt, preserveComposition })
+      // Create job with optional AI prompt generation
+      const result = await createJobs({ rowId, useAiPrompt })
       const ids = result.jobIds || []
       if (ids[0]) startPolling(ids[0], 'submitted', rowId)
       
@@ -2131,7 +2131,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         [rowId]: { ...getRowState(rowId), isGenerating: false }
       }))
     }
-  }, [rows, getRowState, setRowStates, toast, createJobs, startPolling, preserveComposition])
+  }, [rows, getRowState, setRowStates, toast, createJobs, startPolling])
 
   // Remove row
   const handleRemoveRow = useCallback(async (rowId: string) => {
@@ -2484,6 +2484,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       return
     }
 
+    setIsAddingToVariants(true)
+
     // Find selected images and group by row
     const selectedImages = []
     for (const imageId of selectedImageIds) {
@@ -2501,31 +2503,76 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
       }
     }
 
-    if (selectedImages.length === 0) return
+    if (selectedImages.length === 0) {
+      setIsAddingToVariants(false)
+      toast({
+        title: 'No images found',
+        description: 'Selected images could not be found in the current rows',
+        variant: 'destructive'
+      })
+      return
+    }
 
     try {
       const response = await fetch('/api/variants/rows/batch-add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ images: selectedImages })
+        body: JSON.stringify({
+          images: selectedImages,
+          model_id: model.id
+        })
       })
 
       if (!response.ok) {
-        throw new Error('Failed to add images to variants')
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || 'Failed to add images to variants')
       }
 
       const result = await response.json()
       
-      toast({
-        title: 'Added to Variants',
-        description: `Created ${result.rowsCreated} variant row${result.rowsCreated === 1 ? '' : 's'} with ${result.imagesAdded} image${result.imagesAdded === 1 ? '' : 's'}`
-      })
+      // Validate response data
+      if (!result || typeof result.rowsCreated !== 'number' || typeof result.imagesAdded !== 'number') {
+        throw new Error('Invalid response from server')
+      }
+
+      // Only show success toast if rows/images were actually created
+      if (result.rowsCreated > 0 && result.imagesAdded > 0) {
+        console.log('[ModelWorkspace] Showing success toast:', { rowsCreated: result.rowsCreated, imagesAdded: result.imagesAdded })
+        toast({
+          title: 'Added to Variants',
+          description: `Created ${result.rowsCreated} variant row${result.rowsCreated === 1 ? '' : 's'} with ${result.imagesAdded} image${result.imagesAdded === 1 ? '' : 's'}`
+        })
+        
+        // Dispatch custom event to trigger variants tab refresh
+        // This ensures the variants tab updates immediately even if realtime subscription hasn't fired yet
+        window.dispatchEvent(new CustomEvent('variants:rows-added', {
+          detail: {
+            modelId: model.id,
+            rowsCreated: result.rowsCreated,
+            rows: result.rows || []
+          }
+        }))
+        
+        // Refresh server-side cache to ensure parent Server Component refetches data
+        router.refresh()
+        
+        // Clear selection after successful add
+        setSelectedImageIds(new Set())
+      } else {
+        toast({
+          title: 'No rows created',
+          description: 'Images were not added to variants. Please try again.',
+          variant: 'destructive'
+        })
+      }
     } catch (error) {
       toast({
         title: 'Failed to add to variants',
         description: error instanceof Error ? error.message : 'Unknown error',
         variant: 'destructive'
       })
+    } finally {
+      setIsAddingToVariants(false)
     }
   }
 
@@ -2607,16 +2654,6 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                     <div className="h-2 w-2 rounded-full bg-red-500" />
                     <span className="text-sm font-medium">{counts.failed}</span>
                     <span className="text-xs text-muted-foreground">Failed</span>
-                  </div>
-                  <div className="flex items-center gap-2 ml-4 pl-4 border-l">
-                    <Switch 
-                      id="preserve-composition" 
-                      checked={preserveComposition}
-                      onCheckedChange={setPreserveComposition}
-                    />
-                    <Label htmlFor="preserve-composition" className="text-xs text-muted-foreground cursor-pointer">
-                      Preserve composition (pose/crop/angle)
-                    </Label>
                   </div>
                 </>
               )
@@ -2777,11 +2814,20 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                   variant="secondary"
                                   size="sm"
                                   onClick={handleAddSelectedToVariants}
-                                  disabled={isDownloading || isDeleting}
+                                  disabled={isDownloading || isDeleting || isAddingToVariants}
                                   className="h-6 px-2 text-xs whitespace-nowrap"
                                 >
-                                  <Plus className="w-3 h-3 mr-1" />
-                                  Add to Variants
+                                  {isAddingToVariants ? (
+                                    <>
+                                      <Spinner size="sm" className="mr-1" />
+                                      Adding...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Plus className="w-3 h-3 mr-1" />
+                                      Add to Variants
+                                    </>
+                                  )}
                                 </Button>
                               </>
                             )}
@@ -3591,24 +3637,49 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                                   outputPath: image.output_url,
                                                   thumbnailPath: image.thumbnail_url || null,
                                                   sourceRowId: row.id
-                                                }]
+                                                }],
+                                                model_id: model.id
                                               })
                                             })
 
                                             if (!response.ok) {
-                                              throw new Error('Failed to add to variants')
+                                              const errorData = await response.json().catch(() => ({}))
+                                              throw new Error(errorData.error || 'Failed to add to variants')
                                             }
 
                                             const result = await response.json()
                                             
-                                            toast({
-                                              title: 'Added to Variants',
-                                              description: `Added to variant row`
-                                            })
+                                            // Validate response data
+                                            if (!result || typeof result.rowsCreated !== 'number' || typeof result.imagesAdded !== 'number') {
+                                              throw new Error('Invalid response from server')
+                                            }
+
+                                            // Only show success toast if rows/images were actually created
+                                            if (result.rowsCreated > 0 && result.imagesAdded > 0) {
+                                              toast({
+                                                title: 'Added to Variants',
+                                                description: `Created ${result.rowsCreated} variant row${result.rowsCreated === 1 ? '' : 's'} with ${result.imagesAdded} image${result.imagesAdded === 1 ? '' : 's'}`
+                                              })
+                                              
+                                              // Dispatch custom event to trigger variants tab refresh
+                                              window.dispatchEvent(new CustomEvent('variants:rows-added', {
+                                                detail: {
+                                                  modelId: model.id,
+                                                  rowsCreated: result.rowsCreated,
+                                                  rows: result.rows || []
+                                                }
+                                              }))
+                                            } else {
+                                              toast({
+                                                title: 'No rows created',
+                                                description: 'Image was not added to variants. Please try again.',
+                                                variant: 'destructive'
+                                              })
+                                            }
                                           } catch (error) {
                                             toast({
-                                              title: 'Failed',
-                                              description: 'Could not add to variants',
+                                              title: 'Failed to add to variants',
+                                              description: error instanceof Error ? error.message : 'Unknown error',
                                               variant: 'destructive'
                                             })
                                           }

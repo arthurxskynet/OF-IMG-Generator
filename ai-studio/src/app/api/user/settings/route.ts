@@ -1,13 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createServer } from "@/lib/supabase-server";
+import { notificationSettingsSchema } from "@/lib/validations";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 const UpdateSettingsSchema = z.object({
-  tutorial_enabled: z.boolean()
+  tutorial_enabled: z.boolean().optional(),
+  email_notifications: z.boolean().optional(),
+  job_completion_notifications: z.boolean().optional(),
+  product_updates: z.boolean().optional(),
+  reminders_enabled: z.boolean().optional(),
 });
 
 export async function GET() {
@@ -19,10 +24,10 @@ export async function GET() {
   }
 
   try {
-    // Fetch user settings, default to false if not found
+    // Fetch user settings
     const { data: settings, error } = await supabase
       .from("user_settings")
-      .select("tutorial_enabled")
+      .select("tutorial_enabled, email_notifications, job_completion_notifications, product_updates, reminders_enabled")
       .eq("user_id", user.id)
       .maybeSingle();
 
@@ -31,9 +36,13 @@ export async function GET() {
       return NextResponse.json({ error: "Failed to fetch settings" }, { status: 500, headers: { "Cache-Control": "no-store" } });
     }
 
-    // Tutorial mode is disabled - always return false
+    // Return settings with defaults
     return NextResponse.json({ 
-      tutorial_enabled: false 
+      tutorial_enabled: false, // Always disabled
+      email_notifications: settings?.email_notifications ?? true,
+      job_completion_notifications: settings?.job_completion_notifications ?? true,
+      product_updates: settings?.product_updates ?? true,
+      reminders_enabled: settings?.reminders_enabled ?? false,
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Settings GET error:", error);
@@ -53,14 +62,56 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const validatedData = UpdateSettingsSchema.parse(body);
 
-    // Tutorial mode is disabled - always save as false regardless of request
+    // Get current settings to preserve values not being updated
+    const { data: currentSettings } = await supabase
+      .from("user_settings")
+      .select("*")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    // Prepare update object
+    const updateData: Record<string, any> = {
+      user_id: user.id,
+      tutorial_enabled: false, // Always set to false - tutorial mode is disabled
+      updated_at: new Date().toISOString()
+    };
+
+    // Only update fields that are provided
+    if (validatedData.email_notifications !== undefined) {
+      updateData.email_notifications = validatedData.email_notifications;
+    } else if (currentSettings?.email_notifications !== undefined) {
+      updateData.email_notifications = currentSettings.email_notifications;
+    } else {
+      updateData.email_notifications = true; // default
+    }
+
+    if (validatedData.job_completion_notifications !== undefined) {
+      updateData.job_completion_notifications = validatedData.job_completion_notifications;
+    } else if (currentSettings?.job_completion_notifications !== undefined) {
+      updateData.job_completion_notifications = currentSettings.job_completion_notifications;
+    } else {
+      updateData.job_completion_notifications = true; // default
+    }
+
+    if (validatedData.product_updates !== undefined) {
+      updateData.product_updates = validatedData.product_updates;
+    } else if (currentSettings?.product_updates !== undefined) {
+      updateData.product_updates = currentSettings.product_updates;
+    } else {
+      updateData.product_updates = true; // default
+    }
+
+    if (validatedData.reminders_enabled !== undefined) {
+      updateData.reminders_enabled = validatedData.reminders_enabled;
+    } else if (currentSettings?.reminders_enabled !== undefined) {
+      updateData.reminders_enabled = currentSettings.reminders_enabled;
+    } else {
+      updateData.reminders_enabled = false; // default
+    }
+
     const { data: settings, error } = await supabase
       .from("user_settings")
-      .upsert({
-        user_id: user.id,
-        tutorial_enabled: false, // Always set to false - tutorial mode is disabled
-        updated_at: new Date().toISOString()
-      }, {
+      .upsert(updateData, {
         onConflict: "user_id"
       })
       .select()
@@ -71,9 +122,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Failed to update settings" }, { status: 500, headers: { "Cache-Control": "no-store" } });
     }
 
-    // Always return false - tutorial mode is disabled
     return NextResponse.json({ 
-      tutorial_enabled: false 
+      tutorial_enabled: false,
+      email_notifications: settings.email_notifications,
+      job_completion_notifications: settings.job_completion_notifications,
+      product_updates: settings.product_updates,
+      reminders_enabled: settings.reminders_enabled,
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof z.ZodError) {

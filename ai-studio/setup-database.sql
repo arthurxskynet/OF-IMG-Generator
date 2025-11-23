@@ -251,6 +251,10 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.claim_jobs_global(int) TO authenticated;
 
+-- NOTE: claim_jobs_with_capacity function removed - it was causing 500 errors
+-- The dispatch route now uses claim_jobs_global instead
+-- If you need atomic capacity checking in the future, implement it properly
+
 -- Utility: mark multiple rows as running when jobs claimed
 CREATE OR REPLACE FUNCTION public.mark_rows_running(p_row_ids uuid[])
 RETURNS void

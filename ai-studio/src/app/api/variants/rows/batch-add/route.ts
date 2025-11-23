@@ -15,8 +15,8 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const body: BatchAddImagesRequest = await req.json()
-    const { images } = body
+    const body: BatchAddImagesRequest & { model_id?: string } = await req.json()
+    const { images, model_id } = body
 
     if (!images || images.length === 0) {
       return NextResponse.json({ 
@@ -24,8 +24,65 @@ export async function POST(req: NextRequest) {
       }, { status: 400 })
     }
 
-    // Get user's team_id
-    const teamId = user.id
+    // If model_id is provided, validate it exists and user has access
+    if (model_id) {
+      const { data: model, error: modelError } = await supabase
+        .from('models')
+        .select('id, owner_id, team_id')
+        .eq('id', model_id)
+        .single()
+
+      if (modelError || !model) {
+        return NextResponse.json({ 
+          error: 'Model not found' 
+        }, { status: 404 })
+      }
+
+      // Check if user has access to the model
+      let hasAccess = model.owner_id === user.id
+
+      if (!hasAccess && model.team_id) {
+        // Check if user is a team member
+        const { data: teamMember } = await supabase
+          .from('team_members')
+          .select('id')
+          .eq('team_id', model.team_id)
+          .eq('user_id', user.id)
+          .single()
+        
+        if (teamMember) {
+          hasAccess = true
+        } else {
+          // Check if user owns the team
+          const { data: team } = await supabase
+            .from('teams')
+            .select('owner_id')
+            .eq('id', model.team_id)
+            .single()
+          
+          hasAccess = team?.owner_id === user.id
+        }
+      }
+
+      if (!hasAccess) {
+        return NextResponse.json({ 
+          error: 'Access denied to model' 
+        }, { status: 403 })
+      }
+    }
+
+    // Get user's team_id (use model's team_id if available)
+    let teamId = user.id
+    if (model_id) {
+      const { data: model } = await supabase
+        .from('models')
+        .select('team_id')
+        .eq('id', model_id)
+        .single()
+      if (model?.team_id) {
+        teamId = model.team_id
+      }
+    }
 
     // Group images by sourceRowId
     const imageGroups = new Map<string | null, typeof images>()
@@ -48,21 +105,37 @@ export async function POST(req: NextRequest) {
 
     // Create one variant row per group
     for (const [sourceRowId, groupImages] of imageGroups) {
-      // Create variant row
+      // Create variant row with model_id if provided
+      const insertData = {
+        user_id: user.id,
+        team_id: teamId,
+        model_id: model_id || null,
+        name: sourceRowId ? `From Row ${sourceRowId.slice(0, 8)}` : 'Variant Row'
+      }
+      
+      console.log('[BatchAdd] Creating variant row:', {
+        model_id: insertData.model_id,
+        user_id: insertData.user_id,
+        team_id: insertData.team_id
+      })
+      
       const { data: row, error: rowError } = await supabase
         .from('variant_rows')
-        .insert({
-          user_id: user.id,
-          team_id: teamId,
-          name: sourceRowId ? `From Row ${sourceRowId.slice(0, 8)}` : 'Variant Row'
-        })
+        .insert(insertData)
         .select()
         .single()
 
       if (rowError || !row) {
         console.error('[BatchAdd] Failed to create row:', rowError)
+        console.error('[BatchAdd] Insert data was:', insertData)
         continue
       }
+      
+      console.log('[BatchAdd] Successfully created variant row:', {
+        rowId: row.id,
+        model_id: row.model_id,
+        expected_model_id: model_id
+      })
 
       // Insert images for this row - explicitly mark as reference images (not generated)
       // Validation: All images added via batch-add are reference images

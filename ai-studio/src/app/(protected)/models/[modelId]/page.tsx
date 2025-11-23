@@ -4,6 +4,8 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { SortFilter } from "@/components/sort-filter";
 import { GeneratedImage } from "@/types/jobs";
+import { ModelTabsContent } from "@/components/model-tabs-content";
+import { VariantRow } from "@/types/variants";
 
 // Extended type for model rows with generated images
 interface ModelRowWithImages {
@@ -23,12 +25,12 @@ export const revalidate = 0
 
 interface PageProps {
   params: Promise<{ modelId: string }>;
-  searchParams: Promise<{ sort?: string }>;
+  searchParams: Promise<{ sort?: string; tab?: string }>;
 }
 
 const Page = async ({ params, searchParams }: PageProps) => {
   const { modelId } = await params;
-  const { sort } = await searchParams;
+  const { sort, tab } = await searchParams;
   const supabase = await createServer();
   const { data: { user } } = await supabase.auth.getUser();
   
@@ -94,6 +96,80 @@ const Page = async ({ params, searchParams }: PageProps) => {
     });
   }
 
+  // Fetch variants for this model
+  let variantRows: VariantRow[] = []
+  try {
+    // First, check if model_id column exists by trying a simple query
+    // If it fails with column doesn't exist error, the migration hasn't been run
+    const { data: variants, error: variantsError } = await supabase
+      .from('variant_rows')
+      .select(`
+        *,
+        model:models(id, name)
+      `)
+      .eq('model_id', modelId)
+      .order('created_at', { ascending: false })
+    
+    // If error is about column not existing, log a helpful message
+    if (variantsError) {
+      // Check if error is about column not existing
+      if (variantsError.code === '42703' || variantsError.message?.includes('column') || variantsError.message?.includes('does not exist')) {
+        console.error('[ModelPage] model_id column does not exist. Please run migration: 20251123000000_add_model_id_to_variant_rows.sql')
+        variantRows = []
+      } else {
+        console.error('[ModelPage] Failed to fetch variant rows:', variantsError)
+        console.error('[ModelPage] Model ID:', modelId)
+        console.error('[ModelPage] User ID:', user.id)
+        console.error('[ModelPage] Error code:', variantsError.code)
+        console.error('[ModelPage] Error message:', variantsError.message)
+        console.error('[ModelPage] Error details:', JSON.stringify(variantsError, null, 2))
+      }
+    } else {
+      console.log('[ModelPage] Fetched variant rows:', {
+        modelId,
+        count: variants?.length || 0,
+        variantIds: variants?.map(v => v.id) || [],
+        variantModelIds: variants?.map(v => v.model_id) || []
+      })
+    }
+    
+    // Also check if there are any variants with this model_id (for debugging)
+    if (process.env.NODE_ENV === 'development' && !variantsError) {
+      const { data: allVariants, error: allError } = await supabase
+        .from('variant_rows')
+        .select('id, model_id, user_id')
+        .eq('model_id', modelId)
+      
+      console.log('[ModelPage] Debug - All variants with model_id:', {
+        count: allVariants?.length || 0,
+        variants: allVariants,
+        error: allError
+      })
+    }
+    
+    if (variants && variants.length > 0) {
+      // Fetch images for variant rows
+      const variantRowIds = variants.map(v => v.id)
+      const { data: variantImages } = await supabase
+        .from('variant_row_images')
+        .select('*')
+        .in('variant_row_id', variantRowIds)
+        .order('position', { ascending: true })
+        .order('created_at', { ascending: false, nullsFirst: false })
+
+      // Attach images to their respective rows
+      variantRows = variants.map(row => {
+        const rowImages = (variantImages || []).filter(img => img.variant_row_id === row.id)
+        return {
+          ...row,
+          variant_row_images: rowImages
+        }
+      })
+    }
+  } catch (error) {
+    console.error('Error fetching variant data:', error)
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-muted/20">
       {/* Enhanced Header */}
@@ -135,7 +211,7 @@ const Page = async ({ params, searchParams }: PageProps) => {
         </div>
       </div>
 
-      {/* Main Content - Full Width */}
+      {/* Main Content with Tabs */}
       <div className="pb-6">
         <Suspense fallback={
           <div className="flex items-center justify-center p-12">
@@ -145,7 +221,13 @@ const Page = async ({ params, searchParams }: PageProps) => {
             </div>
           </div>
         }>
-          <ModelWorkspaceWrapper model={model} rows={model.model_rows || []} sort={sort} />
+          <ModelTabsContent 
+            model={model} 
+            rows={model.model_rows || []} 
+            sort={sort}
+            variantRows={variantRows}
+            defaultTab={tab === 'variants' ? 'variants' : 'rows'}
+          />
         </Suspense>
       </div>
     </div>

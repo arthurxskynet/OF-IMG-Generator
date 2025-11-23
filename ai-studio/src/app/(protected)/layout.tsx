@@ -5,6 +5,7 @@ import type { User } from "@supabase/supabase-js";
 import { createServer } from "@/lib/supabase-server";
 import { AuthHeader } from "@/components/navigation/auth-header";
 import { TutorialProvider } from "@/components/tutorial/tutorial-provider";
+import { Toaster } from "@/hooks/use-toast";
 
 interface ProtectedLayoutProps {
   children: ReactNode;
@@ -23,6 +24,7 @@ const ProtectedLayout = async ({ children }: ProtectedLayoutProps) => {
         <main className="w-full px-6 py-8">
           {children}
         </main>
+        <Toaster />
       </div>
     </TutorialProvider>
   );

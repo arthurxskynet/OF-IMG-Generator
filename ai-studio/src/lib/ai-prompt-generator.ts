@@ -1087,7 +1087,7 @@ function generateFallbackPrompt(refUrls: string[], swapMode: SwapMode = 'face-ha
 
 /**
  * Build system prompt for variant prompt generation
- * Simple, focused prompt similar to face-swap logic
+ * Enhanced with optional Seedream 4.0 realism guidance
  */
 function buildVariantSystemPrompt(imagesCount: number): string {
   return `Create a simple Seedream v4 variant prompt.
@@ -1106,22 +1106,32 @@ ACTION (what to change):
 - "change her pose to face sideways"
 - Or allow subtle variations if no specific change needed
 
+OPTIONAL REALISM CONTEXT (for low-effort phone photo aesthetics):
+If the image suggests a casual, unedited phone photo style, you may optionally include:
+- Camera context: "taken on an older smartphone", "front camera selfie"
+- Lighting: "flat indoor lighting", "slightly underexposed"
+- Imperfections: "slight digital noise", "front-camera softness"
+- Anti-studio: "avoiding studio lighting", "no cinematic look"
+Keep these brief and natural within the action description.
+
 RULES:
 - 15-30 words total
 - Use relative reference (the woman, the person)
 - End with "keeping everything else the exact same"
 - NEVER describe facial features, skin tone, or ethnicity
+- Realism details are optional - only include if naturally fitting
 
 EXAMPLES:
 ✅ "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same."
 ✅ "Take the person in the pink room and make them smile, keeping everything else the exact same."
+✅ "Take the woman looking at camera and return her looking to the left in a casual phone snapshot style with flat indoor lighting, keeping everything else the exact same."
 
 OUTPUT: One sentence only. No markdown.`
 }
 
 /**
  * Build user message for variant prompt generation
- * Simple, focused like face-swap user prompt
+ * Enhanced with optional Seedream 4.0 realism context
  */
 function buildVariantUserText(imagesCount: number): string {
   return `Look at the image${imagesCount > 1 ? 's' : ''} and create a simple variant prompt.
@@ -1132,11 +1142,24 @@ STEPS:
 1. Identify ONE key element: clothing item, setting, or pose
 2. Create relative reference: "the woman with [clothing]" OR "the person in [setting]" OR "the woman [pose]"
 3. Add action: what to change (or allow subtle variations)
+   - Optionally include realism context if image suggests casual phone photo style
+   - Camera: "taken on an older smartphone", "front camera selfie"
+   - Lighting: "flat indoor lighting", "slightly underexposed"
+   - Imperfections: "slight digital noise", "front-camera softness"
 4. End with: "keeping everything else the exact same"
 
 EXAMPLES:
 ✅ "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same."
 ✅ "Take the person in the pink room and make them smile, keeping everything else the exact same."
+✅ "Take the woman looking at camera and return her looking to the left in a casual phone snapshot style with flat indoor lighting, keeping everything else the exact same."
+
+REALISM CONTEXT (optional):
+If the image appears to be a casual, unedited phone photo, you may naturally incorporate:
+- Camera context: "taken on an older smartphone", "mid-range Android phone camera"
+- Lighting quality: "flat dull indoor lighting", "slightly underexposed"
+- Natural imperfections: "slight digital noise", "a touch of front-camera softness"
+- Anti-studio: "avoiding studio lighting", "no cinematic look"
+Keep these brief and integrated into the action description.
 
 RULES:
 - 15-30 words
@@ -1144,23 +1167,61 @@ RULES:
 - Use relative reference (the woman, the person)
 - End with "keeping everything else the exact same"
 - NEVER describe facial features, skin tone, or ethnicity
+- Realism details are optional - only if naturally fitting
 
 OUTPUT: One sentence only.`
 }
 
 /**
  * Build system prompt for variant prompt enhancement
- * Simple, focused like face-swap enhancement
+ * Enhanced with Seedream 4.0 low-effort realism strategies
  */
 function buildVariantEnhanceSystemPrompt(): string {
-  return `Add the user's requested change to the existing prompt.
+  return `Add the user's requested change to the existing prompt using Seedream 4.0 editing strategies.
 
 FORMAT: "Take [relative reference] and [original action] [new action], keeping everything else the exact same."
+
+SEEDREAM 4.0 LOW-EFFORT REALISM STRATEGIES:
+Seedream 4.0 responds well to camera type/context, lighting/dynamic range, and image editing phrasing.
+
+BASE PATTERN (for realism requests):
+"Keep the person's face, body, and clothing exactly the same as the original. Turn this into a [STYLE] photo: [CAMERA/CONTEXT] with [LIGHTING] and [FAULTS/IMPERFECTIONS]. Avoid studio lighting, avoid ultra-HD or beauty filters."
+
+REUSABLE STYLE FRAGMENTS (mix & match):
+A. Low effort / non-pro vibes:
+- "look like an unedited phone snapshot, not a professional shoot"
+- "casual, low-effort vibe, like a quick selfie taken for a friend"
+- "no cinematic look, no color grading, no studio polish"
+- "avoid ultra realistic 4K aesthetics, prefer a normal phone photo feel"
+
+B. Camera & lens:
+- "taken on an older smartphone, front camera, default settings"
+- "mid-range Android phone camera, slightly soft lens"
+- "handheld phone photo, no tripod, tiny bit of camera shake"
+
+C. Lighting & exposure:
+- "flat, dull indoor lighting from a ceiling light, no strong shadows"
+- "slightly underexposed, low contrast, muted colors"
+- "mixed indoor lighting with a bit of yellow color cast"
+- "harsh overhead light, unflattering shadows under eyes"
+- "slightly overexposed highlights and crushed shadows, basic phone dynamic range"
+
+D. Blur / focus / motion:
+- "very slight motion blur from hand shake, but face still mostly readable"
+- "a touch of front-camera softness, not perfectly sharp"
+- "focus not perfect: face is a little soft, background not fully blurred"
+- "no bokeh, everything at similar focus level, like a cheap phone sensor"
+
+E. Noise, grain, compression:
+- "visible digital noise in the darker areas"
+- "light high-ISO grain, like a photo taken at night indoors"
+- "subtle JPEG compression artifacts, not crystal clear"
+- "a hint of social-media compression, not ultra crisp"
 
 HOW TO ADD:
 - Keep the existing relative reference unchanged
 - Keep the existing action
-- Add the new action from user's request
+- Add the new action from user's request (can include camera/lighting/realism details)
 - Always end with "keeping everything else the exact same"
 
 EXAMPLES:
@@ -1169,13 +1230,18 @@ EXAMPLES:
   Result: "Take the woman with a white tank top and return her looking to the left with more dramatic lighting, keeping everything else the exact same"
 
 - Original: "Take the person in the pink room and make them smile, keeping everything else the exact same"
-  User: "change pose to look right"
-  Result: "Take the person in the pink room and make them smile looking to the right, keeping everything else the exact same"
+  User: "make it look like a casual phone snapshot"
+  Result: "Take the person in the pink room and make them smile, turn this into a casual phone snapshot: taken on an older smartphone with flat indoor lighting and slight digital noise, avoiding studio lighting and ultra-HD filters, keeping everything else the exact same"
+
+- Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
+  User: "add low-effort realism with phone camera feel"
+  Result: "Take the woman with a white tank top and return her looking to the left, turn this into a casual phone photo: front camera smartphone selfie with slightly underexposed lighting and a touch of front-camera softness, avoiding studio polish, keeping everything else the exact same"
 
 RULES:
 - Keep existing relative reference
 - Add new action to existing actions
-- 15-35 words total
+- For realism requests, use camera/lighting/imperfection fragments
+- 15-35 words total (can be slightly longer for realism details)
 - End with "keeping everything else the exact same"
 - NEVER describe facial features, skin tone, or ethnicity
 
@@ -1184,7 +1250,7 @@ OUTPUT: One sentence only.`
 
 /**
  * Build user message for variant prompt enhancement
- * Simple, focused like face-swap enhancement
+ * Enhanced with Seedream 4.0 realism examples
  */
 function buildVariantEnhanceUserText(existingPrompt: string, userInstructions: string): string {
   return `EXISTING PROMPT:
@@ -1193,13 +1259,21 @@ function buildVariantEnhanceUserText(existingPrompt: string, userInstructions: s
 USER'S REQUEST:
 "${userInstructions}"
 
-TASK: Add the user's request to the existing prompt.
+TASK: Add the user's request to the existing prompt using Seedream 4.0 editing strategies.
 
 HOW:
 1. Keep the existing relative reference (the woman with..., the person in...)
 2. Keep the existing action(s)
 3. Add the new action from user's request
+   - For realism requests: use camera/context, lighting, and imperfection fragments
+   - For style requests: incorporate appropriate style fragments
 4. Keep "keeping everything else the exact same" at the end
+
+SEEDREAM 4.0 REALISM STRATEGY:
+When user requests "low-effort", "phone camera", "casual snapshot", or similar realism:
+- Use base pattern: "Turn this into a [STYLE] photo: [CAMERA/CONTEXT] with [LIGHTING] and [FAULTS]"
+- Mix & match style fragments: camera type, lighting quality, imperfections
+- Always add "avoiding studio lighting, avoiding ultra-HD or beauty filters"
 
 EXAMPLES:
 - Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
@@ -1207,13 +1281,26 @@ EXAMPLES:
   Result: "Take the woman with a white tank top and return her looking to the left with more dramatic lighting, keeping everything else the exact same"
 
 - Original: "Take the person in the pink room and make them smile, keeping everything else the exact same"
-  User: "change pose to look right"
-  Result: "Take the person in the pink room and make them smile looking to the right, keeping everything else the exact same"
+  User: "make it look like a casual phone snapshot"
+  Result: "Take the person in the pink room and make them smile, turn this into a casual phone snapshot: taken on an older smartphone with flat indoor lighting and slight digital noise, avoiding studio lighting and ultra-HD filters, keeping everything else the exact same"
+
+- Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
+  User: "add low-effort realism with phone camera feel"
+  Result: "Take the woman with a white tank top and return her looking to the left, turn this into a casual phone photo: front camera smartphone selfie with slightly underexposed lighting and a touch of front-camera softness, avoiding studio polish, keeping everything else the exact same"
+
+- Original: "Take the person in the pink room and make them smile, keeping everything else the exact same"
+  User: "make it look like an unedited phone photo with imperfections"
+  Result: "Take the person in the pink room and make them smile, turn this into an unedited phone snapshot: mid-range Android phone camera with flat dull indoor lighting, visible digital noise in darker areas, and subtle JPEG compression, no cinematic look, keeping everything else the exact same"
+
+- Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
+  User: "add motion blur and grain"
+  Result: "Take the woman with a white tank top and return her looking to the left with very slight motion blur from hand shake and light high-ISO grain, keeping everything else the exact same"
 
 RULES:
 - Keep existing relative reference unchanged
 - Add new action to existing actions
-- 15-35 words total
+- For realism: use camera/lighting/imperfection fragments appropriately
+- 15-35 words total (can be slightly longer for realism details)
 - End with "keeping everything else the exact same"
 - NEVER describe facial features, skin tone, or ethnicity
 

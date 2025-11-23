@@ -3,6 +3,10 @@ import { notFound } from "next/navigation"
 import { Suspense } from "react"
 import { VariantsRowsWorkspace } from "@/components/variants/variants-rows-workspace"
 import { VariantRow } from "@/types/variants"
+import Link from "next/link"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { ExternalLink } from "lucide-react"
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -18,18 +22,19 @@ const VariantsPage = async () => {
   // Fetch variant rows with images
   // Gracefully handle if tables don't exist yet
   let variantRows: VariantRow[] = []
+  const variantsByModel = new Map<string | null, VariantRow[]>()
   
   try {
-    // Fetch variant rows - use separate query for images to avoid any nested query limits
+    // Fetch variant rows with model data - use separate query for images to avoid any nested query limits
     const { data: rows, error } = await supabase
       .from('variant_rows')
       .select(`
         *,
         output_width,
         output_height,
-        match_target_ratio
+        match_target_ratio,
+        model:models(id, name)
       `)
-      .eq('user_id', user.id)
       .order('created_at', { ascending: false })
 
     if (error) {
@@ -122,6 +127,15 @@ const VariantsPage = async () => {
         })
       }
     }
+
+    // Group variants by model_id
+    variantRows.forEach(row => {
+      const modelId = row.model_id || null
+      if (!variantsByModel.has(modelId)) {
+        variantsByModel.set(modelId, [])
+      }
+      variantsByModel.get(modelId)!.push(row)
+    })
   } catch (error) {
     console.error('Error fetching variant data:', error)
     variantRows = []
@@ -152,7 +166,7 @@ const VariantsPage = async () => {
       </div>
 
       {/* Main Content */}
-      <div className="pb-6">
+      <div className="pb-6 space-y-6">
         <Suspense fallback={
           <div className="flex items-center justify-center p-12">
             <div className="flex flex-col items-center gap-4">
@@ -161,7 +175,64 @@ const VariantsPage = async () => {
             </div>
           </div>
         }>
-          <VariantsRowsWorkspace initialRows={variantRows} />
+          {/* Group variants by model */}
+          {Array.from(variantsByModel.entries()).map(([modelId, rows]) => {
+            if (modelId === null) {
+              // Orphaned variants (no model_id)
+              return (
+                <Card key="orphaned" className="border-dashed">
+                  <CardHeader>
+                    <CardTitle className="text-lg">Orphaned Variants</CardTitle>
+                    <p className="text-sm text-muted-foreground">
+                      Variants not associated with any model
+                    </p>
+                  </CardHeader>
+                  <CardContent>
+                    <VariantsRowsWorkspace initialRows={rows} />
+                  </CardContent>
+                </Card>
+              )
+            }
+
+            // Variants grouped by model
+            const model = rows[0]?.model
+            const modelName = model?.name || 'Unknown Model'
+            
+            return (
+              <Card key={modelId}>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-lg">{modelName}</CardTitle>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        {rows.length} variant row{rows.length === 1 ? '' : 's'}
+                      </p>
+                    </div>
+                    <Button asChild variant="outline" size="sm">
+                      <Link href={`/models/${modelId}?tab=variants`}>
+                        <ExternalLink className="h-4 w-4 mr-2" />
+                        View in Model
+                      </Link>
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <VariantsRowsWorkspace initialRows={rows} modelId={modelId} />
+                </CardContent>
+              </Card>
+            )
+          })}
+
+          {/* Empty state */}
+          {variantRows.length === 0 && (
+            <Card>
+              <CardContent className="p-8 text-center">
+                <p className="text-muted-foreground">
+                  No variants yet. Create variants from a model page or add images to get started.
+                </p>
+              </CardContent>
+            </Card>
+          )}
         </Suspense>
       </div>
     </div>

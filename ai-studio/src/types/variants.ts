@@ -52,6 +52,7 @@ export interface VariantRow {
   id: string
   user_id: string
   team_id: string
+  model_id?: string | null
   name: string | null
   prompt: string | null
   output_width?: number
@@ -60,6 +61,10 @@ export interface VariantRow {
   created_at: string
   updated_at: string
   variant_row_images?: VariantRowImage[]
+  model?: {
+    id: string
+    name: string
+  }
 }
 
 export interface VariantPromptGenerateRequest {

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { useAdmin } from "@/hooks/use-admin";
 
 const links = [
   { href: "/dashboard", label: "Dashboard" },
@@ -11,13 +12,24 @@ const links = [
   { href: "/models", label: "Models" },
 ];
 
+const adminLinks = [
+  { href: "/admin", label: "Admin" },
+  { href: "/admin/storage", label: "Storage" },
+];
+
 const NavigationLinks = () => {
   const pathname = usePathname();
+  const { isAdmin, loading } = useAdmin();
+
+  const allLinks = [
+    ...links,
+    ...(isAdmin && !loading ? adminLinks : [])
+  ];
 
   return (
     <nav className="hidden items-center gap-1 text-sm font-medium sm:flex">
-      {links.map((link) => {
-        const isActive = pathname === link.href;
+      {allLinks.map((link) => {
+        const isActive = pathname === link.href || pathname.startsWith(link.href + '/');
 
         return (
           <Link

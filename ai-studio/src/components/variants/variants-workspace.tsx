@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -36,14 +36,14 @@ export function VariantsWorkspace() {
   }, [])
 
   // Load thumbnails on mount and when images change
-  useState(() => {
+  useEffect(() => {
     images.forEach(img => {
       const path = img.thumbnailPath || img.outputPath
       if (path && !thumbnailUrls[img.id]) {
         loadThumbnail(img.id, path)
       }
     })
-  })
+  }, [images, thumbnailUrls, loadThumbnail])
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()

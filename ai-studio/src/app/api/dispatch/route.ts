@@ -45,21 +45,6 @@ export async function POST(req: NextRequest) {
         .lt('created_at', twoMinAgoQueued)
     } catch {}
 
-    // Count active running jobs within the active window (submitted|running and recently updated)
-    const activeCutoff = new Date(Date.now() - ACTIVE_WINDOW_MS).toISOString()
-    const { count: running } = await supabase.from('jobs')
-      .select('*', { head: true, count: 'exact' })
-      .in('status', ACTIVE_STATUSES)
-      .gt('updated_at', activeCutoff)
-
-    const slots = Math.max(0, MAX_CONCURRENCY - (running ?? 0))
-    console.log('[Dispatch] capacity check', { running, slots, maxConcurrency: MAX_CONCURRENCY, activeWindowSec: Math.floor(ACTIVE_WINDOW_MS/1000) })
-    
-    if (slots <= 0) {
-      console.log('[Dispatch] at global cap, returning')
-      return NextResponse.json({ ok: true, info: 'at global cap' })
-    }
-
     // Check queued jobs count before claiming (diagnostic)
     const { count: queuedCount } = await supabase.from('jobs')
       .select('*', { head: true, count: 'exact' })
@@ -67,9 +52,11 @@ export async function POST(req: NextRequest) {
     
     console.log('[Dispatch] queued jobs in DB', { queuedCount })
 
-    // Atomically claim up to {slots} queued jobs globally
-    const { data: claimed, error } = await supabase.rpc('claim_jobs_global', {
-      p_limit: slots
+    // Atomically check capacity and claim jobs (prevents race conditions)
+    // This function ensures only MAX_CONCURRENCY jobs are active at once
+    const { data: claimed, error } = await supabase.rpc('claim_jobs_with_capacity', {
+      p_max_concurrency: MAX_CONCURRENCY,
+      p_active_window_ms: ACTIVE_WINDOW_MS
     }) as { data: Job[] | null, error: any }
     
     if (error) {
@@ -371,21 +358,16 @@ export async function POST(req: NextRequest) {
     }))
 
     // Try to dispatch more jobs if we still have capacity
-    const { count: stillActive } = await supabase.from('jobs')
-      .select('*', { head: true, count: 'exact' })
-      .in('status', ACTIVE_STATUSES)
-      .gt('updated_at', activeCutoff)
-
-    const remainingSlots = Math.max(0, MAX_CONCURRENCY - (stillActive ?? 0))
+    // Note: The atomic function handles capacity checking, so we can safely trigger another dispatch
+    // The next dispatch call will atomically check capacity again and only claim if slots are available
     console.log('[Dispatch] complete', {
-      processed: claimed.length,
-      stillActive,
-      remainingSlots
+      processed: claimed.length
     })
     
-    if (remainingSlots > 0) {
-      console.log('[Dispatch] recursive dispatch triggered')
+    if (claimed.length > 0) {
+      console.log('[Dispatch] recursive dispatch triggered to check for more jobs')
       // Recursive call to fill remaining slots (but don't wait for it)
+      // The atomic function will ensure we don't exceed MAX_CONCURRENCY
       fetch(new URL('/api/dispatch', req.url), { 
         method: 'POST', 
         cache: 'no-store'

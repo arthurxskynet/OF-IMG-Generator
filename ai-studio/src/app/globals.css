@@ -252,3 +252,43 @@ svg[class*="spinner-rotate"] {
   animation: rotate 1.5s linear infinite !important;
   transform-origin: center !important;
 }
+
+/* Toast animations */
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slide-out-right {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
+.toast-enter {
+  animation: slide-in-right 0.3s ease-out, fade-in 0.3s ease-out;
+}
+
+.toast-exit {
+  animation: slide-out-right 0.2s ease-in, fade-in 0.2s ease-in reverse;
+}

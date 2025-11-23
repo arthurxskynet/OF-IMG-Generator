@@ -17,12 +17,15 @@ export async function GET(
   }
 
   try {
-    // Fetch the variant row
+    // Fetch the variant row with model data
+    // RLS will handle access control
     const { data: row, error } = await supabase
       .from('variant_rows')
-      .select('*')
+      .select(`
+        *,
+        model:models(id, name)
+      `)
       .eq('id', rowId)
-      .eq('user_id', user.id)
       .single()
 
     if (error) {
