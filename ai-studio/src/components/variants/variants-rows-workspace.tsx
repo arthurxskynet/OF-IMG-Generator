@@ -119,6 +119,8 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
   const deletedRowIdsRef = useRef<Set<string>>(new Set())
   const lastRefreshTimeRef = useRef<number>(0)
   const isRefreshingRef = useRef<boolean>(false)
+  // Store jobId -> rowId mapping to avoid closure issues in polling callback
+  const jobIdToRowIdRef = useRef<Record<string, string>>({})
   // Bulk upload state
   const [isFolderDropActive, setIsFolderDropActive] = useState(false)
   const [bulkUploadState, setBulkUploadState] = useState<Array<{
@@ -300,11 +302,22 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       if (!res.ok) return
       const { row } = await res.json()
       
-      // Update the specific row in state
+      // Normalize images: ensure is_generated is explicitly boolean
+      const normalizedRow = {
+        ...row,
+        variant_row_images: (row.variant_row_images || []).map((img: any) => ({
+          ...img,
+          // Explicitly set is_generated to boolean (true for generated, false for reference)
+          is_generated: img.is_generated === true
+        }))
+      }
+      
+      // Update the specific row in state using functional setState to ensure proper merge
       setRows(prev => {
         const updated = prev.map(r => {
           if (r.id === rowId) {
-            return row
+            // Merge: preserve any local state but update with fresh data
+            return normalizedRow
           }
           return r
         })
@@ -319,20 +332,31 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
   // Debounce refresh to avoid redundant fetches when many jobs complete together
   // FIXED: Increased debounce time and added check to prevent unnecessary calls
   const scheduleRefresh = useCallback(() => {
-    if (refreshTimeout.current) window.clearTimeout(refreshTimeout.current)
-    // Increased debounce to 1.5 seconds to reduce rapid successive calls
     refreshTimeout.current = window.setTimeout(() => {
       refreshRowData()
       refreshTimeout.current = null
     }, 1500)
+    if (refreshTimeout.current) window.clearTimeout(refreshTimeout.current)
+    // Increased debounce to 1.5 seconds to reduce rapid successive calls
   }, [refreshRowData])
 
   const { startPolling, pollingState } = useJobPolling((jobId, status) => {
     if (['succeeded', 'failed'].includes(status)) {
-      const variantRowId = (pollingState as any)[jobId]?.rowId as string | undefined
+      // Use ref instead of pollingState to avoid closure issues
+      // The ref always has the latest jobId -> rowId mapping
+      const variantRowId = jobIdToRowIdRef.current[jobId] || (pollingState as any)[jobId]?.rowId as string | undefined
       if (status === 'succeeded' && variantRowId) {
         // Immediately refresh the specific row when job succeeds
         refreshSingleRow(variantRowId).catch(() => {})
+        // Clear generating state when job completes
+        setGeneratingImageRowId(null)
+      } else if (status === 'failed' && variantRowId) {
+        // Clear generating state on failure too
+        setGeneratingImageRowId(null)
+      }
+      // Clean up the mapping when job completes
+      if (variantRowId) {
+        delete jobIdToRowIdRef.current[jobId]
       }
       toast({
         title: status === 'succeeded' ? 'Generation Complete' : 'Generation Failed',
@@ -826,6 +850,12 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
         // Refresh the specific row to show new image
         // FIXED: Use debounced refresh instead of immediate to prevent rapid successive calls
         const variantRowId = String(newImage.variant_row_id)
+        // Only refresh if the row exists in our current state (avoids unnecessary API calls for other models)
+        const rowExists = rows.some(r => r.id === variantRowId)
+        if (!rowExists && modelId) {
+          // Row doesn't exist in current state and we're filtering by modelId, skip refresh
+          return
+        }
         if (variantRowId) {
           // Debounce to batch multiple image inserts
           if (refreshTimeout.current) window.clearTimeout(refreshTimeout.current)
@@ -901,6 +931,8 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
         refreshTimeout.current = null
       }
       cancelled = true
+      // Clear jobId mapping ref on unmount
+      jobIdToRowIdRef.current = {}
       // Remove custom event listener
       window.removeEventListener('variants:rows-added', handleVariantsAdded as EventListener)
       
@@ -1804,7 +1836,11 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       }
 
       const { jobId } = await response.json()
-      if (jobId) startPolling(jobId, 'queued', rowId)
+      if (jobId) {
+        // Store jobId -> rowId mapping in ref to avoid closure issues
+        jobIdToRowIdRef.current[jobId] = rowId
+        startPolling(jobId, 'queued', rowId)
+      }
       
       toast({
         title: 'Generation started',

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServer } from '@/lib/supabase-server'
 import { BatchAddImagesRequest, BatchAddImagesResponse } from '@/types/variants'
+import { isAdminUser } from '@/lib/admin'
 
 /**
  * POST /api/variants/rows/batch-add
@@ -11,18 +12,31 @@ export async function POST(req: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
   
   if (!user) {
+    console.error('[BatchAdd] Unauthorized request - no user found')
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  let model_id: string | undefined
   try {
     const body: BatchAddImagesRequest & { model_id?: string } = await req.json()
-    const { images, model_id } = body
+    const { images } = body
+    model_id = body.model_id
+
+    console.log('[BatchAdd] Request received', {
+      userId: user.id,
+      modelId: model_id,
+      imageCount: images?.length || 0
+    })
 
     if (!images || images.length === 0) {
+      console.error('[BatchAdd] No images provided', { userId: user.id, modelId: model_id })
       return NextResponse.json({ 
         error: 'At least one image is required' 
       }, { status: 400 })
     }
+
+    // Check if user is admin (admins have access to all models)
+    const isAdmin = await isAdminUser()
 
     // If model_id is provided, validate it exists and user has access
     if (model_id) {
@@ -33,38 +47,61 @@ export async function POST(req: NextRequest) {
         .single()
 
       if (modelError || !model) {
+        console.error('[BatchAdd] Model not found', { 
+          userId: user.id, 
+          modelId: model_id, 
+          error: modelError 
+        })
         return NextResponse.json({ 
           error: 'Model not found' 
         }, { status: 404 })
       }
 
       // Check if user has access to the model
-      let hasAccess = model.owner_id === user.id
+      // Logic matches RLS policy: admin OR (team_id IS NULL AND owner) OR team_member OR team_owner
+      let hasAccess = isAdmin
 
-      if (!hasAccess && model.team_id) {
-        // Check if user is a team member
-        const { data: teamMember } = await supabase
-          .from('team_members')
-          .select('id')
-          .eq('team_id', model.team_id)
-          .eq('user_id', user.id)
-          .single()
-        
-        if (teamMember) {
-          hasAccess = true
+      if (!hasAccess) {
+        // If team_id is NULL, user must be the owner
+        if (model.team_id === null) {
+          hasAccess = model.owner_id === user.id
         } else {
-          // Check if user owns the team
-          const { data: team } = await supabase
-            .from('teams')
-            .select('owner_id')
-            .eq('id', model.team_id)
-            .single()
-          
-          hasAccess = team?.owner_id === user.id
+          // If team_id is set, check: owner OR team member OR team owner
+          hasAccess = model.owner_id === user.id
+
+          if (!hasAccess) {
+            // Check if user is a team member
+            const { data: teamMember } = await supabase
+              .from('team_members')
+              .select('id')
+              .eq('team_id', model.team_id)
+              .eq('user_id', user.id)
+              .single()
+            
+            if (teamMember) {
+              hasAccess = true
+            } else {
+              // Check if user owns the team
+              const { data: team } = await supabase
+                .from('teams')
+                .select('owner_id')
+                .eq('id', model.team_id)
+                .single()
+              
+              hasAccess = team?.owner_id === user.id
+            }
+          }
         }
       }
 
       if (!hasAccess) {
+        console.error('[BatchAdd] Access denied to model', {
+          userId: user.id,
+          isAdmin,
+          modelId: model_id,
+          modelOwnerId: model.owner_id,
+          modelTeamId: model.team_id
+        })
         return NextResponse.json({ 
           error: 'Access denied to model' 
         }, { status: 403 })
@@ -126,15 +163,22 @@ export async function POST(req: NextRequest) {
         .single()
 
       if (rowError || !row) {
-        console.error('[BatchAdd] Failed to create row:', rowError)
-        console.error('[BatchAdd] Insert data was:', insertData)
+        console.error('[BatchAdd] Failed to create row', {
+          userId: user.id,
+          modelId: model_id,
+          sourceRowId,
+          error: rowError,
+          insertData
+        })
         continue
       }
       
-      console.log('[BatchAdd] Successfully created variant row:', {
+      console.log('[BatchAdd] Successfully created variant row', {
+        userId: user.id,
         rowId: row.id,
-        model_id: row.model_id,
-        expected_model_id: model_id
+        modelId: row.model_id,
+        expectedModelId: model_id,
+        teamId: row.team_id
       })
 
       // Insert images for this row - explicitly mark as reference images (not generated)
@@ -168,7 +212,13 @@ export async function POST(req: NextRequest) {
         .select()
 
       if (imagesError) {
-        console.error('[BatchAdd] Failed to insert images:', imagesError)
+        console.error('[BatchAdd] Failed to insert images', {
+          userId: user.id,
+          rowId: row.id,
+          modelId: model_id,
+          imageCount: imagesToInsert.length,
+          error: imagesError
+        })
         // Row was created but images failed - continue anyway
       }
 
@@ -187,12 +237,22 @@ export async function POST(req: NextRequest) {
       rows: createdRows
     }
 
-    console.log('[BatchAdd] Success:', response)
+    console.log('[BatchAdd] Success', {
+      userId: user.id,
+      modelId: model_id,
+      rowsCreated: response.rowsCreated,
+      imagesAdded: response.imagesAdded
+    })
 
     return NextResponse.json(response)
 
   } catch (error) {
-    console.error('[BatchAdd] Error:', error)
+    console.error('[BatchAdd] Error', {
+      userId: user.id,
+      modelId: model_id,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined
+    })
     return NextResponse.json({ 
       error: error instanceof Error ? error.message : 'Unknown error occurred' 
     }, { status: 500 })
