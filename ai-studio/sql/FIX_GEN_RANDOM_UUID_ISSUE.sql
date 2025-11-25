@@ -29,3 +29,4 @@ SELECT
   gen_random_uuid() as test_uuid,
   '✓ gen_random_uuid() now works' as status;
 
+

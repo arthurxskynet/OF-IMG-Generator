@@ -97,3 +97,4 @@ WHERE table_schema = 'auth'
   AND column_name IN ('confirmation_token', 'recovery_token', 'email_change_token_new', 'email_change')
 ORDER BY column_name;
 
+

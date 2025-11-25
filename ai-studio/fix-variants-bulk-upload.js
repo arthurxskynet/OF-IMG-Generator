@@ -96,3 +96,4 @@ content = content.replace(
 fs.writeFileSync(path, content);
 console.log('Fixed variants bulk upload logic');
 
+

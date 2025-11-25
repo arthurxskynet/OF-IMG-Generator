@@ -39,3 +39,4 @@ SELECT
     ELSE '✓ Schema appears healthy'
   END as overall_status;
 
+

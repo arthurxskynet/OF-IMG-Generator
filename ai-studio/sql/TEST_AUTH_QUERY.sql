@@ -102,3 +102,4 @@ EXCEPTION WHEN OTHERS THEN
   RAISE NOTICE 'This might be the issue!';
 END $$;
 
+

@@ -33,3 +33,4 @@ SELECT
 FROM auth.users
 WHERE confirmation_token IS NULL OR email_change IS NULL;
 
+

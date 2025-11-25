@@ -69,3 +69,4 @@ WHERE table_schema = 'public'
     OR (table_name = 'models' AND column_name = 'variants_default'))
 ORDER BY table_name, column_name;
 
+

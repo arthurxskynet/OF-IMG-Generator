@@ -543,6 +543,17 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       description: 'Prompt copied to clipboard'
     })
   }, [toast])
+
+  // Handle prompt change for a row
+  const handlePromptChange = useCallback((rowId: string, value: string) => {
+    setRows(prev => prev.map(row => {
+      if (row.id === rowId) {
+        return { ...row, prompt: value }
+      }
+      return row
+    }))
+  }, [])
+
   // Handle delete row
   const handleDeleteRow = useCallback(async (rowId: string) => {
     try {

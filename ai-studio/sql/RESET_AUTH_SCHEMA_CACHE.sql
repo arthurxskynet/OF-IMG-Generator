@@ -27,3 +27,4 @@ SELECT
   has_table_privilege('auth.users', 'SELECT') as can_select_users,
   has_table_privilege('auth.users', 'INSERT') as can_insert_users;
 
+

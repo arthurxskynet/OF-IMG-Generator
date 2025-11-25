@@ -55,3 +55,4 @@ FROM pg_extension
 WHERE extname IN ('pgcrypto', 'uuid-ossp')
 ORDER BY extname;
 
+

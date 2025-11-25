@@ -23,3 +23,4 @@ SELECT
   '✓ auth.users is accessible' as status
 FROM auth.users;
 
+

@@ -30,3 +30,4 @@ export type EmailUpdateInput = z.infer<typeof emailUpdateSchema>;
 export type PasswordUpdateInput = z.infer<typeof passwordUpdateSchema>;
 export type NotificationSettingsInput = z.infer<typeof notificationSettingsSchema>;
 
+

@@ -96,3 +96,4 @@ CREATE POLICY "delete images if member or admin" ON public.generated_images
     (user_id = auth.uid() OR public.is_team_member(auth.uid(), team_id))
   );
 
+

@@ -4,3 +4,4 @@
 ALTER TABLE variant_rows 
 ADD COLUMN IF NOT EXISTS match_target_ratio BOOLEAN NOT NULL DEFAULT false;
 
+

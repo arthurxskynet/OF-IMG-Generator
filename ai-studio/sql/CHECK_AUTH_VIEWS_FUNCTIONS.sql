@@ -51,3 +51,4 @@ FROM pg_views
 WHERE schemaname = 'auth'
 LIMIT 1;
 
+
