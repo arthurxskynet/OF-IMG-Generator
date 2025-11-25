@@ -3,6 +3,7 @@ import { createServer } from '@/lib/supabase-server'
 import { promptQueueService } from '@/lib/prompt-queue'
 import { signPath } from '@/lib/storage'
 import { getRemoteImageDimensions, computeMaxQualityDimensionsForRatio } from '@/lib/server-utils'
+import { isAdminUser } from '@/lib/admin'
 
 export async function POST(req: NextRequest) {
   const supabase = await createServer()
@@ -19,8 +20,45 @@ export async function POST(req: NextRequest) {
 
     // Get the model details
     const { data: model, error: er2 } = await supabase
-      .from('models').select('*').eq('id', row.model_id).single()
+      .from('models').select('id, owner_id, team_id, default_prompt, default_ref_headshot_url, output_width, output_height').eq('id', row.model_id).single()
     if (er2 || !model) return NextResponse.json({ error: 'Model not found' }, { status: 404 })
+
+    // Check access to model before creating job
+    const isAdmin = await isAdminUser()
+    let hasAccess = isAdmin
+
+    if (!hasAccess) {
+      if (model.team_id === null) {
+        hasAccess = model.owner_id === user.id
+      } else {
+        hasAccess = model.owner_id === user.id
+
+        if (!hasAccess) {
+          const { data: teamMember } = await supabase
+            .from('team_members')
+            .select('id')
+            .eq('team_id', model.team_id)
+            .eq('user_id', user.id)
+            .single()
+          
+          if (teamMember) {
+            hasAccess = true
+          } else {
+            const { data: team } = await supabase
+              .from('teams')
+              .select('owner_id')
+              .eq('id', model.team_id)
+              .single()
+            
+            hasAccess = team?.owner_id === user.id
+          }
+        }
+      }
+    }
+
+    if (!hasAccess) {
+      return NextResponse.json({ error: 'Access denied to model' }, { status: 403 })
+    }
 
     const basePrompt = row.prompt_override ?? model.default_prompt
     let outputWidth = model.output_width || 4096

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServer } from '@/lib/supabase-server'
+import { isAdminUser } from '@/lib/admin'
 
 /**
  * GET /api/variants/rows/[rowId] - Get a single variant row with images
@@ -130,11 +131,80 @@ export async function PATCH(
       updateData.match_target_ratio = Boolean(match_target_ratio)
     }
 
+    // Check access before updating
+    const { data: existingRow, error: fetchError } = await supabase
+      .from('variant_rows')
+      .select('id, user_id, model_id')
+      .eq('id', rowId)
+      .single()
+
+    if (fetchError || !existingRow) {
+      return NextResponse.json({ 
+        error: 'Variant row not found' 
+      }, { status: 404 })
+    }
+
+    // Check if user is admin
+    const isAdmin = await isAdminUser()
+
+    // Check access: if model_id is set, verify model access; otherwise check user_id
+    let hasAccess = isAdmin
+
+    if (!hasAccess) {
+      if (existingRow.model_id) {
+        const { data: model, error: modelError } = await supabase
+          .from('models')
+          .select('id, owner_id, team_id')
+          .eq('id', existingRow.model_id)
+          .single()
+
+        if (modelError || !model) {
+          return NextResponse.json({ 
+            error: 'Model not found' 
+          }, { status: 404 })
+        }
+
+        if (model.team_id === null) {
+          hasAccess = model.owner_id === user.id
+        } else {
+          hasAccess = model.owner_id === user.id
+
+          if (!hasAccess) {
+            const { data: teamMember } = await supabase
+              .from('team_members')
+              .select('id')
+              .eq('team_id', model.team_id)
+              .eq('user_id', user.id)
+              .single()
+            
+            if (teamMember) {
+              hasAccess = true
+            } else {
+              const { data: team } = await supabase
+                .from('teams')
+                .select('owner_id')
+                .eq('id', model.team_id)
+                .single()
+              
+              hasAccess = team?.owner_id === user.id
+            }
+          }
+        }
+      } else {
+        hasAccess = existingRow.user_id === user.id
+      }
+    }
+
+    if (!hasAccess) {
+      return NextResponse.json({ 
+        error: 'Access denied to variant row' 
+      }, { status: 403 })
+    }
+
     const { data: row, error } = await supabase
       .from('variant_rows')
       .update(updateData)
       .eq('id', rowId)
-      .eq('user_id', user.id)
       .select()
       .single()
 
@@ -177,11 +247,80 @@ export async function DELETE(
   }
 
   try {
+    // Check access before deleting
+    const { data: existingRow, error: fetchError } = await supabase
+      .from('variant_rows')
+      .select('id, user_id, model_id')
+      .eq('id', rowId)
+      .single()
+
+    if (fetchError || !existingRow) {
+      return NextResponse.json({ 
+        error: 'Variant row not found' 
+      }, { status: 404 })
+    }
+
+    // Check if user is admin
+    const isAdmin = await isAdminUser()
+
+    // Check access: if model_id is set, verify model access; otherwise check user_id
+    let hasAccess = isAdmin
+
+    if (!hasAccess) {
+      if (existingRow.model_id) {
+        const { data: model, error: modelError } = await supabase
+          .from('models')
+          .select('id, owner_id, team_id')
+          .eq('id', existingRow.model_id)
+          .single()
+
+        if (modelError || !model) {
+          return NextResponse.json({ 
+            error: 'Model not found' 
+          }, { status: 404 })
+        }
+
+        if (model.team_id === null) {
+          hasAccess = model.owner_id === user.id
+        } else {
+          hasAccess = model.owner_id === user.id
+
+          if (!hasAccess) {
+            const { data: teamMember } = await supabase
+              .from('team_members')
+              .select('id')
+              .eq('team_id', model.team_id)
+              .eq('user_id', user.id)
+              .single()
+            
+            if (teamMember) {
+              hasAccess = true
+            } else {
+              const { data: team } = await supabase
+                .from('teams')
+                .select('owner_id')
+                .eq('id', model.team_id)
+                .single()
+              
+              hasAccess = team?.owner_id === user.id
+            }
+          }
+        }
+      } else {
+        hasAccess = existingRow.user_id === user.id
+      }
+    }
+
+    if (!hasAccess) {
+      return NextResponse.json({ 
+        error: 'Access denied to variant row' 
+      }, { status: 403 })
+    }
+
     const { error } = await supabase
       .from('variant_rows')
       .delete()
       .eq('id', rowId)
-      .eq('user_id', user.id)
 
     if (error) {
       console.error('[VariantRow] Failed to delete row:', error)

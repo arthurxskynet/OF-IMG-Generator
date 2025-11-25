@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServer } from '@/lib/supabase-server'
 import { signPath } from '@/lib/storage'
 import { generateVariantPromptWithGrok } from '@/lib/ai-prompt-generator'
+import { isAdminUser } from '@/lib/admin'
 
 export async function POST(
   req: NextRequest,
@@ -28,13 +29,67 @@ export async function POST(
         )
       `)
       .eq('id', rowId)
-      .eq('user_id', user.id)
       .single()
 
     if (rowError || !row) {
       return NextResponse.json({ 
         error: 'Variant row not found' 
       }, { status: 404 })
+    }
+
+    // Check access: if model_id is set, verify model access; otherwise check user_id
+    const isAdmin = await isAdminUser()
+    let hasAccess = isAdmin
+
+    if (!hasAccess) {
+      if (row.model_id) {
+        const { data: model, error: modelError } = await supabase
+          .from('models')
+          .select('id, owner_id, team_id')
+          .eq('id', row.model_id)
+          .single()
+
+        if (modelError || !model) {
+          return NextResponse.json({ 
+            error: 'Model not found' 
+          }, { status: 404 })
+        }
+
+        if (model.team_id === null) {
+          hasAccess = model.owner_id === user.id
+        } else {
+          hasAccess = model.owner_id === user.id
+
+          if (!hasAccess) {
+            const { data: teamMember } = await supabase
+              .from('team_members')
+              .select('id')
+              .eq('team_id', model.team_id)
+              .eq('user_id', user.id)
+              .single()
+            
+            if (teamMember) {
+              hasAccess = true
+            } else {
+              const { data: team } = await supabase
+                .from('teams')
+                .select('owner_id')
+                .eq('id', model.team_id)
+                .single()
+              
+              hasAccess = team?.owner_id === user.id
+            }
+          }
+        }
+      } else {
+        hasAccess = row.user_id === user.id
+      }
+    }
+
+    if (!hasAccess) {
+      return NextResponse.json({ 
+        error: 'Access denied to variant row' 
+      }, { status: 403 })
     }
 
     const images = (row as any).variant_row_images || []
@@ -62,12 +117,11 @@ export async function POST(
     // Generate variant prompt (with adaptive sampling)
     const generatedPrompt = await generateVariantPromptWithGrok(signedUrls)
 
-    // Save prompt to row
+    // Save prompt to row (RLS will enforce access)
     const { error: updateError } = await supabase
       .from('variant_rows')
       .update({ prompt: generatedPrompt })
       .eq('id', rowId)
-      .eq('user_id', user.id)
 
     if (updateError) {
       console.error('[VariantRowPrompt] Failed to save prompt:', updateError)

@@ -11,7 +11,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { VariantRow, VariantRowImage } from '@/types/variants'
 import { getSignedUrl } from '@/lib/jobs'
-import { Wand2, Sparkles, Copy, Trash2, Plus, X, AlertCircle, Play, Eye, EyeOff, ChevronDown, ChevronUp, Star, ChevronLeft, ChevronRight, ImageIcon } from 'lucide-react'
+import { Wand2, Sparkles, Copy, Trash2, Plus, X, AlertCircle, Play, Eye, EyeOff, ChevronDown, ChevronUp, Star, ChevronLeft, ChevronRight, ImageIcon, Folder, Upload, Archive } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useJobPolling } from '@/hooks/use-job-polling'
 import { createClient } from '@/lib/supabase-browser'
@@ -132,6 +132,8 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
   }>>([])
   const [isBulkUploading, setIsBulkUploading] = useState(false)
   const [dragOverRefRowId, setDragOverRefRowId] = useState<string | null>(null)
+  const zipFileInputRef = useRef<HTMLInputElement>(null)
+  const [isGlobalDragActive, setIsGlobalDragActive] = useState(false)
   
   // Sync initialRows prop changes to local state (aligns with rows tab pattern)
   // This ensures data stays fresh when parent re-renders with new data
@@ -490,6 +492,385 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       })
     }
   }, [toast])
+
+  // Handle generate prompt for a row
+  const handleGeneratePrompt = useCallback(async (rowId: string) => {
+    setGeneratingPromptRowId(rowId)
+    try {
+      const response = await fetch(`/api/variants/rows/${rowId}/prompt/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to generate prompt')
+      }
+
+      const data = await response.json()
+      const generatedPrompt = data.prompt
+
+      // Update the row's prompt in local state
+      setRows(prev => prev.map(row => {
+        if (row.id === rowId) {
+          return { ...row, prompt: generatedPrompt }
+        }
+        return row
+      }))
+
+      toast({
+        title: 'Prompt generated',
+        description: 'Variant prompt created successfully'
+      })
+    } catch (error) {
+      console.error('Generate prompt error:', error)
+      toast({
+        title: 'Generation failed',
+        description: error instanceof Error ? error.message : 'Could not generate prompt',
+        variant: 'destructive'
+      })
+    } finally {
+      setGeneratingPromptRowId(null)
+    }
+  }, [toast])
+
+  // Handle copy prompt to clipboard
+  const handleCopyPrompt = useCallback((prompt: string) => {
+    if (!prompt) return
+    navigator.clipboard.writeText(prompt)
+    toast({
+      title: 'Copied',
+      description: 'Prompt copied to clipboard'
+    })
+  }, [toast])
+  // Handle delete row
+  const handleDeleteRow = useCallback(async (rowId: string) => {
+    try {
+      const response = await fetch(`/api/variants/rows/${rowId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' }
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to delete row')
+      }
+
+      // Mark as deleted to prevent sync from bringing it back
+      deletedRowIdsRef.current.add(rowId)
+
+      // Remove from local state and clean up related state
+      setRows(prev => {
+        const filtered = prev.filter(r => r.id !== rowId)
+        if (filtered.length !== prev.length) {
+          // Row was actually removed, clean up related state
+          setExpandedRows(prevExpanded => {
+            const next = new Set(prevExpanded)
+            next.delete(rowId)
+            return next
+          })
+          setOriginalPrompts(prevPrompts => {
+            const next = { ...prevPrompts }
+            delete next[rowId]
+            return next
+          })
+          setEnhanceInstructions(prevInstructions => {
+            const next = { ...prevInstructions }
+            delete next[rowId]
+            return next
+          })
+          setSelectedPresets(prevPresets => {
+            const next = { ...prevPresets }
+            delete next[rowId]
+            return next
+          })
+          setShowCompareView(prevCompare => {
+            const next = { ...prevCompare }
+            delete next[rowId]
+            return next
+          })
+        }
+        return filtered
+      })
+
+      toast({
+        title: 'Row deleted',
+        description: 'Variant row deleted successfully'
+      })
+    } catch (error) {
+      console.error('Delete row error:', error)
+      toast({
+        title: 'Delete failed',
+        description: error instanceof Error ? error.message : 'Could not delete row',
+        variant: 'destructive'
+      })
+    }
+  }, [toast])
+
+  // Handle delete image from row
+  const handleDeleteImage = useCallback(async (rowId: string, imageId: string) => {
+    try {
+      const response = await fetch(`/api/variants/rows/${rowId}/images/${imageId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' }
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to delete image')
+      }
+
+      // Update local state to remove the image
+      setRows(prev => prev.map(row => {
+        if (row.id === rowId) {
+          const updatedImages = (row.variant_row_images || []).filter(img => img.id !== imageId)
+          return { ...row, variant_row_images: updatedImages }
+        }
+        return row
+      }))
+
+      toast({
+        title: 'Image deleted',
+        description: 'Image removed from variant row'
+      })
+    } catch (error) {
+      console.error('Delete image error:', error)
+      toast({
+        title: 'Delete failed',
+        description: error instanceof Error ? error.message : 'Could not delete image',
+        variant: 'destructive'
+      })
+    }
+  }, [toast])
+
+  // Handle generate images for a row
+  const handleGenerateImages = useCallback(async (rowId: string) => {
+    setGeneratingImageRowId(rowId)
+    try {
+      const response = await fetch(`/api/variants/rows/${rowId}/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to generate images')
+      }
+
+      const data = await response.json()
+      
+      toast({
+        title: 'Generation started',
+        description: 'Images are being generated. This may take a moment.'
+      })
+
+      // Refresh the row to get updated images after generation
+      await refreshSingleRow(rowId)
+    } catch (error) {
+      console.error('Generate images error:', error)
+      toast({
+        title: 'Generation failed',
+        description: error instanceof Error ? error.message : 'Could not generate images',
+        variant: 'destructive'
+      })
+    } finally {
+      setGeneratingImageRowId(null)
+    }
+  }, [toast, refreshSingleRow])
+
+  // Handle reference image drag over
+  const handleRefDragOver = useCallback((e: React.DragEvent, rowId: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragOverRefRowId(rowId)
+  }, [])
+
+  // Handle reference image drag leave
+  const handleRefDragLeave = useCallback((e: React.DragEvent, rowId: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    // Only clear if we're leaving the drop zone entirely
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragOverRefRowId(null)
+    }
+  }, [])
+
+  // Handle reference image drop
+  const handleRefDrop = useCallback(async (e: React.DragEvent, rowId: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragOverRefRowId(null)
+
+    const files = Array.from(e.dataTransfer.files)
+    const imageFiles = files.filter(file => file.type.startsWith('image/'))
+
+    if (imageFiles.length === 0) {
+      toast({
+        title: 'No images',
+        description: 'Please drop image files',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    // Use the existing addRefsFromFiles logic
+    await addRefsFromFiles(imageFiles, rowId)
+  }, [toast])
+
+  // Toggle row expansion
+  const toggleRowExpansion = useCallback((rowId: string) => {
+    setExpandedRows(prev => {
+      const next = new Set(prev)
+      if (next.has(rowId)) {
+        next.delete(rowId)
+      } else {
+        next.add(rowId)
+        // Store original prompt when expanding for comparison
+        const row = rows.find(r => r.id === rowId)
+        if (row?.prompt && !originalPrompts[rowId]) {
+          setOriginalPrompts(prevPrompts => ({
+            ...prevPrompts,
+            [rowId]: row.prompt!
+          }))
+        }
+      }
+      return next
+    })
+  }, [rows, originalPrompts])
+
+  // Toggle compare view
+  const toggleCompareView = useCallback((rowId: string) => {
+    setShowCompareView(prev => ({
+      ...prev,
+      [rowId]: !prev[rowId]
+    }))
+  }, [])
+
+  // Handle preset chip selection
+  const handlePresetChip = useCallback((rowId: string, value: string, label: string) => {
+    setSelectedPresets(prev => {
+      const current = prev[rowId] || []
+      const isSelected = current.includes(label)
+      const updated = isSelected
+        ? current.filter(l => l !== label)
+        : [...current, label]
+      
+      // Update instructions based on selected presets
+      setEnhanceInstructions(prevInstructions => {
+        const currentInstructions = prevInstructions[rowId] || ''
+        const currentValues = currentInstructions ? currentInstructions.split('. ').filter(s => s.trim()) : []
+        
+        if (isSelected) {
+          // Remove this value
+          const filtered = currentValues.filter(v => !v.includes(value))
+          return {
+            ...prevInstructions,
+            [rowId]: filtered.join('. ')
+          }
+        } else {
+          // Add this value
+          const combined = [...currentValues, value].join('. ')
+          return {
+            ...prevInstructions,
+            [rowId]: combined
+          }
+        }
+      })
+      
+      return {
+        ...prev,
+        [rowId]: updated
+      }
+    })
+  }, [])
+
+  // Clear presets for a row
+  const clearPresets = useCallback((rowId: string) => {
+    setSelectedPresets(prev => {
+      const next = { ...prev }
+      delete next[rowId]
+      return next
+    })
+    setEnhanceInstructions(prev => {
+      const next = { ...prev }
+      delete next[rowId]
+      return next
+    })
+  }, [])
+
+  // Handle enhance prompt
+  const handleEnhancePrompt = useCallback(async (rowId: string) => {
+    const row = rows.find(r => r.id === rowId)
+    if (!row?.prompt) {
+      toast({
+        title: 'No prompt',
+        description: 'Generate a prompt first before enhancing',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    const instructions = enhanceInstructions[rowId]?.trim()
+    if (!instructions) {
+      toast({
+        title: 'No instructions',
+        description: 'Please provide enhancement instructions',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    setEnhancingRowId(rowId)
+    try {
+      // Store original prompt if not already stored
+      if (!originalPrompts[rowId]) {
+        setOriginalPrompts(prev => ({
+          ...prev,
+          [rowId]: row.prompt!
+        }))
+      }
+
+      const response = await fetch(`/api/variants/rows/${rowId}/prompt/enhance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          existingPrompt: row.prompt,
+          userInstructions: instructions
+        })
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to enhance prompt')
+      }
+
+      const data = await response.json()
+      const enhancedPrompt = data.prompt
+
+      // Update the row's prompt in local state
+      setRows(prev => prev.map(r => {
+        if (r.id === rowId) {
+          return { ...r, prompt: enhancedPrompt }
+        }
+        return r
+      }))
+
+      toast({
+        title: 'Prompt enhanced',
+        description: 'Variant prompt enhanced successfully'
+      })
+    } catch (error) {
+      console.error('Enhance prompt error:', error)
+      toast({
+        title: 'Enhancement failed',
+        description: error instanceof Error ? error.message : 'Could not enhance prompt',
+        variant: 'destructive'
+      })
+    } finally {
+      setEnhancingRowId(null)
+    }
+  }, [rows, enhanceInstructions, originalPrompts, toast])
+
 
   // Load thumbnail URLs
   const loadThumbnail = useCallback(async (imageId: string, path: string) => {
@@ -1061,19 +1442,71 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
     return session
   }
 
-  // Extract all image files from dropped items (supports folders)
+  // Extract all image files from dropped items (supports folders and zip files)
   const extractImageFiles = async (dataTransfer: DataTransfer): Promise<File[]> => {
     const imageFiles: File[] = []
     const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif']
+    const zipTypes = ['application/zip', 'application/x-zip-compressed', 'application/x-zip']
+    
+    // Helper function to extract images from a zip file
+    const extractFromZip = async (zipFile: File): Promise<File[]> => {
+      try {
+        const JSZip = (await import('jszip')).default
+        const zip = await JSZip.loadAsync(zipFile)
+        const extractedFiles: File[] = []
+        
+        // Process all files in the zip
+        const filePromises: Promise<void>[] = []
+        zip.forEach((relativePath, file) => {
+          // Skip directories
+          if (file.dir) return
+          
+          // Check if file is an image by extension
+          const extension = relativePath.split('.').pop()?.toLowerCase()
+          const isImage = ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(extension || '')
+          
+          if (isImage) {
+            filePromises.push(
+              file.async('blob').then(blob => {
+                // Create a File object from the blob with the original filename
+                const fileName = relativePath.split('/').pop() || `image-${Date.now()}.${extension}`
+                const extractedFile = new File([blob], fileName, { type: `image/${extension === 'jpg' ? 'jpeg' : extension}` })
+                extractedFiles.push(extractedFile)
+              })
+            )
+          }
+        })
+        
+        await Promise.all(filePromises)
+        return extractedFiles
+      } catch (error) {
+        console.error('Error extracting zip file:', error)
+        throw new Error(`Failed to extract zip file: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      }
+    }
     
     const processItem = async (item: DataTransferItem): Promise<void> => {
       if (item.kind === 'file') {
+        const file = item.getAsFile()
+        if (!file) return
+        
+        // Check if it's a zip file
+        if (zipTypes.includes(file.type) || file.name.toLowerCase().endsWith('.zip')) {
+          try {
+            const zipImages = await extractFromZip(file)
+            imageFiles.push(...zipImages)
+            return
+          } catch (error) {
+            console.error('Error processing zip file:', error)
+            throw error
+          }
+        }
+        
         const entry = item.webkitGetAsEntry?.() || (item as any).getAsEntry?.()
         
         if (entry) {
           if (entry.isFile) {
-            const file = item.getAsFile()
-            if (file && allowedTypes.includes(file.type)) {
+            if (allowedTypes.includes(file.type)) {
               imageFiles.push(file)
             }
           } else if (entry.isDirectory) {
@@ -1111,17 +1544,113 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
               }
             }
           }
+        } else {
+          // Fallback: if we have a file but no entry, check if it's an image
+          if (allowedTypes.includes(file.type)) {
+            imageFiles.push(file)
+          }
         }
       }
     }
 
     // Process all items
     for (let i = 0; i < dataTransfer.items.length; i++) {
-      await processItem(dataTransfer.items[i])
+      try {
+        await processItem(dataTransfer.items[i])
+      } catch (error) {
+        // If zip extraction fails, log but continue with other files
+        console.error('Error processing item:', error)
+        // Re-throw zip errors so they can be handled by the caller
+        if (error instanceof Error && error.message.includes('zip')) {
+          throw error
+        }
+      }
     }
 
     // Sort alphabetically by filename
     return imageFiles.sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  // Global drag handlers for the table
+  const handleTableDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    
+    const hasValidFiles = Array.from(e.dataTransfer.items).some(item => 
+      item.kind === 'file' && item.type.startsWith('image/')
+    )
+    const hasInternalImage = Array.from(e.dataTransfer.types || []).includes(INTERNAL_IMAGE_MIME)
+    
+    if (hasValidFiles || hasInternalImage) {
+      setIsGlobalDragActive(true)
+      e.dataTransfer.dropEffect = 'copy'
+    } else {
+      e.dataTransfer.dropEffect = 'none'
+    }
+  }
+
+  const handleTableDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    
+    // Only clear global drag state if we're leaving the table entirely
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsGlobalDragActive(false)
+    }
+  }
+
+  // Handle folder drag and drop
+  const handleFolderDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsFolderDropActive(true)
+  }
+
+  const handleFolderDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    // Only deactivate if we're leaving the drop zone entirely
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsFolderDropActive(false)
+    }
+  }
+
+  const handleFolderDrop = async (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsFolderDropActive(false)
+    setIsGlobalDragActive(false)
+    
+    if (isBulkUploading) {
+      toast({
+        title: 'Upload in progress',
+        description: 'Please wait for the current upload to complete',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    try {
+      const imageFiles = await extractImageFiles(e.dataTransfer)
+      
+      if (imageFiles.length === 0) {
+        toast({
+          title: 'No images found',
+          description: 'No valid image files found in the dropped folder',
+          variant: 'destructive'
+        })
+        return
+      }
+
+      await handleBulkImageUpload(imageFiles)
+    } catch (error) {
+      console.error('Error processing folder:', error)
+      toast({
+        title: 'Error processing folder',
+        description: error instanceof Error ? error.message : 'Failed to process dropped folder',
+        variant: 'destructive'
+      })
+    }
   }
 
   // Upload dropped files as references and add to variant row
@@ -1211,117 +1740,108 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       }))
       setBulkUploadState(initialBulkState)
 
-      let successCount = 0
-      let errorCount = 0
-
-      // Process files in batches
-      const BATCH_SIZE = 3
-      for (let i = 0; i < imageFiles.length; i += BATCH_SIZE) {
-        const batch = imageFiles.slice(i, i + BATCH_SIZE)
-        
-        const batchPromises = batch.map(async (file, batchIndex) => {
-          const globalIndex = i + batchIndex
-          try {
-            // Update status to uploading
-            setBulkUploadState(prev => prev.map(item => 
-              item.filename === file.name 
-                ? { ...item, status: 'uploading', progress: 50 }
-                : item
-            ))
-
-            // Create variant row first
-            const { data: { session } } = await supabase.auth.getSession()
-            const rowResponse = await fetch('/api/variants/rows', {
-              method: 'POST',
-              headers: { 
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${session?.access_token}`
-              },
-              body: JSON.stringify({
-                ...(modelId ? { model_id: modelId } : {})
+      // Convert files to base64 for server processing
+      const filesData = await Promise.all(
+        imageFiles.map(async (file) => {
+          return new Promise<{ name: string; size: number; type: string; data: string }>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => {
+              const base64 = (reader.result as string).split(',')[1] // Remove data:image/...;base64, prefix
+              resolve({
+                name: file.name,
+                size: file.size,
+                type: file.type,
+                data: base64
               })
-            })
-
-            if (!rowResponse.ok) {
-              throw new Error(`Failed to create row: ${rowResponse.status}`)
             }
+            reader.onerror = reject
+            reader.readAsDataURL(file)
+          })
+        })
+      )
 
-            const { row } = await rowResponse.json()
+      // Update UI to show processing
+      setBulkUploadState(prev => prev.map(item => ({ ...item, status: 'uploading', progress: 50 })))
 
-            // Upload image
-            await retryWithBackoff(async () => {
-              await refreshAuth()
-              return uploadImage(file, 'refs', user.id)
-            }, 3, 1000).then(async (uploadResult) => {
-              // Add image to variant row
-              const imageResponse = await fetch(`/api/variants/rows/${row.id}/images`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${session?.access_token}`
-                },
-                body: JSON.stringify({
-                  images: [{
-                    outputPath: uploadResult.objectPath,
-                    thumbnailPath: null,
-                    sourceRowId: null
-                  }]
-                })
-              })
+      // Call server-side bulk upload API
+      const { data: { session } } = await supabase.auth.getSession()
+      const response = await fetch('/api/variants/upload/bulk', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token}`
+        },
+        body: JSON.stringify({
+          model_id: modelId || null,
+          files: filesData
+        })
+      })
 
-              if (!imageResponse.ok) {
-                throw new Error(`Failed to add image: ${imageResponse.status}`)
-              }
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Server-side bulk upload failed: ${response.status} ${errorText}`)
+      }
 
-              return { row, uploadResult }
-            })
+      const result = await response.json()
+      console.log('Bulk upload result:', result)
 
-            // Update bulk upload state to success
-            setBulkUploadState(prev => prev.map(item => 
-              item.filename === file.name 
-                ? { ...item, rowId: row.id, status: 'success', progress: 100 }
-                : item
-            ))
-
-            successCount++
-            return { success: true, filename: file.name, row }
-          } catch (error) {
-            console.error(`Error uploading ${file.name}:`, error)
-            
-            // Update bulk upload state to error
-            setBulkUploadState(prev => prev.map(item => 
-              item.filename === file.name 
-                ? { 
-                    ...item, 
-                    status: 'error', 
-                    progress: 0,
-                    error: error instanceof Error ? error.message : 'Upload failed'
-                  }
-                : item
-            ))
-
-            errorCount++
-            return { success: false, filename: file.name, error }
+      // Update UI with results and add rows immediately for real-time updates
+      const updatedBulkState = imageFiles.map((file, index) => {
+        const successResult = result.results.find((r: any) => r.filename === file.name)
+        const errorResult = result.errors.find((e: any) => e.filename === file.name)
+        
+        if (successResult) {
+          return {
+            rowId: successResult.row.id,
+            filename: file.name,
+            status: 'success' as const,
+            progress: 100
           }
+        } else if (errorResult) {
+          return {
+            rowId: `temp-${index}`,
+            filename: file.name,
+            status: 'error' as const,
+            progress: 0,
+            error: errorResult.error
+          }
+        } else {
+          return {
+            rowId: `temp-${index}`,
+            filename: file.name,
+            status: 'error' as const,
+            progress: 0,
+            error: 'Unknown error'
+          }
+        }
+      })
+      setBulkUploadState(updatedBulkState)
+
+      // Add successful rows to the UI immediately for real-time updates
+      if (result.results.length > 0) {
+        // Add rows to state immediately
+        setRows(prev => {
+          const existingIds = new Set(prev.map(r => r.id))
+          const newRows = result.results
+            .map((r: any) => r.row)
+            .filter((row: any) => !existingIds.has(row.id))
+          return [...newRows, ...prev]
         })
 
-        await Promise.all(batchPromises)
-
-        // Small delay between batches
-        if (i + BATCH_SIZE < imageFiles.length) {
-          await new Promise(resolve => setTimeout(resolve, 500))
+        // Refresh each row to load images and thumbnails immediately
+        for (const successResult of result.results) {
+          const row = successResult.row
+          // Refresh to get images loaded
+          await refreshSingleRow(row.id).catch(() => {})
         }
       }
 
-      // Refresh rows to show new ones
-      await refreshRowData()
-
       // Show completion toast
-      if (successCount > 0) {
+      if (result.summary.successful > 0) {
         toast({
           title: 'Bulk upload completed',
-          description: `Successfully uploaded ${successCount} image${successCount === 1 ? '' : 's'}${errorCount > 0 ? `, ${errorCount} failed` : ''}`,
-          variant: errorCount > 0 ? 'destructive' : 'default'
+          description: `Successfully uploaded ${result.summary.successful} image${result.summary.successful === 1 ? '' : 's'}${result.summary.failed > 0 ? `, ${result.summary.failed} failed` : ''}`,
+          variant: result.summary.failed > 0 ? 'destructive' : 'default'
         })
       }
 
@@ -1329,535 +1849,58 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       setTimeout(() => {
         setBulkUploadState([])
       }, 5000)
-
-    } catch (error) {
-      console.error('Bulk upload error:', error)
+    } catch (err) {
+      console.error('Bulk upload error:', err)
       toast({
         title: 'Bulk upload failed',
-        description: error instanceof Error ? error.message : 'Failed to process bulk upload',
+        description: err instanceof Error ? err.message : 'Unknown error',
         variant: 'destructive'
       })
-      setBulkUploadState([])
     } finally {
       setIsBulkUploading(false)
     }
   }
 
-  // Handle folder drag and drop
-  const handleFolderDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsFolderDropActive(true)
-  }
-
-  const handleFolderDragLeave = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    // Only deactivate if we're leaving the drop zone entirely
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-      setIsFolderDropActive(false)
-    }
-  }
-
-  const handleFolderDrop = async (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsFolderDropActive(false)
-    
-    if (isBulkUploading) {
-      toast({
-        title: 'Upload in progress',
-        description: 'Please wait for the current upload to complete',
-        variant: 'destructive'
-      })
-      return
-    }
-
-    try {
-      const imageFiles = await extractImageFiles(e.dataTransfer)
-      
-      if (imageFiles.length === 0) {
-        toast({
-          title: 'No images found',
-          description: 'No valid image files found in the dropped folder',
-          variant: 'destructive'
-        })
-        return
-      }
-
-      await handleBulkImageUpload(imageFiles)
-    } catch (error) {
-      console.error('Error processing folder:', error)
-      toast({
-        title: 'Error processing folder',
-        description: error instanceof Error ? error.message : 'Failed to process dropped folder',
-        variant: 'destructive'
-      })
-    }
-  }
-
-  // Reference images drag-and-drop handlers
-  const handleRefDragOver = (e: React.DragEvent, rowId: string) => {
-    e.preventDefault()
-    e.stopPropagation()
-    const hasValidFiles = Array.from(e.dataTransfer.items).some(item => 
-      item.kind === 'file' && item.type.startsWith('image/')
-    )
-    if (hasValidFiles) {
-      setDragOverRefRowId(rowId)
-      e.dataTransfer.dropEffect = 'copy'
-    } else {
-      e.dataTransfer.dropEffect = 'none'
-    }
-  }
-
-  const handleRefDragLeave = (e: React.DragEvent, rowId: string) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-      if (dragOverRefRowId === rowId) setDragOverRefRowId(null)
-    }
-  }
-
-  const handleRefDrop = async (e: React.DragEvent, rowId: string) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setDragOverRefRowId(null)
-
-    const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'))
-    if (files.length > 0) {
-      await addRefsFromFiles(files, rowId)
-    }
-  }
-
+  // Add new variant row
   const handleAddRow = async () => {
     try {
+      const { data: { session } } = await supabase.auth.getSession()
       const response = await fetch('/api/variants/rows', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token}`
+        },
         body: JSON.stringify({
           ...(modelId ? { model_id: modelId } : {})
         })
       })
 
       if (!response.ok) {
-        throw new Error('Failed to create row')
+        throw new Error('Failed to create variant row')
       }
 
       const { row } = await response.json()
+      
+      // Add row to state immediately for real-time UI update
       setRows(prev => {
-        const newRows = [row, ...prev]
-        // onRowsChange will be called via useEffect when rows state updates
-        return newRows
-      })
-      
-      // FIXED: Removed router.refresh() - client-side state update is sufficient
-      // Realtime subscriptions will handle updates from other clients
-      
-      toast({
-        title: 'Row created',
-        description: 'New variant row added'
-      })
-    } catch (error) {
-      toast({
-        title: 'Failed to create row',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive'
-      })
-    }
-  }
-
-  const handleGeneratePrompt = async (rowId: string) => {
-    setGeneratingPromptRowId(rowId)
-    try {
-      const response = await fetch(`/api/variants/rows/${rowId}/prompt/generate`, {
-        method: 'POST'
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to generate prompt')
-      }
-
-      const { prompt } = await response.json()
-
-      // Save original prompt before overwrite (for compare view)
-      const currentRow = rows.find(r => r.id === rowId)
-      if (currentRow?.prompt && !originalPrompts[rowId]) {
-        setOriginalPrompts(prev => ({ ...prev, [rowId]: currentRow.prompt! }))
-      }
-
-      setRows(prev => prev.map(r =>
-        r.id === rowId ? { ...r, prompt } : r
-      ))
-
-      toast({
-        title: 'Prompt generated',
-        description: 'Variant prompt created from your reference images'
-      })
-    } catch (error) {
-      toast({
-        title: 'Generation failed',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive'
-      })
-    } finally {
-      setGeneratingPromptRowId(null)
-    }
-  }
-
-  const handleDeleteRow = async (rowId: string) => {
-    try {
-      // Optimistic UI update - remove immediately for better UX
-      const rowToDelete = rows.find(r => r.id === rowId)
-      const originalIndex = rows.findIndex(r => r.id === rowId)
-      
-      // Mark as deleted to prevent sync from bringing it back
-      deletedRowIdsRef.current.add(rowId)
-      
-      // Remove from state immediately
-      setRows(prev => prev.filter(r => r.id !== rowId))
-      
-      // Clean up related state immediately
-      setExpandedRows(prev => {
-        const next = new Set(prev)
-        next.delete(rowId)
-        return next
-      })
-      setOriginalPrompts(prev => {
-        const next = { ...prev }
-        delete next[rowId]
-        return next
-      })
-      setEnhanceInstructions(prev => {
-        const next = { ...prev }
-        delete next[rowId]
-        return next
-      })
-      setSelectedPresets(prev => {
-        const next = { ...prev }
-        delete next[rowId]
-        return next
-      })
-      setShowCompareView(prev => {
-        const next = { ...prev }
-        delete next[rowId]
-        return next
-      })
-      
-      const response = await fetch(`/api/variants/rows/${rowId}`, {
-        method: 'DELETE'
-      })
-
-      if (!response.ok) {
-        // Revert optimistic update on error
-        deletedRowIdsRef.current.delete(rowId)
-        if (rowToDelete) {
-          setRows(prev => {
-            // Insert back at the original position if possible, otherwise at the end
-            if (originalIndex >= 0 && originalIndex < prev.length) {
-              const newRows = [...prev]
-              newRows.splice(originalIndex, 0, rowToDelete)
-              return newRows
-            }
-            return [...prev, rowToDelete]
-          })
+        // Check if row already exists to avoid duplicates
+        if (prev.some(r => r.id === row.id)) {
+          return prev
         }
-        throw new Error('Failed to delete row')
-      }
-      
-      // Clear from deleted set after successful deletion (optional cleanup)
-      // Keep it in the set to prevent it from coming back if initialRows hasn't updated yet
-      // We'll clear it when initialRows actually updates to reflect the deletion
-      
-      // FIXED: Removed router.refresh() - client-side state update is sufficient
-      // Realtime subscriptions will handle updates from other clients
+        return [row, ...prev]
+      })
       
       toast({
-        title: 'Row deleted',
-        description: 'Variant row removed'
+        title: 'Row added',
+        description: 'New variant row created. Add reference images to get started.'
       })
     } catch (error) {
       toast({
-        title: 'Failed to delete row',
+        title: 'Failed to add row',
         description: error instanceof Error ? error.message : 'Unknown error',
         variant: 'destructive'
       })
-    }
-  }
-
-  const handleDeleteImage = async (rowId: string, imageId: string) => {
-    try {
-      // Optimistic UI update - remove immediately for better UX
-      const row = rows.find(r => r.id === rowId)
-      const imageToDelete = row?.variant_row_images?.find(img => img.id === imageId)
-      
-      setRows(prev => prev.map(row => {
-        if (row.id === rowId) {
-          return {
-            ...row,
-            variant_row_images: row.variant_row_images?.filter(img => img.id !== imageId) || []
-          }
-        }
-        return row
-      }))
-      
-      const response = await fetch(`/api/variants/rows/${rowId}/images/${imageId}`, {
-        method: 'DELETE'
-      })
-
-      if (!response.ok) {
-        // Revert optimistic update on error
-        if (imageToDelete && row) {
-          setRows(prev => prev.map(r => {
-            if (r.id === rowId) {
-              return {
-                ...r,
-                variant_row_images: [...(r.variant_row_images || []), imageToDelete]
-              }
-            }
-            return r
-          }))
-        }
-        throw new Error('Failed to delete image')
-      }
-      
-      toast({
-        title: 'Image removed',
-        description: 'Image deleted from variant row'
-      })
-    } catch (error) {
-      toast({
-        title: 'Failed to delete image',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive'
-      })
-    }
-  }
-
-
-  const handleEnhancePrompt = async (rowId: string) => {
-    const instructions = enhanceInstructions[rowId]
-    if (!instructions?.trim()) {
-      toast({
-        title: 'Instructions required',
-        description: 'Enter enhancement instructions',
-        variant: 'destructive'
-      })
-      return
-    }
-
-    const row = rows.find(r => r.id === rowId)
-    if (!row?.prompt) {
-      toast({
-        title: 'No prompt to enhance',
-        description: 'Generate a prompt first',
-        variant: 'destructive'
-      })
-      return
-    }
-
-    setEnhancingRowId(rowId)
-    try {
-      const response = await fetch(`/api/variants/rows/${rowId}/prompt/enhance`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          existingPrompt: row.prompt,
-          userInstructions: instructions
-        })
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to enhance prompt')
-      }
-
-      const { prompt } = await response.json()
-      
-      setRows(prev => prev.map(r => 
-        r.id === rowId ? { ...r, prompt } : r
-      ))
-      setEnhanceInstructions(prev => ({ ...prev, [rowId]: '' }))
-
-      toast({
-        title: 'Prompt enhanced',
-        description: 'Variant prompt updated successfully'
-      })
-    } catch (error) {
-      toast({
-        title: 'Enhancement failed',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive'
-      })
-    } finally {
-      setEnhancingRowId(null)
-    }
-  }
-
-  const handlePresetChip = (rowId: string, value: string, label: string) => {
-    setSelectedPresets(prev => {
-      const current = prev[rowId] || []
-      const isSelected = current.includes(label)
-      
-      const updated = isSelected
-        ? current.filter(l => l !== label)
-        : [...current, label]
-      
-      return { ...prev, [rowId]: updated }
-    })
-    
-    // Update instructions by combining all selected presets
-    setEnhanceInstructions(prev => {
-      const currentPresets = prev[rowId] || ''
-      const allPresets = Object.values(PRESET_ENHANCEMENTS).flat()
-      const selectedLabels = selectedPresets[rowId] || []
-      
-      // Toggle this value
-      const isCurrentlyIncluded = currentPresets.includes(value)
-      let newInstructions = ''
-      
-      if (isCurrentlyIncluded) {
-        // Remove this instruction
-        const parts = currentPresets.split('. ').filter(part => !part.includes(value))
-        newInstructions = parts.join('. ')
-      } else {
-        // Add this instruction
-        const parts = currentPresets ? currentPresets.split('. ').filter(p => p.trim()) : []
-        parts.push(value)
-        newInstructions = parts.join('. ')
-      }
-      
-      return { ...prev, [rowId]: newInstructions.trim() }
-    })
-  }
-
-  const toggleCompareView = (rowId: string) => {
-    setShowCompareView(prev => ({ ...prev, [rowId]: !prev[rowId] }))
-  }
-
-  const toggleRowExpansion = (rowId: string) => {
-    setExpandedRows(prev => {
-      const next = new Set(prev)
-      if (next.has(rowId)) {
-        next.delete(rowId)
-      } else {
-        next.add(rowId)
-      }
-      return next
-    })
-  }
-  
-  const clearPresets = (rowId: string) => {
-    setSelectedPresets(prev => ({ ...prev, [rowId]: [] }))
-    setEnhanceInstructions(prev => ({ ...prev, [rowId]: '' }))
-  }
-
-  const handlePromptChange = (rowId: string, prompt: string) => {
-    // Update local state immediately
-    setRows(prev => prev.map(row => 
-      row.id === rowId ? { ...row, prompt } : row
-    ))
-
-    // Clear existing timeout for this row
-    if (saveTimeoutRef.current[rowId]) {
-      clearTimeout(saveTimeoutRef.current[rowId])
-    }
-
-    // Debounced save to DB (waits 1 second after last keystroke)
-    saveTimeoutRef.current[rowId] = setTimeout(async () => {
-      try {
-        const response = await fetch(`/api/variants/rows/${rowId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt })
-        })
-        
-        if (!response.ok) {
-          throw new Error('Failed to save prompt')
-        }
-        
-        console.log('[VariantRow] Prompt auto-saved:', { rowId, promptLength: prompt.length })
-      } catch (error) {
-        console.error('[VariantRow] Failed to save prompt:', error)
-        toast({
-          title: 'Auto-save failed',
-          description: 'Could not save prompt changes',
-          variant: 'destructive'
-        })
-      }
-    }, 1000)
-  }
-
-  // Cleanup timeouts on unmount
-  useEffect(() => {
-    return () => {
-      Object.values(saveTimeoutRef.current).forEach(timeout => clearTimeout(timeout))
-    }
-  }, [])
-
-  const handleCopyPrompt = (prompt: string) => {
-    navigator.clipboard.writeText(prompt)
-    toast({
-      title: 'Copied',
-      description: 'Prompt copied to clipboard'
-    })
-  }
-
-  const handleGenerateImages = async (rowId: string) => {
-    const row = rows.find(r => r.id === rowId)
-    if (!row?.prompt) {
-      toast({
-        title: 'No prompt',
-        description: 'Generate a prompt first',
-        variant: 'destructive'
-      })
-      return
-    }
-
-    if (!row.variant_row_images || row.variant_row_images.length < 1) {
-      toast({
-        title: 'Add an image',
-        description: 'Seedream edit supports target-only. Add at least one image to proceed.',
-        variant: 'destructive'
-      })
-      return
-    }
-
-    setGeneratingImageRowId(rowId)
-    try {
-      const response = await fetch(`/api/variants/rows/${rowId}/generate`, {
-        method: 'POST'
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to generate images')
-      }
-
-      const { jobId } = await response.json()
-      if (jobId) {
-        // Store jobId -> rowId mapping in ref to avoid closure issues
-        jobIdToRowIdRef.current[jobId] = rowId
-        startPolling(jobId, 'queued', rowId)
-      }
-      
-      toast({
-        title: 'Generation started',
-        description: 'Your variant images are being generated'
-      })
-
-      // Schedule a refresh after job is created
-      // The polling and realtime subscriptions will handle updates when images are inserted
-      scheduleRefresh()
-    } catch (error) {
-      toast({
-        title: 'Generation failed',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive'
-      })
-    } finally {
-      setGeneratingImageRowId(null)
     }
   }
 

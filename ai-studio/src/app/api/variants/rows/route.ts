@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServer } from '@/lib/supabase-server'
+import { isAdminUser } from '@/lib/admin'
 
 /**
  * GET /api/variants/rows - List all variant rows for the current user
@@ -91,9 +92,11 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}))
     const { name, model_id } = body
 
-    // Get user's team_id (assuming it exists in user metadata or separate query)
-    // For now, using user_id as team_id fallback
-    const teamId = user.id
+    // Check if user is admin (admins have access to all models)
+    const isAdmin = await isAdminUser()
+
+    // Get user's team_id (use model's team_id if available)
+    let teamId = user.id
 
     // If model_id is provided, validate it exists and user has access
     if (model_id) {
@@ -110,29 +113,35 @@ export async function POST(req: NextRequest) {
       }
 
       // Check if user has access to the model
-      // User owns the model, or is team member, or is team owner
-      let hasAccess = model.owner_id === user.id
+      // Logic matches RLS policy: admin OR (team_id IS NULL AND owner) OR team_member OR team_owner
+      let hasAccess = isAdmin
 
-      if (!hasAccess && model.team_id) {
-        // Check if user is a team member
-        const { data: teamMember } = await supabase
-          .from('team_members')
-          .select('id')
-          .eq('team_id', model.team_id)
-          .eq('user_id', user.id)
-          .single()
-        
-        if (teamMember) {
-          hasAccess = true
+      if (!hasAccess) {
+        if (model.team_id === null) {
+          hasAccess = model.owner_id === user.id
         } else {
-          // Check if user owns the team
-          const { data: team } = await supabase
-            .from('teams')
-            .select('owner_id')
-            .eq('id', model.team_id)
-            .single()
-          
-          hasAccess = team?.owner_id === user.id
+          hasAccess = model.owner_id === user.id
+
+          if (!hasAccess) {
+            const { data: teamMember } = await supabase
+              .from('team_members')
+              .select('id')
+              .eq('team_id', model.team_id)
+              .eq('user_id', user.id)
+              .single()
+            
+            if (teamMember) {
+              hasAccess = true
+            } else {
+              const { data: team } = await supabase
+                .from('teams')
+                .select('owner_id')
+                .eq('id', model.team_id)
+                .single()
+              
+              hasAccess = team?.owner_id === user.id
+            }
+          }
         }
       }
 
@@ -144,7 +153,7 @@ export async function POST(req: NextRequest) {
 
       // Use model's team_id if available, otherwise use user_id
       if (model.team_id) {
-        const teamIdFromModel = model.team_id
+        teamId = model.team_id
       }
     }
 

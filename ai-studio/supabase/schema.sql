@@ -200,19 +200,19 @@ create policy "delete models owner or team owner or admin" on public.models
 drop policy if exists "read rows if member" on public.model_rows;
 drop policy if exists "read rows if member or admin" on public.model_rows;
 create policy "read rows if member or admin" on public.model_rows
-  for select using (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))) or public.is_admin_user());
+  for select using (exists (select 1 from public.models m where m.id = model_id and (m.owner_id = auth.uid() or (m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))) or public.is_admin_user());
 drop policy if exists "insert rows if member" on public.model_rows;
 drop policy if exists "insert rows if member or admin" on public.model_rows;
 create policy "insert rows if member or admin" on public.model_rows
-  for insert with check (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))) or public.is_admin_user());
+  for insert with check (exists (select 1 from public.models m where m.id = model_id and (m.owner_id = auth.uid() or (m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))) or public.is_admin_user());
 drop policy if exists "update rows if member" on public.model_rows;
 drop policy if exists "update rows if member or admin" on public.model_rows;
 create policy "update rows if member or admin" on public.model_rows
-  for update using (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))) or public.is_admin_user());
+  for update using (exists (select 1 from public.models m where m.id = model_id and (m.owner_id = auth.uid() or (m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))) or public.is_admin_user());
 drop policy if exists "delete rows if member" on public.model_rows;
 drop policy if exists "delete rows if member or admin" on public.model_rows;
 create policy "delete rows if member or admin" on public.model_rows
-  for delete using (exists (select 1 from public.models m where m.id = model_id and ((m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))) or public.is_admin_user());
+  for delete using (exists (select 1 from public.models m where m.id = model_id and (m.owner_id = auth.uid() or (m.team_id is null and m.owner_id = auth.uid()) or public.is_team_member(auth.uid(), m.team_id) or exists (select 1 from public.teams t where t.id = m.team_id and t.owner_id = auth.uid()))) or public.is_admin_user());
 
 -- jobs
 drop policy if exists "read jobs if member" on public.jobs;
@@ -236,19 +236,87 @@ create policy "delete jobs if member or admin" on public.jobs
 drop policy if exists "read images if member" on public.generated_images;
 drop policy if exists "read images if member or admin" on public.generated_images;
 create policy "read images if member or admin" on public.generated_images
-  for select using (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id) or public.is_admin_user());
+  for select using (
+    public.is_admin_user()
+    OR
+    -- Check model access via model_id
+    EXISTS (
+      SELECT 1 FROM public.models m 
+      WHERE m.id = generated_images.model_id 
+      AND (
+        m.owner_id = auth.uid()
+        OR (m.team_id IS NULL AND m.owner_id = auth.uid())
+        OR public.is_team_member(auth.uid(), m.team_id) 
+        OR EXISTS (SELECT 1 FROM public.teams t WHERE t.id = m.team_id AND t.owner_id = auth.uid())
+      )
+    )
+    OR
+    -- Backward compatibility: check user_id/team_id directly
+    (user_id = auth.uid() OR public.is_team_member(auth.uid(), team_id))
+  );
 drop policy if exists "insert images if member" on public.generated_images;
 drop policy if exists "insert images if member or admin" on public.generated_images;
 create policy "insert images if member or admin" on public.generated_images
-  for insert with check (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id) or public.is_admin_user());
+  for insert with check (
+    public.is_admin_user()
+    OR
+    -- Check model access via model_id
+    EXISTS (
+      SELECT 1 FROM public.models m 
+      WHERE m.id = generated_images.model_id 
+      AND (
+        m.owner_id = auth.uid()
+        OR (m.team_id IS NULL AND m.owner_id = auth.uid())
+        OR public.is_team_member(auth.uid(), m.team_id) 
+        OR EXISTS (SELECT 1 FROM public.teams t WHERE t.id = m.team_id AND t.owner_id = auth.uid())
+      )
+    )
+    OR
+    -- Backward compatibility: check user_id/team_id directly
+    (user_id = auth.uid() OR public.is_team_member(auth.uid(), team_id))
+  );
 drop policy if exists "update images if member" on public.generated_images;
 drop policy if exists "update images if member or admin" on public.generated_images;
 create policy "update images if member or admin" on public.generated_images
-  for update using (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id) or public.is_admin_user());
+  for update using (
+    public.is_admin_user()
+    OR
+    -- Check model access via model_id
+    EXISTS (
+      SELECT 1 FROM public.models m 
+      WHERE m.id = generated_images.model_id 
+      AND (
+        m.owner_id = auth.uid()
+        OR (m.team_id IS NULL AND m.owner_id = auth.uid())
+        OR public.is_team_member(auth.uid(), m.team_id) 
+        OR EXISTS (SELECT 1 FROM public.teams t WHERE t.id = m.team_id AND t.owner_id = auth.uid())
+      )
+    )
+    OR
+    -- Backward compatibility: check user_id/team_id directly
+    (user_id = auth.uid() OR public.is_team_member(auth.uid(), team_id))
+  );
 drop policy if exists "delete images if member" on public.generated_images;
 drop policy if exists "delete images if member or admin" on public.generated_images;
 create policy "delete images if member or admin" on public.generated_images
-  for delete using (user_id = auth.uid() or public.is_team_member(auth.uid(), team_id) or public.is_admin_user());
+  for delete using (
+    public.is_admin_user()
+    OR
+    -- Check model access via model_id
+    EXISTS (
+      SELECT 1 FROM public.models m 
+      WHERE m.id = generated_images.model_id 
+      AND (
+        m.owner_id = auth.uid()
+        OR (m.team_id IS NULL AND m.owner_id = auth.uid())
+        OR public.is_team_member(auth.uid(), m.team_id) 
+        OR EXISTS (SELECT 1 FROM public.teams t WHERE t.id = m.team_id AND t.owner_id = auth.uid())
+      )
+    )
+    OR
+    -- Backward compatibility: check user_id/team_id directly
+    (user_id = auth.uid() OR public.is_team_member(auth.uid(), team_id))
+  );
 
 commit;
 

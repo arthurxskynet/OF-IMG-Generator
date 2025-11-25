@@ -2,19 +2,47 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServer } from '@/lib/supabase-server'
 import { signPath } from '@/lib/storage'
 
+const ALLOWED_BUCKETS = ['outputs', 'refs', 'targets', 'thumbnails', 'avatars']
+
 export async function GET(req: NextRequest) {
   const supabase = await createServer()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  
+  if (!user) {
+    console.error('[StorageSign] Unauthorized request - no user found')
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
 
   const path = req.nextUrl.searchParams.get('path')
-  if (!path) return NextResponse.json({ error: 'Missing path' }, { status: 400 })
+  if (!path) {
+    console.error('[StorageSign] Missing path parameter', { userId: user.id })
+    return NextResponse.json({ error: 'Missing path parameter' }, { status: 400 })
+  }
+
+  // Validate path format: should be "bucket/key" or "bucket/subpath/key"
+  const pathParts = path.split('/')
+  if (pathParts.length < 2) {
+    console.error('[StorageSign] Invalid path format', { userId: user.id, path })
+    return NextResponse.json({ error: 'Invalid path format. Expected: bucket/key' }, { status: 400 })
+  }
+
+  const bucket = pathParts[0]
+  const key = pathParts.slice(1).join('/')
+
+  if (!bucket || !key) {
+    console.error('[StorageSign] Invalid path - missing bucket or key', { userId: user.id, path, bucket, key })
+    return NextResponse.json({ error: 'Invalid path - missing bucket or key' }, { status: 400 })
+  }
+
+  // Validate bucket is allowed
+  if (!ALLOWED_BUCKETS.includes(bucket)) {
+    console.error('[StorageSign] Invalid bucket', { userId: user.id, bucket, allowedBuckets: ALLOWED_BUCKETS })
+    return NextResponse.json({ error: `Invalid bucket. Allowed buckets: ${ALLOWED_BUCKETS.join(', ')}` }, { status: 400 })
+  }
 
   try {
-    // Optional: Verify user has access to an entity that references this path before signing.
-    // Keep it simple: allow if authenticated (RLS will gate when reading rows).
-
-    const url = await signPath(path, 14400) // 4 hours instead of 1 hour
+    console.log('[StorageSign] Signing path', { userId: user.id, bucket, keyLength: key.length })
+    const url = await signPath(path, 14400) // 4 hours
     const response = NextResponse.json({ url })
     
     // Add aggressive cache headers to reduce repeated requests
@@ -23,7 +51,16 @@ export async function GET(req: NextRequest) {
     
     return response
   } catch (error) {
-    console.error('Error signing path:', error)
-    return NextResponse.json({ error: 'Failed to sign URL' }, { status: 500 })
+    console.error('[StorageSign] Error signing path', { 
+      userId: user.id, 
+      path, 
+      bucket, 
+      key,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined
+    })
+    return NextResponse.json({ 
+      error: error instanceof Error ? `Failed to sign URL: ${error.message}` : 'Failed to sign URL' 
+    }, { status: 500 })
   }
 }

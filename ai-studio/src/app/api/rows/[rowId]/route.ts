@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createServer } from "@/lib/supabase-server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { isAdminUser } from "@/lib/admin";
 
 export const runtime = "nodejs";
 
@@ -76,9 +77,56 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ro
       return NextResponse.json({ error: "Row not found" }, { status: 404 });
     }
 
-    // Check if user owns the model (models is an array from the join)
+    // Check if user has access to the model (admin, owner, team member, or team owner)
     const model = Array.isArray(existingRow.models) ? existingRow.models[0] : existingRow.models;
-    if (!model || model.owner_id !== user.id) {
+    if (!model) {
+      return NextResponse.json({ error: "Model not found" }, { status: 404 });
+    }
+
+    const isAdmin = await isAdminUser()
+    let hasAccess = isAdmin
+
+    if (!hasAccess) {
+      // Get full model data to check team_id
+      const { data: fullModel, error: modelError } = await supabase
+        .from('models')
+        .select('id, owner_id, team_id')
+        .eq('id', existingRow.model_id)
+        .single()
+
+      if (modelError || !fullModel) {
+        return NextResponse.json({ error: "Model not found" }, { status: 404 });
+      }
+
+      if (fullModel.team_id === null) {
+        hasAccess = fullModel.owner_id === user.id
+      } else {
+        hasAccess = fullModel.owner_id === user.id
+
+        if (!hasAccess) {
+          const { data: teamMember } = await supabase
+            .from('team_members')
+            .select('id')
+            .eq('team_id', fullModel.team_id)
+            .eq('user_id', user.id)
+            .single()
+          
+          if (teamMember) {
+            hasAccess = true
+          } else {
+            const { data: team } = await supabase
+              .from('teams')
+              .select('owner_id')
+              .eq('id', fullModel.team_id)
+              .single()
+            
+            hasAccess = team?.owner_id === user.id
+          }
+        }
+      }
+    }
+
+    if (!hasAccess) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

@@ -2514,9 +2514,17 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     }
 
     try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) {
+        throw new Error('No valid authentication session')
+      }
+
       const response = await fetch('/api/variants/rows/batch-add', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
         body: JSON.stringify({
           images: selectedImages,
           model_id: model.id
@@ -3629,9 +3637,17 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                                         onClick={async (e) => {
                                           e.stopPropagation()
                                           try {
+                                            const { data: { session } } = await supabase.auth.getSession()
+                                            if (!session?.access_token) {
+                                              throw new Error('No valid authentication session')
+                                            }
+
                                             const response = await fetch('/api/variants/rows/batch-add', {
                                               method: 'POST',
-                                              headers: { 'Content-Type': 'application/json' },
+                                              headers: { 
+                                                'Content-Type': 'application/json',
+                                                'Authorization': `Bearer ${session.access_token}`
+                                              },
                                               body: JSON.stringify({
                                                 images: [{
                                                   outputPath: image.output_url,

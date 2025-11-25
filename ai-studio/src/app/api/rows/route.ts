@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createServer } from "@/lib/supabase-server";
+import { isAdminUser } from "@/lib/admin";
 
 export const runtime = "nodejs";
 
@@ -39,11 +40,45 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Model not found" }, { status: 404 });
     }
 
-    // Check if user owns the model
-    if (model.owner_id !== user.id) {
-      console.error("User does not own model:", { 
+    // Check if user has access to the model (admin, owner, team member, or team owner)
+    const isAdmin = await isAdminUser()
+    let hasAccess = isAdmin
+
+    if (!hasAccess) {
+      if (model.team_id === null) {
+        hasAccess = model.owner_id === user.id
+      } else {
+        hasAccess = model.owner_id === user.id
+
+        if (!hasAccess) {
+          const { data: teamMember } = await supabase
+            .from('team_members')
+            .select('id')
+            .eq('team_id', model.team_id)
+            .eq('user_id', user.id)
+            .single()
+          
+          if (teamMember) {
+            hasAccess = true
+          } else {
+            const { data: team } = await supabase
+              .from('teams')
+              .select('owner_id')
+              .eq('id', model.team_id)
+              .single()
+            
+            hasAccess = team?.owner_id === user.id
+          }
+        }
+      }
+    }
+
+    if (!hasAccess) {
+      console.error("User does not have access to model:", { 
         userId: user.id, 
-        modelOwnerId: model.owner_id 
+        modelOwnerId: model.owner_id,
+        modelTeamId: model.team_id,
+        isAdmin
       });
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }

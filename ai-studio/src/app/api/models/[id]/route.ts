@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createServer } from "@/lib/supabase-server";
 import { deleteStorageFiles } from "@/lib/storage";
 import { GeneratedImage } from "@/types/jobs";
+import { isAdminUser } from "@/lib/admin";
 
 // Extended type for model rows with generated images
 interface ModelRowWithImages {
@@ -138,6 +139,53 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const body = await req.json();
     const validatedData = UpdateModelSchema.parse(body);
 
+    // Check access before updating
+    const { data: existingModel, error: fetchError } = await supabase
+      .from("models")
+      .select("id, owner_id, team_id")
+      .eq("id", id)
+      .single();
+
+    if (fetchError || !existingModel) {
+      return NextResponse.json({ error: "Model not found" }, { status: 404 });
+    }
+
+    const isAdmin = await isAdminUser()
+    let hasAccess = isAdmin
+
+    if (!hasAccess) {
+      if (existingModel.team_id === null) {
+        hasAccess = existingModel.owner_id === user.id
+      } else {
+        hasAccess = existingModel.owner_id === user.id
+
+        if (!hasAccess) {
+          const { data: teamMember } = await supabase
+            .from('team_members')
+            .select('id')
+            .eq('team_id', existingModel.team_id)
+            .eq('user_id', user.id)
+            .single()
+          
+          if (teamMember) {
+            hasAccess = true
+          } else {
+            const { data: team } = await supabase
+              .from('teams')
+              .select('owner_id')
+              .eq('id', existingModel.team_id)
+              .single()
+            
+            hasAccess = team?.owner_id === user.id
+          }
+        }
+      }
+    }
+
+    if (!hasAccess) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
     const { data: model, error } = await supabase
       .from("models")
       .update(validatedData)
@@ -184,6 +232,8 @@ export async function DELETE(_: NextRequest, { params }: { params: Promise<{ id:
       .select(`
         id,
         name,
+        owner_id,
+        team_id,
         default_ref_headshot_url,
         model_rows (
           id,
@@ -200,6 +250,43 @@ export async function DELETE(_: NextRequest, { params }: { params: Promise<{ id:
 
     if (fetchError || !model) {
       return NextResponse.json({ error: "Model not found" }, { status: 404 });
+    }
+
+    // Check access before deleting
+    const isAdmin = await isAdminUser()
+    let hasAccess = isAdmin
+
+    if (!hasAccess) {
+      if (model.team_id === null) {
+        hasAccess = model.owner_id === user.id
+      } else {
+        hasAccess = model.owner_id === user.id
+
+        if (!hasAccess) {
+          const { data: teamMember } = await supabase
+            .from('team_members')
+            .select('id')
+            .eq('team_id', model.team_id)
+            .eq('user_id', user.id)
+            .single()
+          
+          if (teamMember) {
+            hasAccess = true
+          } else {
+            const { data: team } = await supabase
+              .from('teams')
+              .select('owner_id')
+              .eq('id', model.team_id)
+              .single()
+            
+            hasAccess = team?.owner_id === user.id
+          }
+        }
+      }
+    }
+
+    if (!hasAccess) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     // Collect all storage paths to delete

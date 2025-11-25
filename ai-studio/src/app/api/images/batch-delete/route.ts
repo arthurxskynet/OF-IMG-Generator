@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServer } from '@/lib/supabase-server'
 import { deleteStorageFiles } from '@/lib/storage'
 import { z } from 'zod'
+import { isAdminUser } from '@/lib/admin'
 
 const BatchDeleteSchema = z.object({
   imageIds: z.array(z.string().uuid()).min(1, 'At least one image ID is required')
@@ -60,31 +61,36 @@ export async function POST(req: NextRequest) {
       }, { status: 409 })
     }
 
-    // Verify ownership for all images - check both user ownership and team membership
+    // Check if user is admin (admins can delete all images)
+    const isAdmin = await isAdminUser()
+
+    // Verify ownership for all images - check both user ownership, team membership, and admin
     const unauthorizedImages: typeof images = []
     
-    for (const img of images) {
-      // Check if user owns the image directly
-      if (img.user_id === user.id) {
-        continue
-      }
-      
-      // Check if user is a team member (if image belongs to a team)
-      if (img.team_id) {
-        const { data: teamMembership } = await supabase
-          .from('team_members')
-          .select('id')
-          .eq('team_id', img.team_id)
-          .eq('user_id', user.id)
-          .single()
-        
-        if (teamMembership) {
+    if (!isAdmin) {
+      for (const img of images) {
+        // Check if user owns the image directly
+        if (img.user_id === user.id) {
           continue
         }
+        
+        // Check if user is a team member (if image belongs to a team)
+        if (img.team_id) {
+          const { data: teamMembership } = await supabase
+            .from('team_members')
+            .select('id')
+            .eq('team_id', img.team_id)
+            .eq('user_id', user.id)
+            .single()
+          
+          if (teamMembership) {
+            continue
+          }
+        }
+        
+        // If we get here, user doesn't have access
+        unauthorizedImages.push(img)
       }
-      
-      // If we get here, user doesn't have access
-      unauthorizedImages.push(img)
     }
 
     if (unauthorizedImages.length > 0) {

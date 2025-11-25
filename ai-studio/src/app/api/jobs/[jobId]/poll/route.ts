@@ -3,6 +3,7 @@ import axios from 'axios'
 import { createServer } from '@/lib/supabase-server'
 import { supabaseAdmin } from '@/lib/supabase-admin'
 import { fetchAndSaveToOutputs } from '@/lib/storage'
+import { isAdminUser } from '@/lib/admin'
 
 interface VariantImageInsert {
   variant_row_id: string
@@ -25,7 +26,39 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
     const admin = supabaseAdmin
     const { data: job } = await admin.from('jobs').select('*').eq('id', jobId).single()
     if (!job) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    if (job.user_id !== user.id) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    
+    // Check access: admin, owner, or team member
+    const isAdmin = await isAdminUser()
+    let hasAccess = isAdmin
+
+    if (!hasAccess) {
+      hasAccess = job.user_id === user.id
+
+      if (!hasAccess && job.team_id) {
+        const { data: teamMember } = await supabase
+          .from('team_members')
+          .select('id')
+          .eq('team_id', job.team_id)
+          .eq('user_id', user.id)
+          .single()
+        
+        if (teamMember) {
+          hasAccess = true
+        } else {
+          const { data: team } = await supabase
+            .from('teams')
+            .select('owner_id')
+            .eq('id', job.team_id)
+            .single()
+          
+          hasAccess = team?.owner_id === user.id
+        }
+      }
+    }
+
+    if (!hasAccess) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
     
     // If no provider request ID, attempt recovery + stop infinite loops after TTL
     if (!job.provider_request_id) {
