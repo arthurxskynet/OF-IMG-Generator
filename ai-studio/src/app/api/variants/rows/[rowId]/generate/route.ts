@@ -122,9 +122,9 @@ export async function POST(
       }, { status: 400 })
     }
 
-    // For Seedream API: use all but last reference image as refs, last reference as target
-    // This maintains backward compatibility with existing behavior
-    const refPaths = referenceImages.length > 1 ? referenceImages.slice(0, -1).map((img: any) => img.output_path) : []
+    // For Seedream API: use all reference images as refs, last reference image as target
+    // This allows multiple reference images to be used in the generation
+    const refPaths = referenceImages.map((img: any) => img.output_path)
     const targetPath = referenceImages[referenceImages.length - 1].output_path
 
     console.log('[VariantGenerate] Creating job', {
@@ -258,22 +258,25 @@ export async function POST(
         try {
           // Short-lived signed URL for probing dimensions
           const signedRefUrl = await signPath(referenceImagePath, 120)
-          const dims = await getRemoteImageDimensions(signedRefUrl)
-          
-          // Use reference image dimensions as baseline for max quality computation
-          // Start with a high-quality baseline (4096) to compute max quality dimensions
-          // This completely overrides variant row output_width/output_height values
-          const computed = computeMaxQualityDimensionsForRatio(
-            4096,  // Use high-quality baseline
-            4096,  // Use high-quality baseline
-            dims.width,
-            dims.height
-          )
-          width = computed.width
-          height = computed.height
-          usedReferenceRatio = true
-          
-          console.log('[VariantGenerate] Using reference image ratio override (toggle enabled)', {
+          if (!signedRefUrl) {
+            console.warn('[VariantRowGenerate] Reference image not found, skipping dimension matching:', referenceImagePath)
+          } else {
+            const dims = await getRemoteImageDimensions(signedRefUrl)
+            
+            // Use reference image dimensions as baseline for max quality computation
+            // Start with a high-quality baseline (4096) to compute max quality dimensions
+            // This completely overrides variant row output_width/output_height values
+            const computed = computeMaxQualityDimensionsForRatio(
+              4096,  // Use high-quality baseline
+              4096,  // Use high-quality baseline
+              dims.width,
+              dims.height
+            )
+            width = computed.width
+            height = computed.height
+            usedReferenceRatio = true
+            
+            console.log('[VariantGenerate] Using reference image ratio override (toggle enabled)', {
             rowId,
             matchTargetRatio: true,
             referenceImagePath,
@@ -282,6 +285,7 @@ export async function POST(
             computedHeight: height,
             overridesVariantRowDimensions: true
           })
+          }
         } catch (e: any) {
           console.warn('[VariantGenerate] Failed to probe reference image dimensions; falling back to variant/model dimensions', {
             rowId,

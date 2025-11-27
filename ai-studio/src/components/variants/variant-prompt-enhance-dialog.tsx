@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -31,8 +31,8 @@ const PRESET_ENHANCEMENTS = {
     { label: '🎞️ Film grain texture', value: 'Add film grain with color shifts and reduced dynamic range' }
   ],
   composition: [
-    { label: '📷 Casual snap', value: 'Apply candid composition with off-center framing and partial face crop' },
-    { label: '🎯 Off-center framing', value: 'Create off-center framing with informal composition' }
+    { label: '📷 Casual snap', value: 'Turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, natural imperfections and amateur lighting quality, avoiding studio polish, keeping everything else the exact same' },
+    { label: '🎯 Off-center framing', value: 'Apply off-center composition with subject positioned using rule of thirds, asymmetric framing, informal camera placement, keeping everything else the exact same' }
   ],
   motion: [
     { label: '💨 Motion blur', value: 'Add motion blur with subtle streaking effect' },
@@ -64,6 +64,35 @@ const PRESET_ENHANCEMENTS = {
   depth: [
     { label: '📷 Shallow DOF', value: 'Add shallow depth of field with bokeh background blur' },
     { label: '🌄 Deep focus', value: 'Apply deep depth of field with sharp focus throughout' }
+  ],
+  modifications: [
+    { label: '💍 Remove all jewelry', value: 'Remove all jewelry including necklaces, earrings, rings, bracelets, and watches, keeping everything else the exact same' },
+    { label: '📿 Remove necklaces', value: 'Remove necklaces and neck jewelry, keeping everything else the exact same' },
+    { label: '💎 Remove earrings', value: 'Remove earrings, keeping everything else the exact same' },
+    { label: '💍 Remove rings', value: 'Remove rings, keeping everything else the exact same' },
+    { label: '⌚ Remove bracelets/watches', value: 'Remove bracelets and watches, keeping everything else the exact same' }
+  ],
+  clothing: [
+    { label: '🔴 Red clothing', value: 'Change clothing color to red, keeping everything else the exact same' },
+    { label: '🔵 Blue clothing', value: 'Change clothing color to blue, keeping everything else the exact same' },
+    { label: '🟢 Green clothing', value: 'Change clothing color to green, keeping everything else the exact same' },
+    { label: '⚫ Black clothing', value: 'Change clothing color to black, keeping everything else the exact same' },
+    { label: '⚪ White clothing', value: 'Change clothing color to white, keeping everything else the exact same' },
+    { label: '🩷 Pink clothing', value: 'Change clothing color to pink, keeping everything else the exact same' },
+    { label: '🟡 Yellow clothing', value: 'Change clothing color to yellow, keeping everything else the exact same' },
+    { label: '🟣 Purple clothing', value: 'Change clothing color to purple, keeping everything else the exact same' },
+    { label: '🟠 Orange clothing', value: 'Change clothing color to orange, keeping everything else the exact same' },
+    { label: '⚪ Gray clothing', value: 'Change clothing color to gray, keeping everything else the exact same' },
+    { label: '🔵 Navy clothing', value: 'Change clothing color to navy, keeping everything else the exact same' },
+    { label: '🔴 Burgundy clothing', value: 'Change clothing color to burgundy, keeping everything else the exact same' },
+    { label: '🔵 Teal clothing', value: 'Change clothing color to teal, keeping everything else the exact same' },
+    { label: '🩷 Coral clothing', value: 'Change clothing color to coral, keeping everything else the exact same' },
+    { label: '🟤 Beige clothing', value: 'Change clothing color to beige, keeping everything else the exact same' },
+    { label: '🔴 Maroon clothing', value: 'Change clothing color to maroon, keeping everything else the exact same' },
+    { label: '🟢 Emerald clothing', value: 'Change clothing color to emerald, keeping everything else the exact same' },
+    { label: '🔴 Crimson clothing', value: 'Change clothing color to crimson, keeping everything else the exact same' },
+    { label: '🟡 Gold clothing', value: 'Change clothing color to gold, keeping everything else the exact same' },
+    { label: '⚪ Silver clothing', value: 'Change clothing color to silver, keeping everything else the exact same' }
   ]
 }
 
@@ -89,12 +118,44 @@ export function VariantPromptEnhanceDialog({
   const [editableEnhancedPrompt, setEditableEnhancedPrompt] = useState('')
   const [step, setStep] = useState<'input' | 'review'>('input')
   const { toast } = useToast()
+  
+  // Keep track of the latest prompt to avoid stale closures
+  const latestPromptRef = useRef(currentPrompt)
+  
+  // Sync latest prompt ref whenever currentPrompt prop changes
+  useEffect(() => {
+    latestPromptRef.current = currentPrompt
+  }, [currentPrompt])
+  
+  // Reset state when dialog opens to ensure fresh start
+  useEffect(() => {
+    if (open) {
+      setStep('input')
+      setInstructions('')
+      setSelectedPresets([])
+      setEnhancedPrompt(null)
+      setEditableEnhancedPrompt('')
+      latestPromptRef.current = currentPrompt
+    }
+  }, [open, currentPrompt])
 
   const handleEnhance = async () => {
     if (!instructions.trim()) {
       toast({
         title: "Instructions required",
         description: "Please tell the AI how you want to improve the prompt.",
+        variant: "destructive"
+      })
+      return
+    }
+
+    // Get the absolute latest prompt value from ref to avoid stale closures
+    const latestPrompt = latestPromptRef.current || currentPrompt
+    
+    if (!latestPrompt) {
+      toast({
+        title: "No prompt",
+        description: "Please provide a prompt to enhance.",
         variant: "destructive"
       })
       return
@@ -109,7 +170,7 @@ export function VariantPromptEnhanceDialog({
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          existingPrompt: currentPrompt,
+          existingPrompt: latestPrompt,
           userInstructions: instructions,
           imagePaths
         }),
@@ -227,7 +288,7 @@ export function VariantPromptEnhanceDialog({
                 <div className="grid gap-2">
                   <Label>Current Prompt</Label>
                   <div className="rounded-md border bg-muted p-3 text-sm text-muted-foreground max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words">
-                    {currentPrompt}
+                    {latestPromptRef.current || currentPrompt}
                   </div>
                 </div>
 
@@ -300,7 +361,7 @@ export function VariantPromptEnhanceDialog({
                   <div className="grid gap-2 min-w-0">
                     <Label className="text-muted-foreground">Original</Label>
                     <div className="rounded-md border bg-muted/50 p-3 text-xs text-muted-foreground max-h-[400px] min-h-[200px] overflow-y-auto whitespace-pre-wrap break-words">
-                      {currentPrompt}
+                      {latestPromptRef.current || currentPrompt}
                     </div>
                   </div>
                   <div className="grid gap-2 min-w-0">

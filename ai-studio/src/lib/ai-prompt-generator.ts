@@ -1090,21 +1090,119 @@ function generateFallbackPrompt(refUrls: string[], swapMode: SwapMode = 'face-ha
  * Enhanced with optional Seedream 4.0 realism guidance
  */
 function buildVariantSystemPrompt(imagesCount: number): string {
-  return `Create a simple Seedream v4 variant prompt.
+  return `Create a simple Seedream v4 variant prompt optimized for image editing.
 
-FORMAT: "Take [relative reference] and [action], keeping everything else the exact same."
+SEEDREAM 4.0 EDITING FORMULA (CRITICAL - Follow This Structure):
+- Seedream 4.0 uses: Action + Object + Attribute
+- Structure your prompts as: [Action] + [Object] + [Attribute]
+- Example: "Change the knight's helmet to gold"
+  * Action: "Change"
+  * Object: "the knight's helmet"
+  * Attribute: "to gold"
+- For variants: "Return [object] exactly as is: [action], maintaining [attributes]"
+- Seedream is an IMAGE EDITING API - it can see the images, so focus on the edit operation, not descriptions
 
-RELATIVE REFERENCE (identify subject with 1 key element):
-- Clothing: "the woman with a white tank top"
-- Setting: "the person in the pink room"
-- Pose: "the woman looking at camera"
-- Choose ONE most distinctive element only
+EXPLICIT ACTION TYPES (Seedream 4.0 Standard):
+Use clear action verbs that specify the operation type:
+- REPLACE: "Replace expression with smile", "Replace pose with slight head turn"
+- MODIFY: "Modify expression slightly", "Modify head angle"
+- ADD: "Add subtle smile", "Add slight head movement"
+- CHANGE: "Change expression to smile", "Change pose to face left"
+- RETURN: "Return her looking to the left" (for direction changes)
+- MAKE: "Make them smile" (for expression changes)
+Choose the most appropriate action type for the specific change needed.
 
-ACTION (what to change):
-- "return her looking to the left"
-- "make her smile"
-- "change her pose to face sideways"
-- Or allow subtle variations if no specific change needed
+FORMAT SELECTION (Choose based on image complexity):
+
+SIMPLE IMAGES (face fully visible, standard composition):
+"Take [relative reference] and [action], keeping everything else the exact same."
+
+COMPLEX IMAGES (partial face, off-frame, unusual composition):
+"Return image exactly as is: [action], maintaining the exact same framing and composition."
+
+FRAMING DETECTION (CRITICAL - Be Conservative):
+- DEFAULT: Use SIMPLE format unless there is CLEAR evidence of partial framing
+- Only use COMPLEX format when face is OBVIOUSLY partially visible or off-frame
+- Clear indicators of partial framing:
+  * Face is clearly cut off at top/bottom (e.g., only chin and mouth visible, or only forehead visible)
+  * Face is clearly off-frame (e.g., face extends beyond image edge)
+  * Face is significantly cropped (e.g., showing only lower half, upper half missing)
+  * Casual snapshots showing only bottom of face (chin, mouth, neck visible; eyes not visible)
+- DO NOT use complex format for:
+  * Normal portraits with full face visible
+  * Standard compositions even if slightly off-center
+  * Images where face is fully visible but at edge of frame
+  * Professional or studio photos
+- When in doubt, use SIMPLE format
+- Never assume features that aren't visible in the image
+
+WHEN TO USE COMPLEX FORMAT (Only if OBVIOUS):
+- Face is CLEARLY partially visible (e.g., only bottom half, only top half, clearly cut off)
+- Face is CLEARLY off-frame (face extends beyond image boundaries)
+- Face is SIGNIFICANTLY cropped (major portion missing)
+- Casual snapshots where face is OBVIOUSLY incomplete (especially bottom-only faces)
+
+VISIBILITY-BASED ACTION RULES (CRITICAL - Match Actions to Visible Features):
+Before suggesting any action, analyze what parts of the face are actually visible:
+
+BOTTOM-ONLY FACE VISIBLE (chin, mouth, lower face visible; eyes NOT visible):
+✅ VALID actions: "make them smile", "change mouth expression", "adjust head angle slightly", "subtle pose variation"
+❌ INVALID actions: "looking to the left/right", "change eye direction", "looking at camera", "return her looking" (eyes not visible, cannot change eye direction)
+
+TOP-ONLY FACE VISIBLE (forehead, eyes, upper face visible; mouth NOT visible):
+✅ VALID actions: "looking to the left/right", "change eye direction", "looking at camera", "eyebrow changes"
+❌ INVALID actions: "make them smile", "change mouth expression" (mouth not visible, cannot change smile)
+
+FULL FACE VISIBLE (all features visible):
+✅ Any appropriate action is valid
+
+OFF-FRAME OR SIGNIFICANTLY CROPPED:
+✅ Only suggest subtle variations or composition changes
+❌ Avoid specific facial feature changes that require invisible parts
+
+WHEN TO USE SIMPLE FORMAT (Default - Use This Most of the Time):
+- Face is fully visible (even if at edge of frame)
+- Standard portrait or composition
+- Professional or studio-style images
+- Normal selfies or photos
+- When face visibility is unclear or ambiguous
+
+RELATIVE REFERENCE (for simple format - identify subject clearly):
+- Look at the ACTUAL image and identify ONE distinctive element
+- Clothing: "the woman with a white tank top" (only if white tank top is actually visible)
+- Setting: "the person in the pink room" (only if pink room is actually visible)
+- Pose: "the woman looking at camera" (only if actually looking at camera)
+- Choose ONE most distinctive element that is ACTUALLY visible in the image
+- Be specific and accurate - reference what you actually see, not assumptions
+- Only needed for simple format
+
+MULTI-IMAGE ROLE SPECIFICATION${imagesCount > 1 ? ` (${imagesCount} images provided):` : ' (when multiple images provided):'}
+${imagesCount > 1 ? `- You have ${imagesCount} reference image(s) - specify what each provides for precision
+- Example roles: "character from Image 1, style from Image 2, background from Image 3"
+- When multiple images: identify common elements across images for consistency
+- Specify which image provides which aspect (character, style, setting, composition)
+- This ensures Seedream knows how to use each reference image` : `- If multiple images are provided, specify roles: "character from Image 1, style from Image 2"
+- This ensures Seedream knows how to use each reference image`}
+
+ACTION (what to change - MUST match visible features and use explicit Action + Object + Attribute):
+- FIRST: Analyze what parts of face are visible (bottom-only, top-only, full face, off-frame)
+- THEN: Structure action using Action + Object + Attribute formula
+- ACTION TYPE: Choose explicit action verb (Replace, Modify, Add, Change, Return, Make)
+- OBJECT: Identify what to change (expression, pose, head angle, direction)
+- ATTRIBUTE: Specify the new state (smile, looking left, slight turn)
+- For BOTTOM-ONLY faces: Use smile/mouth/head angle actions only (eyes not visible)
+  * Example: "Modify expression to smile" (Action: Modify, Object: expression, Attribute: smile)
+  * Example: "Change mouth expression slightly" (Action: Change, Object: mouth expression, Attribute: slightly)
+- For TOP-ONLY faces: Use eye direction/eyebrow actions only (mouth not visible)
+  * Example: "Replace eye direction to looking left" (Action: Replace, Object: eye direction, Attribute: looking left)
+  * Example: "Modify gaze to face camera" (Action: Modify, Object: gaze, Attribute: face camera)
+- For FULL faces: Any appropriate action with clear structure
+  * Example: "Replace pose with slight head turn" (Action: Replace, Object: pose, Attribute: slight head turn)
+  * Example: "Modify expression to smile" (Action: Modify, Object: expression, Attribute: smile)
+- For OFF-FRAME: Only subtle variations or composition changes
+- NEVER suggest actions for features that aren't visible
+- Always structure as: [Action] + [Object] + [Attribute]
+- For complex format: include framing constraints in the action only if face is OBVIOUSLY partially visible
 
 OPTIONAL REALISM CONTEXT (for low-effort phone photo aesthetics):
 If the image suggests a casual, unedited phone photo style, you may optionally include:
@@ -1114,17 +1212,36 @@ If the image suggests a casual, unedited phone photo style, you may optionally i
 - Anti-studio: "avoiding studio lighting", "no cinematic look"
 Keep these brief and natural within the action description.
 
+NATIVE LANGUAGE HANDLING (Seedream 4.0 Principle):
+- For professional or cultural terms, use original language when appropriate
+- Style terms: Use native language (e.g., "chiaroscuro" for Italian lighting style)
+- Technical terms: Prefer English for consistency (e.g., "high-resolution", "depth of field")
+- Cultural references: Use original language for accuracy
+- Keep prompts primarily in English, but preserve important native terms
+
 RULES:
-- 15-30 words total
-- Use relative reference (the woman, the person)
-- End with "keeping everything else the exact same"
+- 15-35 words total (can be slightly longer for complex format)
+- DEFAULT to SIMPLE format - only use complex format when face is OBVIOUSLY partially visible/off-frame
 - NEVER describe facial features, skin tone, or ethnicity
+- For complex images (only when obvious): use "Return image exactly as is:" format
+- For simple images (default): use "Take [reference] and [action]" format
+- When in doubt about face visibility, use SIMPLE format
+- Always maintain the exact same framing/visibility in the variant
+- Never assume features that aren't visible in the image
 - Realism details are optional - only include if naturally fitting
 
-EXAMPLES:
-✅ "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same."
-✅ "Take the person in the pink room and make them smile, keeping everything else the exact same."
-✅ "Take the woman looking at camera and return her looking to the left in a casual phone snapshot style with flat indoor lighting, keeping everything else the exact same."
+EXAMPLES (Simple Format - showing Action + Object + Attribute structure):
+✅ "Take the woman with a white tank top and replace her gaze direction to looking left, keeping everything else the exact same." (Action: replace, Object: gaze direction, Attribute: looking left)
+✅ "Take the person in the pink room and modify their expression to smile, keeping everything else the exact same." (Action: modify, Object: expression, Attribute: smile)
+✅ "Take the woman looking at camera and change her pose to slight head turn in a casual phone snapshot style with flat indoor lighting, keeping everything else the exact same." (Action: change, Object: pose, Attribute: slight head turn)
+
+EXAMPLES (Complex Format - for partial faces, off-frame):
+✅ "Return image exactly as is: modify expression to smile, maintaining the exact same framing showing only bottom of face." (bottom-only: Action: modify, Object: expression, Attribute: smile)
+✅ "Return image exactly as is: change mouth expression slightly, maintaining the exact same framing showing only bottom of face." (bottom-only: Action: change, Object: mouth expression, Attribute: slightly)
+✅ "Return image exactly as is: replace eye direction to looking left, maintaining the exact same framing showing only top of face." (top-only: Action: replace, Object: eye direction, Attribute: looking left)
+✅ "Return image exactly as is: modify expression to smile, maintaining the exact same framing with face partially off-frame." (if mouth visible: Action: modify, Object: expression, Attribute: smile)
+✅ "Return image exactly as is: change pose slightly, maintaining the exact same casual off-frame snapshot composition." (Action: change, Object: pose, Attribute: slightly)
+❌ BAD: "Return image exactly as is: replace eye direction to looking left, maintaining the exact same framing showing only bottom of face." (eyes not visible, cannot change eye direction)
 
 OUTPUT: One sentence only. No markdown.`
 }
@@ -1134,24 +1251,94 @@ OUTPUT: One sentence only. No markdown.`
  * Enhanced with optional Seedream 4.0 realism context
  */
 function buildVariantUserText(imagesCount: number): string {
-  return `Look at the image${imagesCount > 1 ? 's' : ''} and create a simple variant prompt.
+  return `Look at the image${imagesCount > 1 ? 's' : ''} and create a simple variant prompt optimized for Seedream 4.0 editing.
 
-FORMAT: "Take [relative reference] and [action], keeping everything else the exact same."
+SEEDREAM 4.0 GUIDANCE:
+- Seedream 4.0 is an IMAGE EDITING API - it can see the images, so focus on the edit operation
+- Use editing formula: Action + Object + Attribute (CRITICAL - structure all prompts this way)
+- Structure: [Action] + [Object] + [Attribute]
+  * Action: Replace, Modify, Add, Change, Return, Make
+  * Object: expression, pose, gaze direction, head angle
+  * Attribute: smile, looking left, slight turn
+- For variants: "Return [object] exactly as is: [action], maintaining [attributes]"
+- Keep prompts concise and action-oriented (15-35 words)
+- Use explicit action types (Replace, Modify, Add, Change) for clarity
+
+FORMAT SELECTION:
+Choose format based on image complexity:
+
+SIMPLE IMAGES (face fully visible, standard composition):
+"Take [relative reference] and [action], keeping everything else the exact same."
+
+COMPLEX IMAGES (partial face, off-frame, unusual composition):
+"Return image exactly as is: [action], maintaining the exact same framing and composition."
 
 STEPS:
-1. Identify ONE key element: clothing item, setting, or pose
-2. Create relative reference: "the woman with [clothing]" OR "the person in [setting]" OR "the woman [pose]"
-3. Add action: what to change (or allow subtle variations)
-   - Optionally include realism context if image suggests casual phone photo style
+0. DETECT COMPLEXITY (Be Conservative - Default to Simple):
+   - Is face FULLY visible? → Use SIMPLE format (this is the default)
+   - Is face OBVIOUSLY partially visible/off-frame? (e.g., clearly cut off at top/bottom, extends beyond frame) → Use COMPLEX format
+   - Is face visibility unclear or ambiguous? → Use SIMPLE format (when in doubt, use simple)
+   - Only use COMPLEX format if there is CLEAR, OBVIOUS evidence of partial framing
+   - Note: Most images should use SIMPLE format
+
+0.5. ANALYZE VISIBILITY (CRITICAL - Match Actions to Visible Features):
+   - What parts of the face are actually visible?
+   - Bottom-only? (chin, mouth visible; eyes NOT visible) → Only use smile/mouth/head angle actions
+   - Top-only? (eyes, forehead visible; mouth NOT visible) → Only use eye direction/eyebrow actions
+   - Full face? (all features visible) → Any appropriate action
+   - Off-frame? (face extends beyond frame) → Only subtle variations
+   - NEVER suggest actions for features that aren't visible
+
+1. CHOOSE FORMAT:
+   - DEFAULT: Use SIMPLE format ("Take [relative reference] and [action]")
+   - Only use COMPLEX format if face is OBVIOUSLY partially visible or off-frame
+   - When in doubt, choose SIMPLE format
+
+2. FOR SIMPLE FORMAT (Default - Use This Most of the Time):
+   - Look at the ACTUAL image and identify ONE key element that is clearly visible
+   - Be accurate: only reference what you actually see (clothing, setting, or pose)
+   - Create relative reference: "the woman with [clothing]" OR "the person in [setting]" OR "the woman [pose]"
+   - Add action: Structure as Action + Object + Attribute
+     * Choose explicit action type: Replace, Modify, Add, Change, Return, Make
+     * Identify object: expression, pose, gaze, head angle
+     * Specify attribute: smile, looking left, slight turn
+   - Example structure: "replace [object] with [attribute]" or "modify [object] to [attribute]"
+   - Verify action matches visible features (see step 0.5)
+   - Be specific and accurate to the actual image content
+   ${imagesCount > 1 ? `- If multiple images: Specify roles (e.g., "character from Image 1, style from Image 2")` : ''}
+
+3. FOR COMPLEX FORMAT (Only When Face is OBVIOUSLY Partial):
+   - Only use if face is CLEARLY cut off, off-frame, or significantly cropped
+   - Skip relative reference (not needed for complex format)
+   - Start with "Return image exactly as is:"
+   - Add action with framing constraints: Structure as Action + Object + Attribute
+   - CRITICAL: Action MUST match visible features (see step 0.5)
+     * Bottom-only face: Use "modify expression to smile", "change mouth expression" (Action: modify/change, Object: expression/mouth, Attribute: smile) - NOT eye direction
+     * Top-only face: Use "replace eye direction to looking left", "modify gaze to face camera" (Action: replace/modify, Object: eye direction/gaze, Attribute: looking left/face camera) - NOT smile changes
+   - Structure: "[Action] [Object] to [Attribute], maintaining the exact same framing [framing description]"
+   - Only include framing description if face is OBVIOUSLY partially visible
+   - Example (bottom-only): "Return image exactly as is: modify expression to smile, maintaining the exact same framing showing only bottom of face." (Action: modify, Object: expression, Attribute: smile)
+   - Example (top-only): "Return image exactly as is: replace eye direction to looking left, maintaining the exact same framing showing only top of face." (Action: replace, Object: eye direction, Attribute: looking left)
+
+4. OPTIONAL ENHANCEMENTS (for both formats):
+   - Realism context if image suggests casual phone photo style
    - Camera: "taken on an older smartphone", "front camera selfie"
    - Lighting: "flat indoor lighting", "slightly underexposed"
    - Imperfections: "slight digital noise", "front-camera softness"
-4. End with: "keeping everything else the exact same"
 
-EXAMPLES:
-✅ "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same."
-✅ "Take the person in the pink room and make them smile, keeping everything else the exact same."
-✅ "Take the woman looking at camera and return her looking to the left in a casual phone snapshot style with flat indoor lighting, keeping everything else the exact same."
+EXAMPLES (Simple Format - for fully visible faces, showing Action + Object + Attribute):
+✅ "Take the woman with a white tank top and replace her gaze direction to looking left, keeping everything else the exact same." (Action: replace, Object: gaze direction, Attribute: looking left)
+✅ "Take the person in the pink room and modify their expression to smile, keeping everything else the exact same." (Action: modify, Object: expression, Attribute: smile)
+✅ "Take the woman looking at camera and change her pose to slight head turn in a casual phone snapshot style with flat indoor lighting, keeping everything else the exact same." (Action: change, Object: pose, Attribute: slight head turn)
+${imagesCount > 1 ? `✅ "Take the character from Image 1 and modify their expression to smile, using the style from Image 2, keeping everything else the exact same." (Multi-image: specifies roles)` : ''}
+
+EXAMPLES (Complex Format - for partial faces, off-frame, showing Action + Object + Attribute):
+✅ "Return image exactly as is: modify expression to smile, maintaining the exact same framing showing only bottom of face." (bottom-only: Action: modify, Object: expression, Attribute: smile)
+✅ "Return image exactly as is: change mouth expression slightly, maintaining the exact same framing showing only bottom of face." (bottom-only: Action: change, Object: mouth expression, Attribute: slightly)
+✅ "Return image exactly as is: replace eye direction to looking left, maintaining the exact same framing showing only top of face." (top-only: Action: replace, Object: eye direction, Attribute: looking left)
+✅ "Return image exactly as is: modify expression to smile, maintaining the exact same framing with face partially off-frame." (if mouth visible: Action: modify, Object: expression, Attribute: smile)
+✅ "Return image exactly as is: change pose slightly, maintaining the exact same casual off-frame snapshot composition." (Action: change, Object: pose, Attribute: slightly)
+❌ BAD: "Return image exactly as is: replace eye direction to looking left, maintaining the exact same framing showing only bottom of face." (eyes not visible, cannot change eye direction)
 
 REALISM CONTEXT (optional):
 If the image appears to be a casual, unedited phone photo, you may naturally incorporate:
@@ -1161,12 +1348,23 @@ If the image appears to be a casual, unedited phone photo, you may naturally inc
 - Anti-studio: "avoiding studio lighting", "no cinematic look"
 Keep these brief and integrated into the action description.
 
+NATIVE LANGUAGE HANDLING (Seedream 4.0 Principle):
+- For professional or cultural terms, use original language when appropriate
+- Style terms: Use native language (e.g., "chiaroscuro" for Italian lighting style)
+- Technical terms: Prefer English for consistency (e.g., "high-resolution", "depth of field")
+- Cultural references: Use original language for accuracy
+- Keep prompts primarily in English, but preserve important native terms
+
 RULES:
-- 15-30 words
+- 15-35 words (can be slightly longer for complex format)
 - One sentence only
-- Use relative reference (the woman, the person)
-- End with "keeping everything else the exact same"
+- DEFAULT to SIMPLE format - only use complex format when face is OBVIOUSLY partially visible/off-frame
+- When in doubt about face visibility, use SIMPLE format
 - NEVER describe facial features, skin tone, or ethnicity
+- For complex images (only when obvious): use "Return image exactly as is:" format
+- For simple images (default): use "Take [reference] and [action]" format
+- Never describe or assume features that aren't visible
+- Maintain the exact same framing in the variant
 - Realism details are optional - only if naturally fitting
 
 OUTPUT: One sentence only.`
@@ -1218,10 +1416,36 @@ E. Noise, grain, compression:
 - "subtle JPEG compression artifacts, not crystal clear"
 - "a hint of social-media compression, not ultra crisp"
 
+SPECIAL HANDLING FOR SPECIFIC REQUEST TYPES:
+
+F. Jewelry removal:
+- For jewelry removal: explicitly state "remove [jewelry type]" or "remove all jewelry" in the action
+- Ensure jewelry removal doesn't affect clothing or other accessories
+- Format: "Remove [jewelry type] from subject, keeping everything else the exact same"
+- Examples: "Remove all jewelry including necklaces, earrings, rings, bracelets, and watches, keeping everything else the exact same"
+- Be specific: "Remove necklaces and neck jewelry" or "Remove earrings" or "Remove rings"
+
+G. Clothing color changes:
+- For color changes: specify "change clothing color to [color]" or "change [garment] color to [color]"
+- Maintain all other clothing details (style, texture, fit) when changing color
+- Format: "Change clothing color to [color], keeping everything else the exact same"
+- Examples: "Change clothing color to red, keeping everything else the exact same"
+- Preserve all other clothing attributes (fabric type, cut, style, accessories)
+
+H. Composition and framing optimizations:
+- For composition changes: modify the Camera section with specific framing details
+- For casual/realism: combine Camera, Lighting, and Technical quality sections
+- Use Seedream 4.0 structured format: update relevant sections (Camera:, Composition:, Technical quality:)
+- For off-center: "Apply off-center composition with subject positioned using rule of thirds, asymmetric framing, informal camera placement"
+- For casual snap: "Turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, natural imperfections and amateur lighting quality, avoiding studio polish"
+
 HOW TO ADD:
 - Keep the existing relative reference unchanged
 - Keep the existing action
 - Add the new action from user's request (can include camera/lighting/realism details)
+- For jewelry removal: use explicit removal language
+- For color changes: specify color while preserving other clothing details
+- For composition: integrate into Camera/Composition/Technical quality sections appropriately
 - Always end with "keeping everything else the exact same"
 
 EXAMPLES:
@@ -1275,6 +1499,25 @@ When user requests "low-effort", "phone camera", "casual snapshot", or similar r
 - Mix & match style fragments: camera type, lighting quality, imperfections
 - Always add "avoiding studio lighting, avoiding ultra-HD or beauty filters"
 
+JEWELRY REMOVAL STRATEGY:
+When user requests jewelry removal:
+- Explicitly state "remove [jewelry type]" or "remove all jewelry"
+- Ensure removal doesn't affect clothing or other accessories
+- Format: "Remove [jewelry type] from subject, keeping everything else the exact same"
+
+CLOTHING COLOR CHANGE STRATEGY:
+When user requests clothing color change:
+- Specify "change clothing color to [color]" while preserving all other clothing details
+- Maintain style, texture, fit, and other attributes
+- Format: "Change clothing color to [color], keeping everything else the exact same"
+
+COMPOSITION OPTIMIZATION STRATEGY:
+When user requests composition changes (off-center, casual snap):
+- For off-center: integrate into Camera section with specific framing details
+- For casual snap: combine Camera, Lighting, and Technical quality sections
+- Use Seedream 4.0 structured format appropriately
+- Format: "Apply [composition type] with [specific details], keeping everything else the exact same"
+
 EXAMPLES:
 - Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
   User: "make lighting more dramatic"
@@ -1295,6 +1538,30 @@ EXAMPLES:
 - Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
   User: "add motion blur and grain"
   Result: "Take the woman with a white tank top and return her looking to the left with very slight motion blur from hand shake and light high-ISO grain, keeping everything else the exact same"
+
+- Original: "Take the person in the pink room and make them smile, keeping everything else the exact same"
+  User: "remove all jewelry"
+  Result: "Take the person in the pink room and make them smile, remove all jewelry including necklaces, earrings, rings, bracelets, and watches, keeping everything else the exact same"
+
+- Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
+  User: "remove earrings"
+  Result: "Take the woman with a white tank top and return her looking to the left, remove earrings, keeping everything else the exact same"
+
+- Original: "Take the person in the pink room and make them smile, keeping everything else the exact same"
+  User: "change clothing color to red"
+  Result: "Take the person in the pink room and make them smile, change clothing color to red, keeping everything else the exact same"
+
+- Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
+  User: "change clothing color to navy"
+  Result: "Take the woman with a white tank top and return her looking to the left, change clothing color to navy, keeping everything else the exact same"
+
+- Original: "Take the person in the pink room and make them smile, keeping everything else the exact same"
+  User: "apply off-center composition with subject positioned using rule of thirds, asymmetric framing, informal camera placement"
+  Result: "Take the person in the pink room and make them smile, apply off-center composition with subject positioned using rule of thirds, asymmetric framing, informal camera placement, keeping everything else the exact same"
+
+- Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
+  User: "turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, natural imperfections and amateur lighting quality, avoiding studio polish"
+  Result: "Take the woman with a white tank top and return her looking to the left, turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, natural imperfections and amateur lighting quality, avoiding studio polish, keeping everything else the exact same"
 
 RULES:
 - Keep existing relative reference unchanged

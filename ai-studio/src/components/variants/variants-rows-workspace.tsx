@@ -11,7 +11,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { VariantRow, VariantRowImage } from '@/types/variants'
 import { getSignedUrl } from '@/lib/jobs'
-import { Wand2, Sparkles, Copy, Trash2, Plus, X, AlertCircle, Play, Eye, EyeOff, ChevronDown, ChevronUp, Star, ChevronLeft, ChevronRight, ImageIcon, Folder, Upload, Archive } from 'lucide-react'
+import { Wand2, Sparkles, Copy, Trash2, Plus, X, AlertCircle, Play, Eye, EyeOff, ChevronDown, ChevronUp, Star, ChevronLeft, ChevronRight, ImageIcon, Folder, Upload, Archive, CheckCircle, XCircle, Info } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useJobPolling } from '@/hooks/use-job-polling'
 import { createClient } from '@/lib/supabase-browser'
@@ -22,6 +22,7 @@ import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { Badge } from '@/components/ui/badge'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { uploadImage, validateFile } from '@/lib/client-upload'
 
 interface VariantsRowsWorkspaceProps {
@@ -55,8 +56,8 @@ const PRESET_ENHANCEMENTS = {
     { label: '🎞️ Film grain texture', value: 'Add film grain with color shifts and reduced dynamic range' }
   ],
   composition: [
-    { label: '📷 Casual snap', value: 'Apply candid composition with off-center framing and partial face crop' },
-    { label: '🎯 Off-center framing', value: 'Create off-center framing with informal composition' }
+    { label: '📷 Casual snap', value: 'Turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, natural imperfections and amateur lighting quality, avoiding studio polish, keeping everything else the exact same' },
+    { label: '🎯 Off-center framing', value: 'Apply off-center composition with subject positioned using rule of thirds, asymmetric framing, informal camera placement, keeping everything else the exact same' }
   ],
   motion: [
     { label: '💨 Motion blur', value: 'Add motion blur with subtle streaking effect' },
@@ -88,6 +89,35 @@ const PRESET_ENHANCEMENTS = {
   depth: [
     { label: '📷 Shallow DOF', value: 'Add shallow depth of field with bokeh background blur' },
     { label: '🌄 Deep focus', value: 'Apply deep depth of field with sharp focus throughout' }
+  ],
+  modifications: [
+    { label: '💍 Remove all jewelry', value: 'Remove all jewelry including necklaces, earrings, rings, bracelets, and watches, keeping everything else the exact same' },
+    { label: '📿 Remove necklaces', value: 'Remove necklaces and neck jewelry, keeping everything else the exact same' },
+    { label: '💎 Remove earrings', value: 'Remove earrings, keeping everything else the exact same' },
+    { label: '💍 Remove rings', value: 'Remove rings, keeping everything else the exact same' },
+    { label: '⌚ Remove bracelets/watches', value: 'Remove bracelets and watches, keeping everything else the exact same' }
+  ],
+  clothing: [
+    { label: '🔴 Red clothing', value: 'Change clothing color to red, keeping everything else the exact same' },
+    { label: '🔵 Blue clothing', value: 'Change clothing color to blue, keeping everything else the exact same' },
+    { label: '🟢 Green clothing', value: 'Change clothing color to green, keeping everything else the exact same' },
+    { label: '⚫ Black clothing', value: 'Change clothing color to black, keeping everything else the exact same' },
+    { label: '⚪ White clothing', value: 'Change clothing color to white, keeping everything else the exact same' },
+    { label: '🩷 Pink clothing', value: 'Change clothing color to pink, keeping everything else the exact same' },
+    { label: '🟡 Yellow clothing', value: 'Change clothing color to yellow, keeping everything else the exact same' },
+    { label: '🟣 Purple clothing', value: 'Change clothing color to purple, keeping everything else the exact same' },
+    { label: '🟠 Orange clothing', value: 'Change clothing color to orange, keeping everything else the exact same' },
+    { label: '⚪ Gray clothing', value: 'Change clothing color to gray, keeping everything else the exact same' },
+    { label: '🔵 Navy clothing', value: 'Change clothing color to navy, keeping everything else the exact same' },
+    { label: '🔴 Burgundy clothing', value: 'Change clothing color to burgundy, keeping everything else the exact same' },
+    { label: '🔵 Teal clothing', value: 'Change clothing color to teal, keeping everything else the exact same' },
+    { label: '🩷 Coral clothing', value: 'Change clothing color to coral, keeping everything else the exact same' },
+    { label: '🟤 Beige clothing', value: 'Change clothing color to beige, keeping everything else the exact same' },
+    { label: '🔴 Maroon clothing', value: 'Change clothing color to maroon, keeping everything else the exact same' },
+    { label: '🟢 Emerald clothing', value: 'Change clothing color to emerald, keeping everything else the exact same' },
+    { label: '🔴 Crimson clothing', value: 'Change clothing color to crimson, keeping everything else the exact same' },
+    { label: '🟡 Gold clothing', value: 'Change clothing color to gold, keeping everything else the exact same' },
+    { label: '⚪ Silver clothing', value: 'Change clothing color to silver, keeping everything else the exact same' }
   ]
 }
 
@@ -121,6 +151,8 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
   const isRefreshingRef = useRef<boolean>(false)
   // Store jobId -> rowId mapping to avoid closure issues in polling callback
   const jobIdToRowIdRef = useRef<Record<string, string>>({})
+  // Track jobs that are currently being processed to prevent duplicate refresh attempts
+  const processingJobsRef = useRef<Set<string>>(new Set())
   // Bulk upload state
   const [isFolderDropActive, setIsFolderDropActive] = useState(false)
   const [bulkUploadState, setBulkUploadState] = useState<Array<{
@@ -133,7 +165,14 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
   const [isBulkUploading, setIsBulkUploading] = useState(false)
   const [dragOverRefRowId, setDragOverRefRowId] = useState<string | null>(null)
   const zipFileInputRef = useRef<HTMLInputElement>(null)
+  const fileInputRefs = useRef<Map<string, HTMLInputElement>>(new Map())
+  const [uploadingRowId, setUploadingRowId] = useState<string | null>(null)
   const [isGlobalDragActive, setIsGlobalDragActive] = useState(false)
+  // Bulk prompt generation state
+  const [isBulkGeneratingPrompts, setIsBulkGeneratingPrompts] = useState(false)
+  const [bulkPromptProgress, setBulkPromptProgress] = useState<{ total: number; completed: number; failed: number }>({ total: 0, completed: 0, failed: 0 })
+  const [bulkPromptStatus, setBulkPromptStatus] = useState<Record<string, 'pending' | 'processing' | 'success' | 'error'>>({})
+  const bulkPromptCancelRef = useRef<boolean>(false)
   
   // Sync initialRows prop changes to local state (aligns with rows tab pattern)
   // This ensures data stays fresh when parent re-renders with new data
@@ -227,6 +266,17 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
     }
   }, [rows, onRowsChange])
   
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      // Clear all pending save timeouts
+      Object.values(saveTimeoutRef.current).forEach(timeout => {
+        if (timeout) clearTimeout(timeout)
+      })
+      saveTimeoutRef.current = {}
+    }
+  }, [])
+  
   // Refresh row data after generation (aligns with rows tab pattern)
   const refreshRowData = useCallback(async () => {
   // FIXED: Added throttling to prevent rapid successive refreshes
@@ -289,7 +339,8 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
   }, [modelId])
 
   // Refresh a single row and update local state
-  const refreshSingleRow = useCallback(async (rowId: string) => {
+  // Returns true if images were found, false otherwise
+  const refreshSingleRow = useCallback(async (rowId: string, retries = 0): Promise<boolean> => {
     try {
       // Add cache-busting timestamp
       const url = new URL(`/api/variants/rows/${rowId}`, window.location.origin)
@@ -301,7 +352,16 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
           'Cache-Control': 'no-cache'
         }
       })
-      if (!res.ok) return
+      
+      if (!res.ok) {
+        if (retries > 0) {
+          // Retry on failure with exponential backoff
+          await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, retries - 1)))
+          return refreshSingleRow(rowId, retries - 1)
+        }
+        return false
+      }
+      
       const { row } = await res.json()
       
       // Normalize images: ensure is_generated is explicitly boolean
@@ -313,6 +373,12 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
           is_generated: img.is_generated === true
         }))
       }
+      
+      // Check if generated images exist
+      const generatedImages = normalizedRow.variant_row_images.filter(
+        (img: any) => img.is_generated === true
+      )
+      const hasGeneratedImages = generatedImages.length > 0
       
       // Update the specific row in state using functional setState to ensure proper merge
       setRows(prev => {
@@ -326,10 +392,102 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
         // onRowsChange will be called via useEffect when rows state updates
         return updated
       })
+      
+      return hasGeneratedImages
     } catch (e) {
       console.error('Failed to refresh single row:', e)
+      if (retries > 0) {
+        // Retry on error with exponential backoff
+        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, retries - 1)))
+        return refreshSingleRow(rowId, retries - 1)
+      }
+      return false
     }
   }, [onRowsChange])
+
+  // Fetch multiple rows by ID and add them to state immediately
+  // Used for optimistic updates when rows are added via events
+  const refreshRowsByIds = useCallback(async (rowIds: string[]): Promise<void> => {
+    if (rowIds.length === 0) return
+
+    try {
+      console.log('[Variants] Fetching rows by IDs for immediate update', {
+        rowIds,
+        count: rowIds.length
+      })
+
+      // Fetch all rows in parallel
+      const fetchPromises = rowIds.map(async (rowId) => {
+        try {
+          const url = new URL(`/api/variants/rows/${rowId}`, window.location.origin)
+          url.searchParams.set('_t', Date.now().toString())
+          
+          const res = await fetch(url.toString(), { 
+            cache: 'no-store',
+            headers: {
+              'Cache-Control': 'no-cache'
+            }
+          })
+          
+          if (!res.ok) {
+            console.warn('[Variants] Failed to fetch row', { rowId, status: res.status })
+            return null
+          }
+          
+          const { row } = await res.json()
+          
+          // Normalize images: ensure is_generated is explicitly boolean
+          const normalizedRow: VariantRow = {
+            ...row,
+            variant_row_images: (row.variant_row_images || []).map((img: any) => ({
+              ...img,
+              is_generated: img.is_generated === true
+            }))
+          }
+          
+          return normalizedRow
+        } catch (error) {
+          console.error('[Variants] Error fetching row', { rowId, error })
+          return null
+        }
+      })
+
+      const fetchedRows = await Promise.all(fetchPromises)
+      const validRows = fetchedRows.filter((row): row is VariantRow => row !== null)
+
+      if (validRows.length === 0) {
+        console.warn('[Variants] No valid rows fetched', { rowIds })
+        return
+      }
+
+      console.log('[Variants] Successfully fetched rows for immediate update', {
+        requested: rowIds.length,
+        fetched: validRows.length
+      })
+
+      // Add new rows to state immediately (optimistic update)
+      setRows(prev => {
+        const existingIds = new Set(prev.map(r => r.id))
+        const newRows = validRows.filter(r => !existingIds.has(r.id))
+        
+        if (newRows.length === 0) {
+          // All rows already exist, just update them
+          return prev.map(prevRow => {
+            const updatedRow = validRows.find(r => r.id === prevRow.id)
+            return updatedRow || prevRow
+          })
+        }
+        
+        // Add new rows at the beginning (most recent first)
+        return [...newRows, ...prev.map(prevRow => {
+          const updatedRow = validRows.find(r => r.id === prevRow.id)
+          return updatedRow || prevRow
+        })]
+      })
+    } catch (error) {
+      console.error('[Variants] Error in refreshRowsByIds', { error, rowIds })
+    }
+  }, [])
 
   // Debounce refresh to avoid redundant fetches when many jobs complete together
   // FIXED: Increased debounce time and added check to prevent unnecessary calls
@@ -347,24 +505,88 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       // Use ref instead of pollingState to avoid closure issues
       // The ref always has the latest jobId -> rowId mapping
       const variantRowId = jobIdToRowIdRef.current[jobId] || (pollingState as any)[jobId]?.rowId as string | undefined
-      if (status === 'succeeded' && variantRowId) {
-        // Immediately refresh the specific row when job succeeds
-        refreshSingleRow(variantRowId).catch(() => {})
-        // Clear generating state when job completes
-        setGeneratingImageRowId(null)
-      } else if (status === 'failed' && variantRowId) {
-        // Clear generating state on failure too
-        setGeneratingImageRowId(null)
+      
+      // Prevent duplicate processing if already handling this job
+      if (processingJobsRef.current.has(jobId)) {
+        console.log('[Variants] Job already being processed, skipping duplicate', { jobId, variantRowId })
+        return
       }
+      
+      // Mark as processing to prevent duplicates
+      processingJobsRef.current.add(jobId)
+      
+      if (status === 'succeeded' && variantRowId) {
+        // Retry logic for refreshing row until images appear
+        const refreshWithRetry = async (retries = 5, delay = 1000) => {
+          for (let i = 0; i < retries; i++) {
+            try {
+              // refreshSingleRow now returns true if images were found
+              const hasImages = await refreshSingleRow(variantRowId, 0)
+              
+              // If images are available, we're done
+              if (hasImages) {
+                console.log('[Variants] Successfully refreshed row with images', {
+                  rowId: variantRowId,
+                  jobId,
+                  attempts: i + 1
+                })
+                break
+              }
+              
+              // If no images yet and we have retries left, wait and retry
+              if (i < retries - 1) {
+                console.log('[Variants] No images yet, retrying...', {
+                  rowId: variantRowId,
+                  jobId,
+                  attempt: i + 1,
+                  retriesLeft: retries - i - 1
+                })
+                await new Promise(resolve => setTimeout(resolve, delay))
+                delay *= 2 // Exponential backoff
+              }
+            } catch (error) {
+              console.error('[Variants] Failed to refresh row, retrying...', {
+                rowId: variantRowId,
+                jobId,
+                attempt: i + 1,
+                error
+              })
+              if (i < retries - 1) {
+                await new Promise(resolve => setTimeout(resolve, delay))
+                delay *= 2
+              }
+            }
+          }
+          
+          // Clear generating state after refresh attempts (even if images not found yet)
+          // The realtime subscription will catch the images when they're inserted
+          setGeneratingImageRowId(prev => prev === variantRowId ? null : prev)
+          // Remove from processing set
+          processingJobsRef.current.delete(jobId)
+        }
+        
+        refreshWithRetry().catch(() => {
+          // Fallback: clear generating state even if refresh fails
+          setGeneratingImageRowId(prev => prev === variantRowId ? null : prev)
+          processingJobsRef.current.delete(jobId)
+        })
+      } else if (status === 'failed' && variantRowId) {
+        // Clear generating state on failure
+        setGeneratingImageRowId(prev => prev === variantRowId ? null : prev)
+        processingJobsRef.current.delete(jobId)
+      }
+      
       // Clean up the mapping when job completes
       if (variantRowId) {
         delete jobIdToRowIdRef.current[jobId]
       }
+      
       toast({
         title: status === 'succeeded' ? 'Generation Complete' : 'Generation Failed',
         description: `Job ${jobId.slice(0, 8)}... has ${status}`,
         variant: status === 'failed' ? 'destructive' : 'default'
       })
+      
       // Schedule a debounced full refresh as backup
       scheduleRefresh()
     }
@@ -544,14 +766,42 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
     })
   }, [toast])
 
-  // Handle prompt change for a row
+  // Handle prompt change for a row with debounced save
   const handlePromptChange = useCallback((rowId: string, value: string) => {
+    // Update local state immediately for responsive UI
     setRows(prev => prev.map(row => {
       if (row.id === rowId) {
         return { ...row, prompt: value }
       }
       return row
     }))
+
+    // Clear existing timeout for this row
+    if (saveTimeoutRef.current[rowId]) {
+      clearTimeout(saveTimeoutRef.current[rowId])
+    }
+
+    // Debounce save to database (500ms delay)
+    saveTimeoutRef.current[rowId] = setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/variants/rows/${rowId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: value })
+        })
+
+        if (!response.ok) {
+          const error = await response.json()
+          console.error('[Variants] Failed to save prompt:', error)
+          // Don't show toast for silent saves to avoid noise
+        }
+      } catch (error) {
+        console.error('[Variants] Error saving prompt:', error)
+      } finally {
+        // Clean up timeout reference
+        delete saveTimeoutRef.current[rowId]
+      }
+    }, 500)
   }, [])
 
   // Handle delete row
@@ -669,25 +919,37 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       }
 
       const data = await response.json()
+      const jobId = data.jobId
+      
+      if (!jobId) {
+        throw new Error('No job ID returned from server')
+      }
+
+      // Store jobId -> rowId mapping for polling callback
+      jobIdToRowIdRef.current[jobId] = rowId
+      
+      // Start polling immediately with the jobId
+      startPolling(jobId, data.status || 'queued', rowId)
       
       toast({
         title: 'Generation started',
         description: 'Images are being generated. This may take a moment.'
       })
 
-      // Refresh the row to get updated images after generation
-      await refreshSingleRow(rowId)
+      // Don't refresh here - let polling handle it when job completes
+      // Don't clear generatingImageRowId here - let polling callback handle it on completion
     } catch (error) {
       console.error('Generate images error:', error)
+      // Clear generating state on error
+      setGeneratingImageRowId(null)
       toast({
         title: 'Generation failed',
         description: error instanceof Error ? error.message : 'Could not generate images',
         variant: 'destructive'
       })
-    } finally {
-      setGeneratingImageRowId(null)
     }
-  }, [toast, refreshSingleRow])
+    // Removed finally block - generating state is cleared by polling callback on completion
+  }, [toast, startPolling])
 
   // Handle reference image drag over
   const handleRefDragOver = useCallback((e: React.DragEvent, rowId: string) => {
@@ -757,6 +1019,239 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
     }))
   }, [])
 
+  // Group rows by output dimensions
+  const groupRowsByDimensions = useCallback((rows: VariantRow[]): Map<string, VariantRow[]> => {
+    const groups = new Map<string, VariantRow[]>()
+    
+    rows.forEach(row => {
+      const width = row.output_width || 4096
+      const height = row.output_height || 4096
+      const key = `${width}x${height}`
+      
+      if (!groups.has(key)) {
+        groups.set(key, [])
+      }
+      groups.get(key)!.push(row)
+    })
+    
+    return groups
+  }, [])
+
+  // Get eligible rows for prompt generation (rows with reference images)
+  const getEligibleRowsForPromptGeneration = useCallback((rows: VariantRow[]): VariantRow[] => {
+    return rows.filter(row => {
+      const allImages = row.variant_row_images || []
+      // Check if row has at least one reference image (is_generated !== true)
+      const hasReferenceImages = allImages.some(img => img.is_generated !== true)
+      return hasReferenceImages
+    })
+  }, [])
+
+  // Bulk toggle match_target_ratio for all rows with reference images
+  // When enabled, this overrides top-level dimension controls and matches output to reference image dimensions
+  const handleBulkToggleMatchReferenceDimensions = useCallback(async (targetState: boolean) => {
+    // Get all rows that have at least one reference image
+    const rowsWithReferences = rows.filter(row => {
+      const allImages = row.variant_row_images || []
+      const referenceImages = allImages.filter((img: VariantRowImage) => img.is_generated !== true)
+      return referenceImages.length > 0
+    })
+    
+    if (rowsWithReferences.length === 0) {
+      toast({
+        title: 'No rows with reference images',
+        description: 'Add reference images to rows first to use this feature',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    // Optimistic UI update
+    const previousRows = [...rows]
+    setRows(prev => prev.map(r => {
+      const hasReferences = (r.variant_row_images || []).some((img: VariantRowImage) => img.is_generated !== true)
+      // Only update rows that have reference images
+      return hasReferences ? { ...r, match_target_ratio: targetState } : r
+    }))
+
+    try {
+      // Batch API calls for all rows with reference images
+      const updatePromises = rowsWithReferences.map(row =>
+        fetch(`/api/variants/rows/${row.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ match_target_ratio: targetState })
+        })
+      )
+
+      const results = await Promise.all(updatePromises)
+      const failed = results.filter(r => !r.ok)
+      
+      if (failed.length > 0) {
+        // Revert on failure
+        setRows(previousRows)
+        throw new Error(`Failed to update ${failed.length} of ${rowsWithReferences.length} rows`)
+      }
+
+      toast({
+        title: 'Bulk update successful',
+        description: targetState 
+          ? `Enabled match reference dimensions for ${rowsWithReferences.length} row${rowsWithReferences.length === 1 ? '' : 's'}. Output will match reference image dimensions, overriding top-level settings.`
+          : `Disabled match reference dimensions for ${rowsWithReferences.length} row${rowsWithReferences.length === 1 ? '' : 's'}. Using top-level dimension settings.`,
+      })
+    } catch (error) {
+      toast({
+        title: 'Bulk update failed',
+        description: error instanceof Error ? error.message : 'Failed to update rows',
+        variant: 'destructive'
+      })
+    }
+  }, [rows, toast])
+
+  // Bulk generate prompts for all eligible rows
+  const handleBulkGeneratePrompts = useCallback(async () => {
+    const eligibleRows = getEligibleRowsForPromptGeneration(rows)
+    
+    if (eligibleRows.length === 0) {
+      toast({
+        title: 'No eligible rows',
+        description: 'No rows with reference images found',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    // Reset state
+    setIsBulkGeneratingPrompts(true)
+    bulkPromptCancelRef.current = false
+    setBulkPromptProgress({ total: eligibleRows.length, completed: 0, failed: 0 })
+    setBulkPromptStatus(
+      eligibleRows.reduce((acc, row) => {
+        acc[row.id] = 'pending'
+        return acc
+      }, {} as Record<string, 'pending' | 'processing' | 'success' | 'error'>)
+    )
+
+    const BATCH_SIZE = 3 // Process 3 rows concurrently
+    const BATCH_DELAY = 800 // 800ms delay between batches
+    const MAX_RETRIES = 2
+
+    // Split into batches
+    const batches: VariantRow[][] = []
+    for (let i = 0; i < eligibleRows.length; i += BATCH_SIZE) {
+      batches.push(eligibleRows.slice(i, i + BATCH_SIZE))
+    }
+
+    let completedCount = 0
+    let failedCount = 0
+    const failedRows: Array<{ rowId: string; error: string }> = []
+
+    // Process batches sequentially with delay
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+      if (bulkPromptCancelRef.current) {
+        break
+      }
+
+      const batch = batches[batchIndex]
+      
+      // Mark batch as processing
+      batch.forEach(row => {
+        setBulkPromptStatus(prev => ({ ...prev, [row.id]: 'processing' }))
+      })
+
+      // Process batch concurrently
+      await Promise.allSettled(
+        batch.map(async (row) => {
+          let retryCount = 0
+          let lastError: Error | null = null
+          let response: Response | null = null
+
+          while (retryCount <= MAX_RETRIES) {
+            try {
+              response = await fetch(`/api/variants/rows/${row.id}/prompt/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+              })
+
+              if (!response.ok) {
+                // Handle rate limiting
+                if (response.status === 429) {
+                  const retryAfter = parseInt(response.headers.get('Retry-After') || '5', 10)
+                  await new Promise(resolve => setTimeout(resolve, retryAfter * 1000))
+                  retryCount++
+                  continue
+                }
+                
+                const error = await response.json()
+                throw new Error(error.error || 'Failed to generate prompt')
+              }
+
+              const data = await response.json()
+              const generatedPrompt = data.prompt
+
+              // Update the row's prompt in local state
+              setRows(prev => prev.map(r => {
+                if (r.id === row.id) {
+                  return { ...r, prompt: generatedPrompt }
+                }
+                return r
+              }))
+
+              setBulkPromptStatus(prev => ({ ...prev, [row.id]: 'success' }))
+              completedCount++
+              setBulkPromptProgress(prev => ({ ...prev, completed: completedCount }))
+              return { rowId: row.id, success: true }
+            } catch (error) {
+              lastError = error instanceof Error ? error : new Error(String(error))
+              
+              // Exponential backoff for retries (except rate limits which are handled above)
+              if (retryCount < MAX_RETRIES) {
+                const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 5000)
+                await new Promise(resolve => setTimeout(resolve, backoffDelay))
+              }
+              
+              retryCount++
+            }
+          }
+
+          // All retries failed
+          setBulkPromptStatus(prev => ({ ...prev, [row.id]: 'error' }))
+          failedCount++
+          setBulkPromptProgress(prev => ({ ...prev, failed: failedCount }))
+          failedRows.push({ rowId: row.id, error: lastError?.message || 'Unknown error' })
+          return { rowId: row.id, success: false, error: lastError?.message }
+        })
+      )
+
+      // Add delay between batches (except for the last batch)
+      if (batchIndex < batches.length - 1 && !bulkPromptCancelRef.current) {
+        await new Promise(resolve => setTimeout(resolve, BATCH_DELAY))
+      }
+    }
+
+    setIsBulkGeneratingPrompts(false)
+
+    // Show completion toast
+    if (bulkPromptCancelRef.current) {
+      toast({
+        title: 'Bulk generation cancelled',
+        description: `Processed ${completedCount} of ${eligibleRows.length} rows before cancellation`
+      })
+    } else {
+      toast({
+        title: 'Bulk generation complete',
+        description: `Generated ${completedCount} prompts successfully${failedCount > 0 ? `, ${failedCount} failed` : ''}`,
+        variant: failedCount > 0 ? 'default' : 'default'
+      })
+    }
+  }, [rows, getEligibleRowsForPromptGeneration, toast])
+
+  // Cancel bulk prompt generation
+  const handleCancelBulkGeneratePrompts = useCallback(() => {
+    bulkPromptCancelRef.current = true
+    setIsBulkGeneratingPrompts(false)
+  }, [])
+
   // Handle preset chip selection
   const handlePresetChip = useCallback((rowId: string, value: string, label: string) => {
     setSelectedPresets(prev => {
@@ -809,10 +1304,27 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
     })
   }, [])
 
-  // Handle enhance prompt
+  // Handle enhance prompt - uses functional state updates to avoid stale closures
   const handleEnhancePrompt = useCallback(async (rowId: string) => {
-    const row = rows.find(r => r.id === rowId)
-    if (!row?.prompt) {
+    // Use functional state update to get the latest prompt value
+    let currentPrompt: string | null = null
+    let currentInstructions: string | undefined
+
+    // Get latest values from state using functional updates
+    setRows(prev => {
+      const row = prev.find(r => r.id === rowId)
+      if (row?.prompt) {
+        currentPrompt = row.prompt
+      }
+      return prev
+    })
+
+    setEnhanceInstructions(prev => {
+      currentInstructions = prev[rowId]?.trim()
+      return prev
+    })
+
+    if (!currentPrompt) {
       toast({
         title: 'No prompt',
         description: 'Generate a prompt first before enhancing',
@@ -821,8 +1333,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       return
     }
 
-    const instructions = enhanceInstructions[rowId]?.trim()
-    if (!instructions) {
+    if (!currentInstructions) {
       toast({
         title: 'No instructions',
         description: 'Please provide enhancement instructions',
@@ -834,19 +1345,37 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
     setEnhancingRowId(rowId)
     try {
       // Store original prompt if not already stored
-      if (!originalPrompts[rowId]) {
-        setOriginalPrompts(prev => ({
-          ...prev,
-          [rowId]: row.prompt!
-        }))
+      setOriginalPrompts(prev => {
+        if (!prev[rowId] && currentPrompt) {
+          return { ...prev, [rowId]: currentPrompt }
+        }
+        return prev
+      })
+
+      // Ensure any pending saves complete before enhancing
+      if (saveTimeoutRef.current[rowId]) {
+        clearTimeout(saveTimeoutRef.current[rowId])
+        delete saveTimeoutRef.current[rowId]
+        // Wait a bit for any in-flight saves to complete
+        await new Promise(resolve => setTimeout(resolve, 100))
       }
+
+      // Get the absolute latest prompt value right before the API call
+      let latestPrompt: string | null = currentPrompt
+      setRows(prev => {
+        const row = prev.find(r => r.id === rowId)
+        if (row?.prompt) {
+          latestPrompt = row.prompt
+        }
+        return prev
+      })
 
       const response = await fetch(`/api/variants/rows/${rowId}/prompt/enhance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          existingPrompt: row.prompt,
-          userInstructions: instructions
+          existingPrompt: latestPrompt,
+          userInstructions: currentInstructions
         })
       })
 
@@ -858,13 +1387,25 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       const data = await response.json()
       const enhancedPrompt = data.prompt
 
-      // Update the row's prompt in local state
+      // Update the row's prompt in local state and save immediately
       setRows(prev => prev.map(r => {
         if (r.id === rowId) {
           return { ...r, prompt: enhancedPrompt }
         }
         return r
       }))
+
+      // Save enhanced prompt to database immediately
+      try {
+        await fetch(`/api/variants/rows/${rowId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: enhancedPrompt })
+        })
+      } catch (saveError) {
+        console.error('[Variants] Failed to save enhanced prompt:', saveError)
+        // Continue even if save fails - state is already updated
+      }
 
       toast({
         title: 'Prompt enhanced',
@@ -880,7 +1421,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
     } finally {
       setEnhancingRowId(null)
     }
-  }, [rows, enhanceInstructions, originalPrompts, toast])
+  }, [enhanceInstructions, toast])
 
 
   // Load thumbnail URLs
@@ -1049,7 +1590,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
     
     // Listen for custom events when variants are added from other tabs
     const handleVariantsAdded = (event: CustomEvent) => {
-      const { modelId: eventModelId, rowsCreated } = event.detail || {}
+      const { modelId: eventModelId, rowsCreated, rows: eventRows } = event.detail || {}
       
       // If this tab is filtered by modelId, only refresh if the event is for that model
       if (modelId) {
@@ -1063,12 +1604,22 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
         eventModelId,
         currentModelId: modelId,
         rowsCreated,
-        willRefresh: true
+        rowIds: eventRows?.map((r: any) => r.id) || []
       })
       
-      // FIXED: Use debounced refresh instead of immediate to prevent rapid successive calls
+      // OPTIMIZED: Immediately fetch and add new rows for instant UI update
+      if (eventRows && Array.isArray(eventRows) && eventRows.length > 0) {
+        const rowIds = eventRows.map((r: any) => r.id).filter((id: string) => id)
+        if (rowIds.length > 0) {
+          // Fetch and add rows immediately (optimistic update)
+          refreshRowsByIds(rowIds).catch((error) => {
+            console.error('[Variants] Failed to fetch rows immediately, falling back to refresh', error)
+          })
+        }
+      }
+      
+      // Still call debounced refresh as fallback for consistency
       scheduleRefresh()
-      // Refresh server-side cache to ensure parent Server Component refetches data
     }
     
     window.addEventListener('variants:rows-added', handleVariantsAdded as EventListener)
@@ -1084,16 +1635,36 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       }, (payload: any) => {
         const next = payload?.new
         if (!next || !next.variant_row_id) return
+        
+        const jobId = String(next.id)
+        const variantRowId = String(next.variant_row_id)
         const s = String(next.status)
+        
+        // Store jobId -> rowId mapping for polling callback
+        if (jobId && variantRowId) {
+          jobIdToRowIdRef.current[jobId] = variantRowId
+        }
+        
         if (['queued','submitted','running','saving'].includes(s)) {
-          startPolling(String(next.id), s, String(next.variant_row_id))
+          // Start polling for active jobs
+          startPolling(jobId, s, variantRowId)
+          // Set generating state if not already set
+          setGeneratingImageRowId(prev => prev || variantRowId)
         }
         if (['succeeded','failed'].includes(s)) {
-          // Refresh the specific row when job completes
-          const variantRowId = String(next.variant_row_id)
-          if (variantRowId) {
-            refreshSingleRow(variantRowId).catch(() => {})
-            scheduleRefresh()
+          // Let polling callback handle job completion to avoid duplicate refresh attempts
+          // Realtime subscription is mainly for detecting new jobs, not handling completion
+          // This prevents race conditions between polling and realtime
+          if (variantRowId && !processingJobsRef.current.has(jobId)) {
+            // Only handle if polling hasn't already picked it up
+            // This is a fallback for edge cases where polling might miss the update
+            console.log('[Variants] Realtime: Job completion detected, but letting polling handle it', {
+              jobId,
+              variantRowId,
+              status: s
+            })
+            // Clean up mapping - polling will handle the rest
+            delete jobIdToRowIdRef.current[jobId]
           }
         }
       })
@@ -1125,11 +1696,19 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
           rowId: newRow.id,
           modelId: newRow.model_id,
           currentModelId: modelId,
-          willRefresh: true
+          willFetchImmediately: true
         })
         
-        // FIXED: Use debounced refresh instead of immediate to prevent rapid successive calls
-        scheduleRefresh()
+        // OPTIMIZED: Immediately fetch and add the new row for instant UI update
+        if (newRow.id) {
+          refreshSingleRow(newRow.id, 0).catch((error) => {
+            console.error('[Variants] Failed to fetch row immediately via realtime, falling back to refresh', error)
+            scheduleRefresh()
+          })
+        } else {
+          // Fallback if row ID is missing
+          scheduleRefresh()
+        }
       })
       // Listen for UPDATE events (e.g., name changes, prompt updates)
       .on('postgres_changes', {
@@ -1154,7 +1733,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
         
         // FIXED: Use debounced refresh instead of immediate to prevent rapid successive calls
         if (updatedRow.id) {
-          refreshSingleRow(updatedRow.id).catch(() => {})
+          refreshSingleRow(updatedRow.id, 0).catch(() => {})
         } else {
           scheduleRefresh()
         }
@@ -1252,7 +1831,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
           // Debounce to batch multiple image inserts
           if (refreshTimeout.current) window.clearTimeout(refreshTimeout.current)
           refreshTimeout.current = window.setTimeout(() => {
-            refreshSingleRow(variantRowId).catch(() => {})
+            refreshSingleRow(variantRowId, 0).catch(() => {})
             refreshTimeout.current = null
           }, 500)
         }
@@ -1275,7 +1854,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
         const variantRowId = String(updatedImage.variant_row_id)
         if (variantRowId) {
           setTimeout(() => {
-            refreshSingleRow(variantRowId).catch(() => {})
+            refreshSingleRow(variantRowId, 0).catch(() => {})
           }, 200)
         }
       })
@@ -1325,6 +1904,8 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       cancelled = true
       // Clear jobId mapping ref on unmount
       jobIdToRowIdRef.current = {}
+      // Clear processing jobs ref
+      processingJobsRef.current.clear()
       // Remove custom event listener
       window.removeEventListener('variants:rows-added', handleVariantsAdded as EventListener)
       
@@ -1347,10 +1928,15 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
   }, [modelId]) // Re-subscribe when modelId changes
 
   // Helper to get live status for a row from polling state
+  // Falls back to generatingImageRowId if polling state not yet available
   const getLiveStatusForRow = (rowId: string) => {
     const live = Object.values(pollingState).find(s => s.rowId === rowId && s.polling)
-    if (!live) return null
-    return live.status
+    if (live) return live.status
+    // Fallback: if we're generating for this row but polling hasn't started yet
+    if (generatingImageRowId === rowId) {
+      return 'queued'
+    }
+    return null
   }
 
   // Helper to get live polling state for a row (includes queue position)
@@ -1669,6 +2255,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
     const imageFiles = files.filter(f => f.type.startsWith('image/'))
     if (imageFiles.length === 0) return
     
+    setUploadingRowId(rowId)
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error('Not authenticated')
@@ -1717,7 +2304,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
         throw new Error(`Failed to add images: ${response.status} ${errorText}`)
       }
 
-      await refreshSingleRow(rowId)
+      await refreshSingleRow(rowId, 0)
       toast({ 
         title: `Added ${imagesToAdd.length} reference image${imagesToAdd.length === 1 ? '' : 's'}`,
         description: 'Images added to variant row'
@@ -1728,6 +2315,35 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
         description: err instanceof Error ? err.message : 'Error', 
         variant: 'destructive' 
       })
+    } finally {
+      setUploadingRowId(null)
+    }
+  }
+
+  // Handle add images button click
+  const handleAddImagesClick = (rowId: string) => {
+    const input = fileInputRefs.current.get(rowId)
+    if (input) {
+      input.click()
+    }
+  }
+
+  // Handle file input change
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>, rowId: string) => {
+    const files = Array.from(e.target.files || [])
+    if (files.length > 0) {
+      await addRefsFromFiles(files, rowId)
+      // Reset input to allow selecting same files again
+      e.target.value = ''
+    }
+  }
+
+  // Set file input ref callback
+  const setFileInputRef = (rowId: string, element: HTMLInputElement | null) => {
+    if (element) {
+      fileInputRefs.current.set(rowId, element)
+    } else {
+      fileInputRefs.current.delete(rowId)
     }
   }
 
@@ -1735,6 +2351,18 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
   const handleBulkImageUpload = async (imageFiles: File[]) => {
     setIsBulkUploading(true)
     setBulkUploadState([])
+
+    // Add timeout protection to prevent stuck uploads
+    const timeoutId = setTimeout(() => {
+      console.warn('Bulk upload timeout - clearing state')
+      setIsBulkUploading(false)
+      setBulkUploadState([])
+      toast({
+        title: 'Upload timeout',
+        description: 'The upload is taking longer than expected. Please try again.',
+        variant: 'destructive'
+      })
+    }, 300000) // 5 minute timeout
 
     try {
       const { data: { user } } = await supabase.auth.getUser()
@@ -1830,22 +2458,53 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
 
       // Add successful rows to the UI immediately for real-time updates
       if (result.results.length > 0) {
-        // Add rows to state immediately
-        setRows(prev => {
-          const existingIds = new Set(prev.map(r => r.id))
-          const newRows = result.results
-            .map((r: any) => r.row)
-            .filter((row: any) => !existingIds.has(row.id))
-          return [...newRows, ...prev]
+        // Normalize rows to ensure images are properly structured
+        const normalizedRows = result.results.map((r: any) => {
+          const row = r.row
+          // Ensure variant_row_images is properly structured
+          const normalizedRow = {
+            ...row,
+            variant_row_images: (row.variant_row_images || []).map((img: any) => ({
+              ...img,
+              is_generated: img.is_generated === true
+            }))
+          }
+          return normalizedRow
         })
 
-        // Refresh each row to load images and thumbnails immediately
-        for (const successResult of result.results) {
-          const row = successResult.row
-          // Refresh to get images loaded
-          await refreshSingleRow(row.id).catch(() => {})
-        }
+        // Add rows to state immediately with images included
+        setRows(prev => {
+          const existingIds = new Set(prev.map(r => r.id))
+          const newRows = normalizedRows.filter((row: any) => !existingIds.has(row.id))
+          const updatedRows = [...newRows, ...prev]
+          
+          // Trigger onRowsChange callback immediately for parent component updates
+          if (onRowsChange) {
+            // Use setTimeout to ensure state update completes first
+            setTimeout(() => {
+              onRowsChange(updatedRows)
+            }, 0)
+          }
+          
+          return updatedRows
+        })
+
+        // Refresh rows in parallel (not sequentially) to load images and thumbnails immediately
+        // This is much faster than sequential refreshes
+        const refreshPromises = normalizedRows.map((row: any) => 
+          refreshSingleRow(row.id, 0).catch((err) => {
+            console.warn(`Failed to refresh row ${row.id}:`, err)
+            // Don't throw - individual failures shouldn't block others
+            return null
+          })
+        )
+        
+        // Wait for all refreshes to complete in parallel
+        await Promise.all(refreshPromises)
       }
+
+      // Clear timeout since upload completed successfully
+      clearTimeout(timeoutId)
 
       // Show completion toast
       if (result.summary.successful > 0) {
@@ -1862,12 +2521,30 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       }, 5000)
     } catch (err) {
       console.error('Bulk upload error:', err)
+      
+      // Clear timeout on error
+      clearTimeout(timeoutId)
+      
+      // Update bulk state to show errors
+      setBulkUploadState(prev => prev.map(item => {
+        if (item.status === 'uploading' || item.status === 'pending') {
+          return {
+            ...item,
+            status: 'error' as const,
+            error: err instanceof Error ? err.message : 'Upload failed'
+          }
+        }
+        return item
+      }))
+      
       toast({
         title: 'Bulk upload failed',
         description: err instanceof Error ? err.message : 'Unknown error',
         variant: 'destructive'
       })
     } finally {
+      // Always clear the uploading flag, even if timeout or error occurred
+      clearTimeout(timeoutId)
       setIsBulkUploading(false)
     }
   }
@@ -1942,6 +2619,80 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
         </Button>
       </div>
 
+      {/* Bulk Upload Drop Zone */}
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="text-sm text-muted-foreground">Bulk upload</div>
+            
+            {/* Compact Folder Drop Zone */}
+            <div
+              className={`relative transition-all duration-200 rounded-lg border-2 border-dashed px-4 py-2 min-w-[200px] ${
+                isFolderDropActive 
+                  ? 'border-primary bg-primary/5' 
+                  : 'border-muted-foreground/25 hover:border-muted-foreground/50'
+              }`}
+              onDragOver={handleFolderDragOver}
+              onDragLeave={handleFolderDragLeave}
+              onDrop={handleFolderDrop}
+            >
+              {isBulkUploading ? (
+                <div className="flex items-center gap-2">
+                  <Spinner size="sm" />
+                  <div className="text-xs">
+                    <div className="font-medium">Processing...</div>
+                    {bulkUploadState.length > 0 && (
+                      <div className="text-muted-foreground">
+                        {bulkUploadState.filter(item => item.status === 'uploading').length} of {bulkUploadState.length}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Folder className="h-4 w-4 text-muted-foreground" />
+                  <div className="text-xs">
+                    <div className="font-medium">
+                      {isFolderDropActive ? 'Drop folder' : 'Drop folder'}
+                    </div>
+                    <div className="text-muted-foreground">Bulk upload</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          
+          {/* Progress indicator for bulk upload */}
+          {isBulkUploading && bulkUploadState.length > 0 && (
+            <div className="mt-3 space-y-2">
+              <Progress 
+                value={
+                  (bulkUploadState.filter(item => item.status === 'success').length / bulkUploadState.length) * 100
+                } 
+                className="h-1.5"
+              />
+              
+              {/* Individual file status - compact view */}
+              <div className="max-h-20 overflow-y-auto">
+                <div className="grid grid-cols-2 gap-1 text-xs">
+                  {bulkUploadState.map((item) => (
+                    <div key={item.rowId} className="flex items-center gap-1 px-2 py-1 rounded bg-muted/30">
+                      <div className="flex items-center">
+                        {item.status === 'pending' && <div className="w-2 h-2 rounded-full bg-gray-300" />}
+                        {item.status === 'uploading' && <Spinner size="sm" />}
+                        {item.status === 'success' && <CheckCircle className="w-2 h-2 text-green-500" />}
+                        {item.status === 'error' && <XCircle className="w-2 h-2 text-red-500" />}
+                      </div>
+                      <span className="truncate text-muted-foreground">{item.filename}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Empty State */}
       {rows.length === 0 && (
         <Card>
@@ -2006,6 +2757,118 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
                 </div>
               </div>
             )}
+
+            {/* Bulk Actions */}
+            {rows.length > 0 && (() => {
+              // Get rows with reference images for the bulk toggle
+              const rowsWithReferences = rows.filter(row => {
+                const allImages = row.variant_row_images || []
+                const referenceImages = allImages.filter((img: VariantRowImage) => img.is_generated !== true)
+                return referenceImages.length > 0
+              })
+              
+              const eligibleRows = getEligibleRowsForPromptGeneration(rows)
+              const hasEligibleRows = eligibleRows.length > 0
+              
+              // Show bulk actions if there are rows with references or eligible rows for prompt generation
+              if (rowsWithReferences.length === 0 && !hasEligibleRows) return null
+
+              // Check if all rows with references have match_target_ratio enabled
+              const allRowsMatchReference = rowsWithReferences.length > 0 && 
+                rowsWithReferences.every(row => Boolean((row as any).match_target_ratio))
+              const noRowsMatchReference = rowsWithReferences.length > 0 && 
+                rowsWithReferences.every(row => !Boolean((row as any).match_target_ratio))
+              const isIndeterminate = rowsWithReferences.length > 0 && !allRowsMatchReference && !noRowsMatchReference
+              const currentState = allRowsMatchReference
+
+              return (
+                <div className="p-4 bg-muted/30 border-b border-border">
+                  <div className="flex items-center gap-4 flex-wrap">
+                    <div className="text-sm font-medium text-muted-foreground">Bulk Actions:</div>
+                    
+                    {/* Match Reference Dimensions Toggle - Only bulk action when enabled */}
+                    {rowsWithReferences.length > 0 && (
+                      <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-background border border-border/50 hover:border-border transition-colors">
+                        <Switch
+                          checked={currentState}
+                          onCheckedChange={(checked) => {
+                            handleBulkToggleMatchReferenceDimensions(checked)
+                          }}
+                          className={isIndeterminate ? 'opacity-70' : ''}
+                        />
+                        <Label className="text-sm font-medium cursor-pointer">
+                          Match output dimensions to reference image
+                        </Label>
+                        <Badge variant="secondary" className="text-xs">
+                          {rowsWithReferences.length} row{rowsWithReferences.length === 1 ? '' : 's'}
+                        </Badge>
+                        {isIndeterminate && (
+                          <span className="text-xs text-muted-foreground">(mixed)</span>
+                        )}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Info className="h-3 w-3 text-muted-foreground cursor-help ml-1" />
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-xs">
+                            <p className="text-xs">
+                              When enabled, output dimensions will match each row's reference image dimensions, overriding the top-level dimension settings.
+                            </p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </div>
+                    )}
+
+                    {/* Bulk Prompt Generation */}
+                    {hasEligibleRows && (
+                      <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-background border border-border/50">
+                        {isBulkGeneratingPrompts ? (
+                          <>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={handleCancelBulkGeneratePrompts}
+                              disabled={!isBulkGeneratingPrompts}
+                            >
+                              <X className="h-3 w-3 mr-1" />
+                              Cancel
+                            </Button>
+                            <div className="flex items-center gap-2 min-w-[200px]">
+                              <Spinner size="sm" />
+                              <div className="flex flex-col">
+                                <div className="text-xs font-medium">
+                                  Generating... ({bulkPromptProgress.completed + bulkPromptProgress.failed}/{bulkPromptProgress.total})
+                                </div>
+                                <Progress 
+                                  value={(bulkPromptProgress.completed + bulkPromptProgress.failed) / bulkPromptProgress.total * 100} 
+                                  className="h-1 w-32"
+                                />
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                {bulkPromptProgress.completed} ✓ {bulkPromptProgress.failed > 0 && `${bulkPromptProgress.failed} ✗`}
+                              </div>
+                            </div>
+                          </>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleBulkGeneratePrompts}
+                            disabled={isBulkGeneratingPrompts}
+                          >
+                            <Sparkles className="h-3 w-3 mr-1" />
+                            Generate All Prompts
+                            <Badge variant="secondary" className="ml-2 text-xs">
+                              {eligibleRows.length}
+                            </Badge>
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })()}
+
             <Table>
               <TableHeader>
                 <TableRow>
@@ -2184,6 +3047,35 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
                               +{referenceImages.length - (isExpanded ? 4 : 2)} more
                             </div>
                           )}
+                          {/* Hidden file input for this row */}
+                          <input
+                            ref={(el) => setFileInputRef(row.id, el)}
+                            type="file"
+                            multiple
+                            accept="image/jpeg,image/png,image/webp"
+                            className="hidden"
+                            onChange={(e) => handleFileInputChange(e, row.id)}
+                          />
+                          {/* Add Images button */}
+                          <Button
+                            onClick={() => handleAddImagesClick(row.id)}
+                            disabled={uploadingRowId === row.id}
+                            variant="outline"
+                            size="sm"
+                            className="w-full mt-1 text-xs h-7"
+                          >
+                            {uploadingRowId === row.id ? (
+                              <>
+                                <Spinner size="sm" className="mr-1" />
+                                Uploading...
+                              </>
+                            ) : (
+                              <>
+                                <Plus className="h-3 w-3 mr-1" />
+                                Add Images
+                              </>
+                            )}
+                          </Button>
                         </div>
                       </TableCell>
 
@@ -2395,26 +3287,42 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
                         {(() => {
                           const liveStatus = getLiveStatusForRow(row.id)
                           const isActive = isActiveStatus(liveStatus) || isGeneratingImages
+                          const livePolling = getLivePollingState(row.id)
                           
-                          // Show loading skeleton during active generation
-                          if (isActive && generatedImages.length === 0) {
+                          // Show loading skeleton during active generation when no images exist yet
+                          // Also show if job just succeeded but images haven't been fetched yet
+                          const isFetchingResults = liveStatus === 'succeeded' && generatedImages.length === 0 && (livePolling || isGeneratingImages)
+                          const shouldShowLoading = isActive && (
+                            generatedImages.length === 0 || 
+                            isFetchingResults
+                          )
+                          
+                          if (shouldShowLoading) {
                             return (
                               <div className="flex flex-wrap gap-1.5">
                                 <div className="w-32 h-32 rounded-lg bg-gradient-to-br from-muted to-muted/50 border border-border/50 animate-pulse shadow-sm" />
                                 <div className="w-32 h-32 rounded-lg bg-gradient-to-br from-muted to-muted/50 border border-border/50 animate-pulse shadow-sm" />
                                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                                   <Spinner size="sm" />
-                                  <span>Generating images...</span>
+                                  <span className="animate-pulse">
+                                    {isFetchingResults 
+                                      ? 'Fetching results...' 
+                                      : liveStatus === 'saving'
+                                      ? 'Saving images...'
+                                      : liveStatus === 'running'
+                                      ? 'Generating...'
+                                      : 'Generating images...'}
+                                  </span>
                                 </div>
                               </div>
                             )
                           }
                           
-                          // Show loading state if generating but have some images
+                          // Show loading state if generating but have some images (partial results)
                           if (isActive && generatedImages.length > 0) {
                             return (
                               <div className="flex flex-nowrap gap-1.5 overflow-x-auto">
-                                {generatedImages.slice(0, isExpanded ? 10 : 4).map((img: any, index: number) => {
+                                {generatedImages.map((img: any, index: number) => {
                                   const isFavorited = favoritesState[img.id] ?? (img.is_favorited === true)
                                   const displayUrl = thumbnailUrls[img.id] || loaderThumbnailUrls[img.id] || ''
                                   
@@ -2465,6 +3373,82 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
                                           <Star className="w-3.5 h-3.5 text-white drop-shadow-sm hover:text-yellow-300 transition-colors" />
                                         )}
                                       </button>
+                                      
+                                      {/* Add to New Variant Row button - appears on hover in top-right */}
+                                      <button
+                                        onClick={async (e) => {
+                                          e.stopPropagation()
+                                          try {
+                                            const { data: { session } } = await supabase.auth.getSession()
+                                            if (!session?.access_token) {
+                                              throw new Error('No valid authentication session')
+                                            }
+
+                                            const response = await fetch('/api/variants/rows/batch-add', {
+                                              method: 'POST',
+                                              headers: { 
+                                                'Content-Type': 'application/json',
+                                                'Authorization': `Bearer ${session.access_token}`
+                                              },
+                                              body: JSON.stringify({
+                                                images: [{
+                                                  outputPath: img.output_path,
+                                                  thumbnailPath: img.thumbnail_path || null,
+                                                  sourceRowId: row.id
+                                                }],
+                                                model_id: modelId || undefined
+                                              })
+                                            })
+
+                                            if (!response.ok) {
+                                              const errorData = await response.json().catch(() => ({}))
+                                              throw new Error(errorData.error || 'Failed to create variant row')
+                                            }
+
+                                            const result = await response.json()
+                                            
+                                            // Validate response data
+                                            if (!result || typeof result.rowsCreated !== 'number' || typeof result.imagesAdded !== 'number') {
+                                              throw new Error('Invalid response from server')
+                                            }
+
+                                            // Only show success toast if rows/images were actually created
+                                            if (result.rowsCreated > 0 && result.imagesAdded > 0) {
+                                              toast({
+                                                title: 'New variant row created',
+                                                description: `Created variant row with ${result.imagesAdded} image${result.imagesAdded === 1 ? '' : 's'}`
+                                              })
+                                              
+                                              // Dispatch custom event to trigger variants tab refresh
+                                              // Realtime subscription will also catch this, but event ensures immediate update
+                                              window.dispatchEvent(new CustomEvent('variants:rows-added', {
+                                                detail: {
+                                                  modelId: modelId,
+                                                  rowsCreated: result.rowsCreated,
+                                                  rows: result.rows || []
+                                                }
+                                              }))
+                                            } else {
+                                              toast({
+                                                title: 'No row created',
+                                                description: 'Variant row was not created. Please try again.',
+                                                variant: 'destructive'
+                                              })
+                                            }
+                                          } catch (error) {
+                                            console.error('Create variant row from result error:', error)
+                                            toast({
+                                              title: 'Failed to create variant row',
+                                              description: error instanceof Error ? error.message : 'Unknown error',
+                                              variant: 'destructive'
+                                            })
+                                          }
+                                        }}
+                                        className="absolute top-1 right-1 p-1 rounded-full transition-all duration-200 z-20 bg-black/50 hover:bg-black/70 backdrop-blur-sm opacity-0 group-hover:opacity-100 shadow-lg"
+                                        title="Create new variant row with this image"
+                                      >
+                                        <Plus className="w-3.5 h-3.5 text-white" />
+                                      </button>
                                     </div>
                                   )
                                 })}
@@ -2478,19 +3462,33 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
                           
                           if (generatedImages.length === 0) {
                             return (
-                              <div className="flex flex-col items-center justify-center py-4 text-center">
+                              <div className="relative group flex flex-col items-center justify-center py-4 text-center min-h-[128px]">
                                 <div className="rounded-full bg-muted/50 p-2 mb-2">
                                   <ImageIcon className="h-5 w-5 text-muted-foreground/50" />
                                 </div>
                                 <p className="text-xs font-medium text-muted-foreground">No results yet</p>
                                 <p className="text-[10px] text-muted-foreground/70 mt-0.5">Generate to see results</p>
+                                {/* Add button - appears on hover */}
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleGenerateImages(row.id)
+                                  }}
+                                  disabled={isGeneratingImages || generatingImageRowId === row.id}
+                                  className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10"
+                                  title="Generate variant results"
+                                >
+                                  <div className="rounded-full bg-primary/90 hover:bg-primary p-3 shadow-lg backdrop-blur-sm">
+                                    <Plus className="w-5 h-5 text-white" />
+                                  </div>
+                                </button>
                               </div>
                             )
                           }
 
                           // Ensure we have the images array - defensive check
                           const imagesToDisplay = Array.isArray(generatedImages) 
-                            ? generatedImages.slice(0, isExpanded ? 10 : 4)
+                            ? generatedImages
                             : []
 
                           // Debug: Log what we're about to render
@@ -2500,7 +3498,6 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
                               generatedImagesCount: generatedImages.length,
                               generatedImagesIsArray: Array.isArray(generatedImages),
                               isExpanded,
-                              sliceLimit: isExpanded ? 10 : 4,
                               imagesToRender: imagesToDisplay.length,
                               imageIds: imagesToDisplay.map(img => img.id),
                               allGeneratedImageIds: generatedImages.map(img => img.id)
@@ -2508,7 +3505,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
                           }
 
                           return (
-                            <div className="flex flex-nowrap gap-1.5 overflow-x-auto">
+                            <div className="relative group/results flex flex-nowrap gap-1.5 overflow-x-auto">
                               {imagesToDisplay.map((img: any, index: number) => {
                                 const isFavorited = favoritesState[img.id] ?? (img.is_favorited === true)
                                 const displayUrl = thumbnailUrls[img.id] || loaderThumbnailUrls[img.id] || ''
@@ -2574,14 +3571,99 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
                                         <Star className="w-3.5 h-3.5 text-white drop-shadow-sm hover:text-yellow-300 transition-colors" />
                                       )}
                                     </button>
+                                    
+                                    {/* Add to New Variant Row button - appears on hover in top-right */}
+                                    <button
+                                      onClick={async (e) => {
+                                        e.stopPropagation()
+                                        try {
+                                          const { data: { session } } = await supabase.auth.getSession()
+                                          if (!session?.access_token) {
+                                            throw new Error('No valid authentication session')
+                                          }
+
+                                          const response = await fetch('/api/variants/rows/batch-add', {
+                                            method: 'POST',
+                                            headers: { 
+                                              'Content-Type': 'application/json',
+                                              'Authorization': `Bearer ${session.access_token}`
+                                            },
+                                            body: JSON.stringify({
+                                              images: [{
+                                                outputPath: img.output_path,
+                                                thumbnailPath: img.thumbnail_path || null,
+                                                sourceRowId: row.id
+                                              }],
+                                              model_id: modelId || undefined
+                                            })
+                                          })
+
+                                          if (!response.ok) {
+                                            const errorData = await response.json().catch(() => ({}))
+                                            throw new Error(errorData.error || 'Failed to create variant row')
+                                          }
+
+                                          const result = await response.json()
+                                          
+                                          // Validate response data
+                                          if (!result || typeof result.rowsCreated !== 'number' || typeof result.imagesAdded !== 'number') {
+                                            throw new Error('Invalid response from server')
+                                          }
+
+                                          // Only show success toast if rows/images were actually created
+                                          if (result.rowsCreated > 0 && result.imagesAdded > 0) {
+                                            toast({
+                                              title: 'New variant row created',
+                                              description: `Created variant row with ${result.imagesAdded} image${result.imagesAdded === 1 ? '' : 's'}`
+                                            })
+                                              
+                                            // Dispatch custom event to trigger variants tab refresh
+                                            // Realtime subscription will also catch this, but event ensures immediate update
+                                            window.dispatchEvent(new CustomEvent('variants:rows-added', {
+                                              detail: {
+                                                modelId: modelId,
+                                                rowsCreated: result.rowsCreated,
+                                                rows: result.rows || []
+                                              }
+                                            }))
+                                          } else {
+                                            toast({
+                                              title: 'No row created',
+                                              description: 'Variant row was not created. Please try again.',
+                                              variant: 'destructive'
+                                            })
+                                          }
+                                        } catch (error) {
+                                          console.error('Create variant row from result error:', error)
+                                          toast({
+                                            title: 'Failed to create variant row',
+                                            description: error instanceof Error ? error.message : 'Unknown error',
+                                            variant: 'destructive'
+                                          })
+                                        }
+                                      }}
+                                      className="absolute top-1 right-1 p-1 rounded-full transition-all duration-200 z-20 bg-black/50 hover:bg-black/70 backdrop-blur-sm opacity-0 group-hover:opacity-100 shadow-lg"
+                                      title="Create new variant row with this image"
+                                    >
+                                      <Plus className="w-3.5 h-3.5 text-white" />
+                                    </button>
                                   </div>
                                 )
                               })}
-                              {generatedImages.length > (isExpanded ? 10 : 4) && (
-                                <div className="flex items-center justify-center w-32 h-32 rounded bg-muted/50 border border-border/50 text-[10px] text-muted-foreground">
-                                  +{generatedImages.length - (isExpanded ? 10 : 4)}
+                              {/* Add button - appears on hover to generate more results */}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleGenerateImages(row.id)
+                                }}
+                                disabled={isGeneratingImages || generatingImageRowId === row.id}
+                                className="flex-shrink-0 w-32 h-32 rounded-lg border-2 border-dashed border-border/50 hover:border-primary/50 bg-muted/30 hover:bg-muted/50 transition-all duration-200 opacity-0 group-hover/results:opacity-100 flex items-center justify-center group/add"
+                                title="Generate more variant results"
+                              >
+                                <div className="rounded-full bg-primary/90 hover:bg-primary p-2.5 shadow-lg backdrop-blur-sm transition-transform group-hover/add:scale-110">
+                                  <Plus className="w-4 h-4 text-white" />
                                 </div>
-                              )}
+                              </button>
                             </div>
                           )
                         })()}

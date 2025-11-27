@@ -88,12 +88,20 @@ export async function POST(req: NextRequest) {
     if (useAiPrompt) {
       try {
         // Sign URLs for the images (600s expiry for external API call)
-        const [refUrls, targetUrl] = await Promise.all([
+        const [refUrlsRaw, targetUrl] = await Promise.all([
           refImages && refImages.length > 0 
             ? Promise.all(refImages.map((path: string) => signPath(path, 600)))
             : Promise.resolve([]),
           signPath(row.target_image_url, 600)
         ])
+        
+        // Filter out null values (missing files)
+        const refUrls = (Array.isArray(refUrlsRaw) ? refUrlsRaw : []).filter((url): url is string => url !== null)
+        
+        // Validate target URL exists
+        if (!targetUrl) {
+          throw new Error('Target image not found or cannot be accessed')
+        }
         
         console.log('[JobCreate] Reference images logic:', {
           rowRefImageUrls: row.ref_image_urls,
@@ -136,22 +144,26 @@ export async function POST(req: NextRequest) {
       try {
         // Short-lived signed URL for probing dimensions
         const signedTargetUrl = await signPath(row.target_image_url, 120)
-        const dims = await getRemoteImageDimensions(signedTargetUrl)
-        const computed = computeMaxQualityDimensionsForRatio(
-          model.output_width || 4096,
-          model.output_height || 4096,
-          dims.width,
-          dims.height
-        )
-        outputWidth = computed.width
-        outputHeight = computed.height
-        console.log('[JobCreate] Using target ratio override', {
-          rowId,
-          matchTargetRatio: true,
-          targetDims: dims,
-          computedWidth: outputWidth,
-          computedHeight: outputHeight
-        })
+        if (!signedTargetUrl) {
+          console.warn('[JobCreate] Target image not found, skipping dimension matching:', row.target_image_url)
+        } else {
+          const dims = await getRemoteImageDimensions(signedTargetUrl)
+          const computed = computeMaxQualityDimensionsForRatio(
+            model.output_width || 4096,
+            model.output_height || 4096,
+            dims.width,
+            dims.height
+          )
+          outputWidth = computed.width
+          outputHeight = computed.height
+          console.log('[JobCreate] Using target ratio override', {
+            rowId,
+            matchTargetRatio: true,
+            targetDims: dims,
+            computedWidth: outputWidth,
+            computedHeight: outputHeight
+          })
+        }
       } catch (e: any) {
         console.warn('[JobCreate] Failed to probe target dimensions; falling back to model dimensions', {
           rowId,

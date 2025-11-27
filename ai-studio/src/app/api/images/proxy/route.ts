@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { signPath } from '@/lib/storage'
+import { signPath, checkFileExists, extractUserIdFromStoragePath, verifyStorageOwnership } from '@/lib/storage'
+import { createServer } from '@/lib/supabase-server'
+import { isAdminUser } from '@/lib/admin'
 
 // In-memory cache for signed URLs (works within the same serverless function instance)
 // Key: storage path, Value: { signedUrl: string, expires: number }
@@ -28,9 +30,14 @@ export const dynamic = 'force-dynamic' // This route uses req.url and must be dy
 export const revalidate = 12600 // 3.5 hours - cache revalidation time
 
 export async function GET(req: NextRequest) {
+  let encodedPath: string | null = null
   try {
+    // Try to authenticate user (may not have cookies for Next.js Image Optimization requests)
+    const supabase = await createServer()
+    const { data: { user } } = await supabase.auth.getUser()
+    
     const { searchParams } = new URL(req.url)
-    const encodedPath = searchParams.get('path')
+    encodedPath = searchParams.get('path')
     
     if (!encodedPath) {
       return NextResponse.json({ error: 'Path parameter is required' }, { status: 400 })
@@ -103,7 +110,62 @@ export async function GET(req: NextRequest) {
 
     // Final validation for object path shape
     if (!/^(outputs|refs|targets|thumbnails)\/.+$/i.test(path)) {
+      console.warn('[Image Proxy] Invalid path format rejected:', { path, encodedPath })
       return NextResponse.json({ error: 'Invalid path format' }, { status: 400 })
+    }
+    
+    // Extract user_id from path to verify ownership
+    const pathUserId = extractUserIdFromStoragePath(path)
+    
+    // Verify access based on authentication and path structure
+    let hasAccess = false
+    let effectiveUserId: string | null = null
+    
+    if (user) {
+      // User is authenticated - verify ownership normally
+      const isAdmin = await isAdminUser()
+      hasAccess = await verifyStorageOwnership(path, user.id, supabase, isAdmin)
+      effectiveUserId = user.id
+    } else if (pathUserId) {
+      // No authenticated user, but path contains user_id
+      // For Next.js Image Optimization requests without cookies, we can verify
+      // ownership from the path structure itself (path proves it's in user's directory)
+      // This is secure because:
+      // 1. Paths are generated server-side with user_id
+      // 2. Users can't guess other users' file paths
+      // 3. Storage RLS policies still protect direct access
+      hasAccess = true
+      effectiveUserId = pathUserId
+    } else {
+      // No authenticated user AND path doesn't have user_id
+      // Require authentication for paths without user_id (legacy format)
+      console.warn('[Image Proxy] Unauthenticated request for path without user_id:', { path, encodedPath })
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      )
+    }
+    
+    if (!hasAccess) {
+      console.warn('[Image Proxy] Access denied - user does not own file:', { path, userId: user?.id, pathUserId, encodedPath })
+      return NextResponse.json(
+        { error: 'Access denied' },
+        { status: 403 }
+      )
+    }
+    
+    // Check if file exists before attempting to sign
+    // Use user context if available, otherwise use path-based verification
+    const fileExists = effectiveUserId 
+      ? await checkFileExists(path, effectiveUserId, user ? supabase : undefined)
+      : await checkFileExists(path)
+    
+    if (!fileExists) {
+      console.warn('[Image Proxy] File does not exist:', { path, encodedPath })
+      return NextResponse.json(
+        { error: 'The requested resource is not a valid image' },
+        { status: 404 }
+      )
     }
     
     // Cleanup expired cache periodically (every 10th request)
@@ -114,7 +176,7 @@ export async function GET(req: NextRequest) {
     // Check cache for signed URL first (use the normalized key)
     const cacheKey = path
     const cached = signedUrlCache.get(cacheKey)
-    let signedUrl: string
+    let signedUrl: string | null
     
     if (cached && cached.expires > Date.now()) {
       // Use cached signed URL
@@ -122,7 +184,19 @@ export async function GET(req: NextRequest) {
     } else {
       // Always sign the object path (even if user sent a full URL)
       // Ensures consistent expiry and host, avoids relying on client tokens
-      signedUrl = await signPath(path, 14400)
+      // Use user context if available, otherwise sign without user context (path already verified)
+      signedUrl = effectiveUserId && user
+        ? await signPath(path, 14400, effectiveUserId, supabase)
+        : await signPath(path, 14400)
+      
+      // If signPath returns null, file doesn't exist (shouldn't happen after checkFileExists, but handle gracefully)
+      if (!signedUrl) {
+        console.warn('[Image Proxy] Failed to sign URL for existing file:', { path, encodedPath })
+        return NextResponse.json(
+          { error: 'The requested resource is not a valid image' },
+          { status: 404 }
+        )
+      }
       
       // Cache the signed URL
       signedUrlCache.set(cacheKey, {
@@ -142,9 +216,17 @@ export async function GET(req: NextRequest) {
       if (!imageResponse.ok) {
         // Clear cache on error so we can retry on next request
         signedUrlCache.delete(cacheKey)
+        
+        // Return 404 for not found, preserve other status codes
+        const status = imageResponse.status === 404 ? 404 : imageResponse.status
+        const errorMessage = status === 404 
+          ? 'The requested resource is not a valid image'
+          : 'Failed to fetch image from storage'
+        
+        console.warn('[Image Proxy] Failed to fetch image:', { path, status, encodedPath })
         return NextResponse.json(
-          { error: 'Failed to fetch image from storage' },
-          { status: imageResponse.status }
+          { error: errorMessage },
+          { status }
         )
       }
       
@@ -179,7 +261,7 @@ export async function GET(req: NextRequest) {
     } catch (error) {
       // Clear cache on error so we can retry on next request
       signedUrlCache.delete(cacheKey)
-      console.error('Image proxy fetch error:', error)
+      console.error('[Image Proxy] Fetch error:', { path, encodedPath, error: error instanceof Error ? error.message : error })
       
       return NextResponse.json(
         { error: 'Failed to fetch image' },
@@ -187,7 +269,11 @@ export async function GET(req: NextRequest) {
       )
     }
   } catch (error) {
-    console.error('Image proxy error:', error)
+    console.error('[Image Proxy] Route error:', { 
+      encodedPath, 
+      error: error instanceof Error ? error.message : error,
+      stack: error instanceof Error ? error.stack : undefined
+    })
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

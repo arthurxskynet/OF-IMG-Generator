@@ -50,8 +50,13 @@ const Page = async () => {
       if (model.default_ref_headshot_url) {
         try {
           signedHeadshotUrl = await signPath(model.default_ref_headshot_url, 3600);
+          // signPath now returns null for missing files instead of throwing
+          if (!signedHeadshotUrl) {
+            console.warn(`[Models] Headshot URL not found for model ${model.id}:`, model.default_ref_headshot_url);
+          }
         } catch (error) {
-          console.error("Failed to sign headshot URL:", error);
+          // Only log as warning for missing files (expected for old data)
+          console.warn(`[Models] Failed to sign headshot URL for model ${model.id}:`, error instanceof Error ? error.message : error);
         }
       }
 

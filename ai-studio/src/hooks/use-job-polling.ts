@@ -13,6 +13,8 @@ interface JobPollingState {
     rowId?: string
     queuePosition?: number
     step?: 'queued' | 'submitted' | 'running' | 'saving' | 'done' | 'failed'
+    failedAttempts?: number
+    createdAt?: number
   }
 }
 
@@ -27,15 +29,20 @@ export function useJobPolling(onJobComplete?: (jobId: string, status: JobStatus 
   const [pollingState, setPollingState] = useState<JobPollingState>({})
 
   const startPolling = useCallback((jobId: string, initialStatus: JobStatus | string = 'queued', rowId?: string) => {
-    setPollingState(prev => ({
-      ...prev,
-      [jobId]: {
-        status: initialStatus,
-        polling: true,
-        lastUpdate: Date.now(),
-        rowId
+    setPollingState(prev => {
+      const existing = prev[jobId]
+      return {
+        ...prev,
+        [jobId]: {
+          status: initialStatus,
+          polling: true,
+          lastUpdate: Date.now(),
+          rowId,
+          failedAttempts: existing?.failedAttempts || 0,
+          createdAt: existing?.createdAt || Date.now()
+        }
       }
-    }))
+    })
   }, [])
 
   const stopPolling = useCallback((jobId: string) => {
@@ -71,6 +78,19 @@ export function useJobPolling(onJobComplete?: (jobId: string, status: JobStatus 
       const now = Date.now()
 
       for (const [jobId, state] of activeJobs) {
+        // Stop polling jobs that have been failed for > 5 minutes (old backlog)
+        if (state.status === 'failed') {
+          const timeSinceCreated = now - (state.createdAt || now)
+          if (timeSinceCreated > 5 * 60 * 1000) {
+            // Stop polling old failed jobs
+            updates[jobId] = {
+              ...state,
+              polling: false
+            }
+            continue
+          }
+        }
+        
         // Adaptive polling: slower for newly queued jobs, faster for running jobs
         const timeSinceLastUpdate = now - state.lastUpdate
         const shouldPoll = 
@@ -87,14 +107,24 @@ export function useJobPolling(onJobComplete?: (jobId: string, status: JobStatus 
         try {
           const result = await pollJob(jobId)
           
+          // Reset failed attempts on successful poll
+          const failedAttempts = result.status === 'failed' 
+            ? (state.failedAttempts || 0) + 1 
+            : 0
+          
+          // Stop polling if job has failed multiple times (likely a permanent failure)
+          const shouldContinuePolling = ['queued', 'running', 'submitted', 'saving'].includes(result.status as JobStatus) &&
+            failedAttempts < 3 // Stop after 3 failed attempts
+          
           updates[jobId] = {
             ...state,
             status: result.status,
             lastUpdate: now,
-            polling: ['queued', 'running', 'submitted', 'saving'].includes(result.status as JobStatus),
+            polling: shouldContinuePolling,
             error: result.error,
             queuePosition: result.queuePosition,
-            step: result.step
+            step: result.step,
+            failedAttempts
           }
 
           // Call completion callback if job finished
@@ -103,10 +133,22 @@ export function useJobPolling(onJobComplete?: (jobId: string, status: JobStatus 
           }
         } catch (error) {
           console.error('Failed to poll job:', jobId, error)
+          const failedAttempts = (state.failedAttempts || 0) + 1
+          
+          // Stop polling after too many consecutive failures
+          const shouldContinuePolling = failedAttempts < 5
+          
           updates[jobId] = {
             ...state,
             error: error instanceof Error ? error.message : 'Polling failed',
-            lastUpdate: now
+            lastUpdate: now,
+            failedAttempts,
+            polling: shouldContinuePolling
+          }
+          
+          // If we've given up polling, mark as failed
+          if (!shouldContinuePolling && onJobComplete) {
+            onJobComplete(jobId, 'failed')
           }
         }
       }

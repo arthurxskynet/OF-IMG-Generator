@@ -12,9 +12,10 @@ export async function GET(req: NextRequest) {
 
   try {
     // Return active jobs where variant_row_id is not null
+    // Filter out failed jobs that have no provider_request_id (old backlogged failures)
     const { data: jobs, error } = await supabase
       .from('jobs')
-      .select('id, variant_row_id, status, created_at')
+      .select('id, variant_row_id, status, created_at, provider_request_id')
       .eq('user_id', user.id)
       .not('variant_row_id', 'is', null)
       .in('status', ['queued','submitted','running','saving'])
@@ -25,7 +26,18 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Query error' }, { status: 500 })
     }
 
-    return NextResponse.json({ jobs: (jobs ?? []).map(j => ({
+    // Filter out failed jobs without provider_request_id (old backlog)
+    // These are jobs that failed before being submitted to the provider
+    const activeJobs = (jobs ?? []).filter(j => {
+      // Only include jobs that are actually active (not failed)
+      if (j.status === 'failed' && !j.provider_request_id) {
+        // This is an old backlogged failure, exclude it
+        return false
+      }
+      return true
+    })
+
+    return NextResponse.json({ jobs: activeJobs.map(j => ({
       job_id: j.id,
       variant_row_id: j.variant_row_id,
       status: j.status,

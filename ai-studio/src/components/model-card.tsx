@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -31,7 +31,20 @@ interface ModelCardProps {
 export function ModelCard({ model, showStats = false, onDelete }: ModelCardProps) {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [imageError, setImageError] = useState(false);
+  const [formattedDate, setFormattedDate] = useState<string>("");
   const { toast } = useToast();
+
+  // Format date client-only to avoid hydration mismatch
+  useEffect(() => {
+    const formatted = new Date(model.created_at).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      timeZone: 'UTC',
+    });
+    setFormattedDate(formatted);
+  }, [model.created_at]);
 
   const handleDelete = async () => {
     if (!onDelete) return;
@@ -81,8 +94,13 @@ export function ModelCard({ model, showStats = false, onDelete }: ModelCardProps
           <CardContent className="p-5">
             <div className="flex items-start space-x-4">
               <Avatar className="h-14 w-14 flex-shrink-0 ring-2 ring-border/50 group-hover:ring-primary/30 transition-all duration-300">
-                {model.signedHeadshotUrl ? (
-                  <AvatarImage src={model.signedHeadshotUrl} alt={model.name ?? 'Model'} className="object-cover" />
+                {model.signedHeadshotUrl && !imageError ? (
+                  <AvatarImage 
+                    src={model.signedHeadshotUrl} 
+                    alt={model.name ?? 'Model'} 
+                    className="object-cover"
+                    onError={() => setImageError(true)}
+                  />
                 ) : (
                   <AvatarFallback className="bg-gradient-to-br from-primary/20 to-primary/10 text-primary font-semibold">
                     {(model.name ?? 'UM').slice(0, 2).toUpperCase()}
@@ -135,12 +153,7 @@ export function ModelCard({ model, showStats = false, onDelete }: ModelCardProps
                     </span>
                   )}
                   <span className="text-xs text-muted-foreground/70 font-medium">
-                    {new Date(model.created_at).toLocaleDateString('en-US', {
-                      year: 'numeric',
-                      month: 'short',
-                      day: 'numeric',
-                      timeZone: 'UTC',
-                    })}
+                    {formattedDate || ""}
                   </span>
                 </div>
               </div>

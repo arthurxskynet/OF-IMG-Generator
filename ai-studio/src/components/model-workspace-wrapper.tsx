@@ -7,8 +7,9 @@ interface ModelWorkspaceWrapperProps {
   model: Model
   rows: ModelRow[]
   sort?: string
+  rowId?: string
 }
 
-export function ModelWorkspaceWrapper({ model, rows, sort }: ModelWorkspaceWrapperProps) {
-  return <ModelWorkspace model={model} rows={rows} sort={sort} />
+export function ModelWorkspaceWrapper({ model, rows, sort, rowId }: ModelWorkspaceWrapperProps) {
+  return <ModelWorkspace model={model} rows={rows} sort={sort} rowId={rowId} />
 }

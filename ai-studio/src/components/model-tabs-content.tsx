@@ -12,17 +12,11 @@ interface ModelTabsContentProps {
   rows: any[]
   sort?: string
   variantRows: VariantRow[]
-}
-
-interface ModelTabsContentProps {
-  model: Model
-  rows: any[]
-  sort?: string
-  variantRows: VariantRow[]
   defaultTab?: string
+  rowId?: string
 }
 
-export function ModelTabsContent({ model, rows, sort, variantRows: initialVariantRows, defaultTab = 'rows' }: ModelTabsContentProps) {
+export function ModelTabsContent({ model, rows, sort, variantRows: initialVariantRows, defaultTab = 'rows', rowId }: ModelTabsContentProps) {
   // Track variant count dynamically so it updates when new variants are added
   const [variantCount, setVariantCount] = useState(initialVariantRows.length)
 
@@ -34,7 +28,7 @@ export function ModelTabsContent({ model, rows, sort, variantRows: initialVarian
   return (
     <Tabs defaultValue={defaultTab} className="w-full">
       <TabsList className="grid w-full max-w-md grid-cols-2 mb-6">
-        <TabsTrigger value="rows">Rows</TabsTrigger>
+        <TabsTrigger value="rows">Face Swap</TabsTrigger>
         <TabsTrigger value="variants">
           Variants
           {variantCount > 0 && (
@@ -45,7 +39,7 @@ export function ModelTabsContent({ model, rows, sort, variantRows: initialVarian
         </TabsTrigger>
       </TabsList>
       <TabsContent value="rows" className="mt-0">
-        <ModelWorkspaceWrapper model={model} rows={rows} sort={sort} />
+        <ModelWorkspaceWrapper model={model} rows={rows} sort={sort} rowId={rowId} />
       </TabsContent>
       <TabsContent value="variants" className="mt-0">
         <ModelVariantsTabContent 

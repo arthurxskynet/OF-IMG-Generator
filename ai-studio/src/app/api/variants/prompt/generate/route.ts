@@ -23,9 +23,16 @@ export async function POST(req: NextRequest) {
     }
 
     // Sign URLs for the images (600s expiry for external API call)
-    const signedUrls = await Promise.all(
+    const signed = await Promise.all(
       imagePaths.map((path: string) => signPath(path, 600))
     )
+    const signedUrls = signed.filter((url): url is string => url !== null)
+    
+    if (signedUrls.length === 0) {
+      return NextResponse.json({ 
+        error: 'Failed to sign image URLs' 
+      }, { status: 400 })
+    }
 
     console.log('[VariantPrompt] Generating with Grok', {
       imagesCount: signedUrls.length,

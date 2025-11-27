@@ -32,6 +32,7 @@ interface ModelWorkspaceProps {
   model: Model
   rows: ModelRow[]
   sort?: string
+  rowId?: string
 }
 
 interface RowState {
@@ -59,13 +60,14 @@ const urlCache = new Map<string, { url: string; expires: number }>()
 // Internal drag MIME for generated images dragged within the app
 const INTERNAL_IMAGE_MIME = 'application/x-ai-studio-image'
 
-export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspaceProps) {
+export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelWorkspaceProps) {
   const { toast } = useToast()
   const router = useRouter()
   const supabase = createClient()
   const [enhanceOpenRowId, setEnhanceOpenRowId] = useState<string | null>(null)
   const [rows, setRows] = useState(initialRows)
   const [currentModel, setCurrentModel] = useState(model)
+  const rowRefs = useRef<Record<string, HTMLDivElement>>({})
   
   // Memoized sorted rows to prevent unnecessary re-sorting
   const sortedRows = useMemo(() => {
@@ -162,6 +164,19 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
     })
     setFavoritesState(initialFavorites)
   }, [rows])
+
+  // Scroll to specific row when rowId is provided
+  useEffect(() => {
+    if (rowId && rowRefs.current[rowId]) {
+      // Small delay to ensure DOM is ready
+      setTimeout(() => {
+        rowRefs.current[rowId]?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'center',
+        })
+      }, 100)
+    }
+  }, [rowId, sortedRows])
 
   // Initialize local prompts from row data (preserve dirty prompts)
   useEffect(() => {
@@ -510,20 +525,34 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         // Collect reference image URLs
         if (row.ref_image_urls && row.ref_image_urls.length > 0) {
           row.ref_image_urls.forEach(refUrl => {
-            if (refUrl && !rowState.signedUrls?.[refUrl] && !loadedRefTargetUrlsRef.current.has(refUrl)) {
+            // Validate path format before adding to load queue
+            if (refUrl && 
+                refUrl.trim() !== '' && 
+                /^(outputs|refs|targets|thumbnails)\/.+$/i.test(refUrl) &&
+                !rowState.signedUrls?.[refUrl] && 
+                !loadedRefTargetUrlsRef.current.has(refUrl)) {
               urlsToLoad.push({ path: refUrl, rowId })
             }
           })
         } else if ((row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url) {
           // Use model default ref if row doesn't have specific refs
           const defaultRef = model.default_ref_headshot_url
-          if (defaultRef && !rowState.signedUrls?.[defaultRef] && !loadedRefTargetUrlsRef.current.has(defaultRef)) {
+          // Validate path format before adding to load queue
+          if (defaultRef && 
+              defaultRef.trim() !== '' && 
+              /^(outputs|refs|targets|thumbnails)\/.+$/i.test(defaultRef) &&
+              !rowState.signedUrls?.[defaultRef] && 
+              !loadedRefTargetUrlsRef.current.has(defaultRef)) {
             urlsToLoad.push({ path: defaultRef, rowId })
           }
         }
         
         // Collect target image URL
-        if (row.target_image_url && !rowState.signedUrls?.[row.target_image_url] && !loadedRefTargetUrlsRef.current.has(row.target_image_url)) {
+        if (row.target_image_url && 
+            row.target_image_url.trim() !== '' && 
+            /^(outputs|refs|targets|thumbnails)\/.+$/i.test(row.target_image_url) &&
+            !rowState.signedUrls?.[row.target_image_url] && 
+            !loadedRefTargetUrlsRef.current.has(row.target_image_url)) {
           urlsToLoad.push({ path: row.target_image_url, rowId })
         }
       })
@@ -541,6 +570,12 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
         
         const batchPromises = batch.map(async ({ path, rowId }) => {
           try {
+            // Validate path before attempting to load
+            if (!path || path.trim() === '' || !/^(outputs|refs|targets|thumbnails)\/.+$/i.test(path)) {
+              console.warn('[ModelWorkspace] Invalid path format, skipping:', { path, rowId })
+              return { path, rowId, url: '' }
+            }
+            
             // Mark as loading to prevent duplicates
             loadedRefTargetUrlsRef.current.add(path)
             
@@ -549,7 +584,8 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
             
             return { path, rowId, url }
           } catch (error) {
-            console.error(`Failed to load URL for ${path}:`, error)
+            // Log as warning for missing files (expected for old data)
+            console.warn(`[ModelWorkspace] Failed to load URL for ${path}:`, error instanceof Error ? error.message : error)
             // Remove from loaded set on failure so it can be retried
             loadedRefTargetUrlsRef.current.delete(path)
             return { path, rowId, url: '' }
@@ -2712,7 +2748,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
 
       {/* Add Row Button */}
       <div className="flex justify-between items-center">
-        <h2 className="text-lg font-medium">Generation Rows</h2>
+        <h2 className="text-lg font-medium">Face Swap</h2>
         <Button onClick={handleAddRow} size="sm" data-tour="workspace-add-row">
           <Plus className="h-4 w-4 mr-2" />
           Add Row
@@ -2909,7 +2945,15 @@ export function ModelWorkspace({ model, rows: initialRows, sort }: ModelWorkspac
                   
                   
                   return (
-                    <TableRow key={row.id} aria-busy={isActiveStatus(displayStatus)}>
+                    <TableRow 
+                      key={row.id} 
+                      aria-busy={isActiveStatus(displayStatus)}
+                      ref={(el) => {
+                        if (el) {
+                          rowRefs.current[row.id] = el as any
+                        }
+                      }}
+                    >
                       {/* 1. Reference Image */}
                       <TableCell className="align-top">
                         <div className="space-y-2">

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServer } from '@/lib/supabase-server'
 import { supabaseAdmin } from '@/lib/supabase-admin'
-import { signPath } from '@/lib/storage'
+import { signPath, verifyStorageOwnership } from '@/lib/storage'
+import { isAdminUser } from '@/lib/admin'
 
 export const runtime = 'nodejs'
 
@@ -30,8 +31,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid sourcePath' }, { status: 400 })
     }
 
+    // Verify user owns the source file (or is admin)
+    const isAdmin = await isAdminUser()
+    const hasAccess = await verifyStorageOwnership(sourcePath, user.id, supabase, isAdmin)
+    
+    if (!hasAccess) {
+      console.warn(`[clone] Access denied - user does not own source file:`, { sourcePath, userId: user.id })
+      return NextResponse.json({ error: 'Access denied to source file' }, { status: 403 })
+    }
+
     console.log(`[clone] Signing path: ${sourcePath}`)
-    const signed = await signPath(sourcePath, 300)
+    const signed = await signPath(sourcePath, 300, user.id, supabase)
+    
+    if (!signed) {
+      console.error(`[clone] Failed to sign source path: ${sourcePath}`)
+      return NextResponse.json({ error: 'Source file not found or cannot be accessed' }, { status: 404 })
+    }
     
     console.log(`[clone] Fetching from signed URL`)
     const res = await fetch(signed)

@@ -25,7 +25,8 @@ export async function POST(
         variant_row_images (
           output_path,
           thumbnail_path,
-          position
+          position,
+          is_generated
         )
       `)
       .eq('id', rowId)
@@ -99,17 +100,33 @@ export async function POST(
       }, { status: 400 })
     }
 
-    // Sort by position and get image paths
+    // Sort by position and filter to only reference images (is_generated !== true)
     const sortedImages = images.sort((a: any, b: any) => a.position - b.position)
-    const imagePaths = sortedImages.map((img: any) => img.output_path)
+    const referenceImages = sortedImages.filter((img: any) => img.is_generated !== true)
+    
+    if (referenceImages.length === 0) {
+      return NextResponse.json({ 
+        error: 'No reference images found in this variant row. Add reference images first.' 
+      }, { status: 400 })
+    }
+    
+    const imagePaths = referenceImages.map((img: any) => img.output_path)
 
     // Sign URLs for the images
-    const signedUrls = await Promise.all(
+    const signed = await Promise.all(
       imagePaths.map((path: string) => signPath(path, 600))
     )
+    const signedUrls = signed.filter((url): url is string => url !== null)
+    
+    if (signedUrls.length === 0) {
+      return NextResponse.json({ 
+        error: 'Failed to sign image URLs' 
+      }, { status: 400 })
+    }
 
     console.log('[VariantRowPrompt] Generating with Grok', {
       rowId,
+      referenceImagesCount: referenceImages.length,
       imagesCount: signedUrls.length,
       useRichPrompts: process.env.PROMPT_VARIANTS_RICH !== 'false'
     })

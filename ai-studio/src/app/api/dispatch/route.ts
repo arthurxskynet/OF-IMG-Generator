@@ -184,12 +184,21 @@ export async function POST(req: NextRequest) {
 
         // Sign URLs for the images (120s expiry for external API call)
         const signStart = Date.now()
-        const [refUrls, targetUrl] = await Promise.all([
+        const [refUrlsRaw, targetUrl] = await Promise.all([
           payload.refPaths && payload.refPaths.length > 0 
             ? Promise.all(payload.refPaths.map(path => signPath(path, 600)))
             : Promise.resolve([]),
           signPath(payload.targetPath, 600)
         ])
+        
+        // Filter out null values (missing files)
+        const refUrls = (Array.isArray(refUrlsRaw) ? refUrlsRaw : []).filter((url): url is string => url !== null)
+        
+        // Validate target URL exists
+        if (!targetUrl) {
+          throw new Error('Target image not found or cannot be accessed')
+        }
+        
         console.log('[Dispatch] signed URLs', { 
           jobId: job.id, 
           refUrlsCount: refUrls.length,

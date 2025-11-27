@@ -25,12 +25,12 @@ export const revalidate = 0
 
 interface PageProps {
   params: Promise<{ modelId: string }>;
-  searchParams: Promise<{ sort?: string; tab?: string }>;
+  searchParams: Promise<{ sort?: string; tab?: string; rowId?: string }>;
 }
 
 const Page = async ({ params, searchParams }: PageProps) => {
   const { modelId } = await params;
-  const { sort, tab } = await searchParams;
+  const { sort, tab, rowId } = await searchParams;
   const supabase = await createServer();
   const { data: { user } } = await supabase.auth.getUser();
   
@@ -65,10 +65,28 @@ const Page = async ({ params, searchParams }: PageProps) => {
     .single();
 
   if (modelError || !model) {
-    if (process.env.NODE_ENV === 'development') {
-      console.error("Model fetch error:", modelError);
-      console.error("Model ID:", modelId);
-      console.error("User ID:", user.id);
+    // Check if error is due to model not found (deleted or doesn't exist)
+    const isNotFound = modelError?.code === 'PGRST116' || 
+                       modelError?.message?.includes('0 rows') ||
+                       modelError?.message?.includes('not found')
+    
+    if (isNotFound) {
+      // Model was deleted or doesn't exist - this is expected, log as warning
+      console.warn(`[ModelPage] Model not found (may have been deleted):`, { 
+        modelId, 
+        userId: user.id,
+        errorCode: modelError?.code,
+        errorMessage: modelError?.message 
+      })
+    } else if (process.env.NODE_ENV === 'development') {
+      // Other errors - log as error in development
+      console.error("[ModelPage] Model fetch error:", {
+        modelId,
+        userId: user.id,
+        error: modelError,
+        errorCode: modelError?.code,
+        errorMessage: modelError?.message
+      });
     }
     return notFound();
   }
@@ -227,6 +245,7 @@ const Page = async ({ params, searchParams }: PageProps) => {
             sort={sort}
             variantRows={variantRows}
             defaultTab={tab === 'variants' ? 'variants' : 'rows'}
+            rowId={rowId}
           />
         </Suspense>
       </div>

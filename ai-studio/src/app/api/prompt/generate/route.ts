@@ -67,12 +67,20 @@ export async function POST(req: NextRequest) {
     }
 
     // Sign URLs for the images (600s expiry for external API call)
-    const [refUrls, targetUrl] = await Promise.all([
+    const [refUrlsRaw, targetUrl] = await Promise.all([
       refImages && refImages.length > 0 
         ? Promise.all(refImages.map((path: string) => signPath(path, 600)))
         : Promise.resolve([]),
       signPath(row.target_image_url, 600)
     ])
+    
+    // Filter out null values (missing files)
+    const refUrls = (Array.isArray(refUrlsRaw) ? refUrlsRaw : []).filter((url): url is string => url !== null)
+    
+    // Validate target URL exists
+    if (!targetUrl) {
+      return NextResponse.json({ error: 'Target image not found or cannot be accessed' }, { status: 404 })
+    }
 
     console.log('[Prompt Generation] After URL signing:', {
       refUrls: refUrls,

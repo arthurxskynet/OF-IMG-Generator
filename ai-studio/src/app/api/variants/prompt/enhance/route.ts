@@ -26,9 +26,10 @@ export async function POST(req: NextRequest) {
     let signedUrls: string[] | undefined = undefined
     if (imagePaths && imagePaths.length > 0) {
       // Sign URLs for the images (600s expiry for external API call)
-      signedUrls = await Promise.all(
+      const signed = await Promise.all(
         imagePaths.map((path: string) => signPath(path, 600))
       )
+      signedUrls = signed.filter((url): url is string => url !== null)
     }
 
     console.log('[VariantPromptEnhance] Enhancing with Grok', {
