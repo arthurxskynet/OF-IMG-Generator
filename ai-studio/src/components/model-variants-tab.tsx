@@ -36,24 +36,30 @@ export function ModelVariantsTabContent({ modelId, initialRows, onRowsChange }: 
 
       const { row } = await response.json()
 
+      console.log('[ModelVariantsTab] Row created:', { rowId: row.id, modelId: row.model_id })
+
+      // Strategy: Add row immediately for instant UI, then fetch full data
+      // Ensure row has variant_row_images array (even if empty) for immediate display
+      const rowWithImages = {
+        ...row,
+        variant_row_images: row.variant_row_images || []
+      }
+
       // Add row to workspace state immediately for instant UI update
       if (addRowRef.current) {
-        addRowRef.current(row)
-      } else {
-        // Fallback: if callback not available, rely on realtime subscription
-        // Also add a delayed refresh as a safety net (in case realtime doesn't fire)
-        console.warn('[ModelVariantsTab] addRow callback not available, relying on realtime subscription')
-        setTimeout(() => {
-          // Trigger a refresh via custom event (workspace listens to this)
-          window.dispatchEvent(new CustomEvent('variants:rows-added', {
-            detail: {
-              modelId: modelId,
-              rowsCreated: 1,
-              rows: [row]
-            }
-          }))
-        }, 1000) // 1 second delay as fallback
+        console.log('[ModelVariantsTab] Adding row via callback:', { rowId: row.id })
+        addRowRef.current(rowWithImages)
       }
+
+      // Always trigger custom event to ensure workspace fetches full row data
+      // This ensures we get complete data including model relationship, etc.
+      window.dispatchEvent(new CustomEvent('variants:rows-added', {
+        detail: {
+          modelId: modelId,
+          rowsCreated: 1,
+          rows: [row]
+        }
+      }))
 
       toast({
         title: 'Variant row created',

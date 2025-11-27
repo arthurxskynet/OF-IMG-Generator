@@ -1619,19 +1619,48 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         rowIds: eventRows?.map((r: any) => r.id) || []
       })
       
-      // OPTIMIZED: Immediately fetch and add new rows for instant UI update
+      // OPTIMIZED: Immediately add rows for instant UI, then fetch full data
       if (eventRows && Array.isArray(eventRows) && eventRows.length > 0) {
+        // First, add rows optimistically with the data we have
+        const rowsToAdd = eventRows.map((r: any) => ({
+          ...r,
+          variant_row_images: r.variant_row_images || []
+        }))
+        
+        setRows(prev => {
+          const existingIds = new Set(prev.map(r => r.id))
+          const newRows = rowsToAdd.filter((r: any) => {
+            const id = r.id
+            if (!id) return false
+            if (existingIds.has(id)) return false
+            // Filter by modelId if provided
+            if (modelId && r.model_id !== modelId) return false
+            return true
+          })
+          
+          if (newRows.length === 0) return prev
+          
+          console.log('[Variants] Adding rows optimistically from event', {
+            newRowsCount: newRows.length,
+            rowIds: newRows.map((r: any) => r.id)
+          })
+          
+          return [...newRows, ...prev]
+        })
+        
+        // Then fetch full row data to ensure we have complete information
         const rowIds = eventRows.map((r: any) => r.id).filter((id: string) => id)
         if (rowIds.length > 0) {
-          // Fetch and add rows immediately (optimistic update)
+          // Fetch and update rows with full data (including images, model relationship, etc.)
           refreshRowsByIds(rowIds).catch((error) => {
             console.error('[Variants] Failed to fetch rows immediately, falling back to refresh', error)
+            scheduleRefresh()
           })
         }
+      } else {
+        // No row data in event, just refresh
+        scheduleRefresh()
       }
-      
-      // Still call debounced refresh as fallback for consistency
-      scheduleRefresh()
     }
     
     window.addEventListener('variants:rows-added', handleVariantsAdded as EventListener)
@@ -2563,6 +2592,8 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
 
   // Add a row directly to state (exposed to parent components)
   const addRowToState = useCallback((row: VariantRow) => {
+    console.log('[VariantsRowsWorkspace] addRowToState called:', { rowId: row.id, hasImages: !!row.variant_row_images })
+    
     // Normalize the row to ensure it has the expected structure
     const normalizedRow: VariantRow = {
       ...row,
@@ -2576,12 +2607,21 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     setRows(prev => {
       // Check if row already exists to avoid duplicates
       if (prev.some(r => r.id === normalizedRow.id)) {
+        console.log('[VariantsRowsWorkspace] Row already exists, skipping:', { rowId: normalizedRow.id })
         return prev
       }
       // Filter by modelId if provided
       if (modelId && normalizedRow.model_id !== modelId) {
+        console.log('[VariantsRowsWorkspace] Row modelId mismatch, skipping:', { 
+          rowModelId: normalizedRow.model_id, 
+          expectedModelId: modelId 
+        })
         return prev // Don't add if modelId doesn't match
       }
+      console.log('[VariantsRowsWorkspace] Adding row to state:', { 
+        rowId: normalizedRow.id, 
+        totalRows: prev.length + 1 
+      })
       return [normalizedRow, ...prev]
     })
   }, [modelId])
