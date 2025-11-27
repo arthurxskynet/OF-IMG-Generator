@@ -29,6 +29,7 @@ interface VariantsRowsWorkspaceProps {
   initialRows: VariantRow[]
   modelId?: string
   onRowsChange?: (rows: VariantRow[]) => void
+  onAddRow?: (addRow: (row: VariantRow) => void) => void
 }
 
 const INTERNAL_IMAGE_MIME = 'application/x-ai-studio-image'
@@ -121,7 +122,7 @@ const PRESET_ENHANCEMENTS = {
   ]
 }
 
-export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: VariantsRowsWorkspaceProps) {
+export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAddRow }: VariantsRowsWorkspaceProps) {
   const { toast } = useToast()
   const router = useRouter()
   const [rows, setRows] = useState(initialRows)
@@ -381,16 +382,27 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       const hasGeneratedImages = generatedImages.length > 0
       
       // Update the specific row in state using functional setState to ensure proper merge
+      // If row doesn't exist, add it (for new rows created elsewhere)
       setRows(prev => {
-        const updated = prev.map(r => {
-          if (r.id === rowId) {
-            // Merge: preserve any local state but update with fresh data
-            return normalizedRow
+        const existingIndex = prev.findIndex(r => r.id === rowId)
+        if (existingIndex >= 0) {
+          // Row exists, update it
+          const updated = prev.map(r => {
+            if (r.id === rowId) {
+              // Merge: preserve any local state but update with fresh data
+              return normalizedRow
+            }
+            return r
+          })
+          return updated
+        } else {
+          // Row doesn't exist, add it at the beginning (newest first)
+          // Filter by modelId if provided to ensure we only add relevant rows
+          if (modelId && normalizedRow.model_id !== modelId) {
+            return prev // Don't add if modelId doesn't match
           }
-          return r
-        })
-        // onRowsChange will be called via useEffect when rows state updates
-        return updated
+          return [normalizedRow, ...prev]
+        }
       })
       
       return hasGeneratedImages
@@ -2549,6 +2561,38 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
     }
   }
 
+  // Add a row directly to state (exposed to parent components)
+  const addRowToState = useCallback((row: VariantRow) => {
+    // Normalize the row to ensure it has the expected structure
+    const normalizedRow: VariantRow = {
+      ...row,
+      variant_row_images: (row.variant_row_images || []).map((img: any) => ({
+        ...img,
+        // Explicitly set is_generated to boolean (true for generated, false for reference)
+        is_generated: img.is_generated === true
+      }))
+    }
+    
+    setRows(prev => {
+      // Check if row already exists to avoid duplicates
+      if (prev.some(r => r.id === normalizedRow.id)) {
+        return prev
+      }
+      // Filter by modelId if provided
+      if (modelId && normalizedRow.model_id !== modelId) {
+        return prev // Don't add if modelId doesn't match
+      }
+      return [normalizedRow, ...prev]
+    })
+  }, [modelId])
+
+  // Expose addRowToState to parent component via callback
+  useEffect(() => {
+    if (onAddRow) {
+      onAddRow(addRowToState)
+    }
+  }, [onAddRow, addRowToState])
+
   // Add new variant row
   const handleAddRow = async () => {
     try {
@@ -2571,13 +2615,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange }: Va
       const { row } = await response.json()
       
       // Add row to state immediately for real-time UI update
-      setRows(prev => {
-        // Check if row already exists to avoid duplicates
-        if (prev.some(r => r.id === row.id)) {
-          return prev
-        }
-        return [row, ...prev]
-      })
+      addRowToState(row)
       
       toast({
         title: 'Row added',

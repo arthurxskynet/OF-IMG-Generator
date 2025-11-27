@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { VariantsRowsWorkspace } from '@/components/variants/variants-rows-workspace'
 import { VariantRow } from '@/types/variants'
 import { Button } from '@/components/ui/button'
@@ -16,6 +16,7 @@ interface ModelVariantsTabContentProps {
 export function ModelVariantsTabContent({ modelId, initialRows, onRowsChange }: ModelVariantsTabContentProps) {
   const [isCreating, setIsCreating] = useState(false)
   const { toast } = useToast()
+  const addRowRef = useRef<((row: VariantRow) => void) | null>(null)
 
   const handleCreateNewRow = async () => {
     setIsCreating(true)
@@ -35,12 +36,29 @@ export function ModelVariantsTabContent({ modelId, initialRows, onRowsChange }: 
 
       const { row } = await response.json()
 
+      // Add row to workspace state immediately for instant UI update
+      if (addRowRef.current) {
+        addRowRef.current(row)
+      } else {
+        // Fallback: if callback not available, rely on realtime subscription
+        // Also add a delayed refresh as a safety net (in case realtime doesn't fire)
+        console.warn('[ModelVariantsTab] addRow callback not available, relying on realtime subscription')
+        setTimeout(() => {
+          // Trigger a refresh via custom event (workspace listens to this)
+          window.dispatchEvent(new CustomEvent('variants:rows-added', {
+            detail: {
+              modelId: modelId,
+              rowsCreated: 1,
+              rows: [row]
+            }
+          }))
+        }, 1000) // 1 second delay as fallback
+      }
+
       toast({
         title: 'Variant row created',
         description: 'New variant row created successfully. Add reference images to get started.'
       })
-
-      // The new row will appear automatically via realtime sync in VariantsRowsWorkspace
     } catch (error) {
       console.error('Create variant row error:', error)
       toast({
@@ -51,6 +69,10 @@ export function ModelVariantsTabContent({ modelId, initialRows, onRowsChange }: 
     } finally {
       setIsCreating(false)
     }
+  }
+
+  const handleAddRowCallback = (addRow: (row: VariantRow) => void) => {
+    addRowRef.current = addRow
   }
   
   return (
@@ -75,6 +97,7 @@ export function ModelVariantsTabContent({ modelId, initialRows, onRowsChange }: 
         initialRows={initialRows} 
         modelId={modelId}
         onRowsChange={onRowsChange}
+        onAddRow={handleAddRowCallback}
       />
     </div>
   )
