@@ -404,14 +404,16 @@ ${hasRefs
   : `4. **Preserve intent**: If original is enhancement, keep it enhancement-focused`
 }
 5. **Editing instruction format**: Describe the edit operation, not the scene
+6. **Prevent selective degradation**: Preserve face sharpness and detail quality while applying enhancements
+7. **Lighting quality**: Use technical photography terms (balanced exposure, soft directional illumination, even lighting distribution)
 
 USER INSTRUCTIONS EXAMPLES & HOW TO APPLY:
-- "Make lighting more dramatic" → Add "with dramatic lighting contrast and deeper shadows"
-- "Change to sunset atmosphere" → Add "in warm golden sunset lighting"
-- "More professional look" → Add "with professional studio quality"
-- "Enhance details" → Add "with enhanced sharpness and fine detail preservation"
-- "Make it warmer/cooler" → Adjust color temperature description
-- "Add vintage style" → Add style modifier like "with vintage film aesthetic"
+- "Make lighting more dramatic" → Add "with dramatic lighting contrast and deeper shadows, preserving face detail"
+- "Change to sunset atmosphere" → Add "in warm golden sunset lighting with balanced exposure, maintaining face sharpness"
+- "More professional look" → Add "with professional studio quality and even lighting distribution, preserving facial detail"
+- "Enhance details" → Add "with enhanced sharpness and fine detail preservation, maintaining consistent quality across face and background"
+- "Make it warmer/cooler" → Adjust color temperature description while preserving face quality
+- "Add vintage style" → Add style modifier like "with vintage film aesthetic, preserving face detail and sharpness"
 
 CRITICAL SAFETY RULES:
 - NEVER describe facial features, skin tone, or ethnicity (even if user asks)
@@ -456,16 +458,22 @@ INSTRUCTIONS:
 2. **Apply user's changes** appropriately based on what you see
 3. **Keep it concise**: 20-60 words total
 4. **Action-focused**: Describe what to change/enhance, not what exists
-5. **Safety first**: NEVER describe facial features, skin tone, or ethnicity${compositionInstructions}
+5. **Preserve face quality**: Maintain facial features clarity and avoid selective degradation - ensure consistent quality across face and background
+6. **Lighting improvements**: Use technical terms like "balanced exposure", "soft directional illumination", "even lighting distribution" when enhancing lighting
+7. **Safety first**: NEVER describe facial features, skin tone, or ethnicity${compositionInstructions}
 
 EXAMPLES OF GOOD REFINEMENTS:
 - Original: "Replace face, keep everything unchanged"
   User wants: "make lighting more dramatic"
-  Refined: "Replace the face with the reference face, maintaining original hair and scene with enhanced dramatic lighting contrast and deeper shadows"
+  Refined: "Replace the face with the reference face, maintaining original hair and scene with enhanced dramatic lighting contrast and deeper shadows, preserving face detail"
 
 - Original: "Enhance image quality with professional sharpness"
   User wants: "add vintage film look"
-  Refined: "Enhance image quality with professional sharpness while applying vintage film aesthetic with warm tones and subtle grain"
+  Refined: "Enhance image quality with professional sharpness while applying vintage film aesthetic with warm tones and subtle grain, maintaining face clarity"
+
+- Original: "Replace face, keep everything unchanged"
+  User wants: "improve lighting quality"
+  Refined: "Replace the face with the reference face, maintaining original hair and scene with balanced exposure and soft directional illumination, preserving facial detail"
 
 OUTPUT: Refined editing instruction only (20-60 words). No markdown or explanations.`
 }
@@ -1398,11 +1406,10 @@ B. Camera & lens:
 - "handheld phone photo, no tripod, tiny bit of camera shake"
 
 C. Lighting & exposure:
-- "flat, dull indoor lighting from a ceiling light, no strong shadows"
-- "slightly underexposed, low contrast, muted colors"
-- "mixed indoor lighting with a bit of yellow color cast"
-- "harsh overhead light, unflattering shadows under eyes"
-- "slightly overexposed highlights and crushed shadows, basic phone dynamic range"
+- For quality improvements: "balanced exposure", "even ambient lighting with balanced exposure"
+- For casual/low-quality: "flat indoor lighting", "dull indoor lighting", "mixed indoor lighting", "harsh overhead light"
+- For professional: "soft directional illumination", "balanced exposure"
+- Use "balanced exposure" only when maintaining quality - omit for casual/degradation effects
 
 D. Blur / focus / motion:
 - "very slight motion blur from hand shake, but face still mostly readable"
@@ -1437,7 +1444,14 @@ H. Composition and framing optimizations:
 - For casual/realism: combine Camera, Lighting, and Technical quality sections
 - Use Seedream 4.0 structured format: update relevant sections (Camera:, Composition:, Technical quality:)
 - For off-center: "Apply off-center composition with subject positioned using rule of thirds, asymmetric framing, informal camera placement"
-- For casual snap: "Turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, natural imperfections and amateur lighting quality, avoiding studio polish"
+- For casual snap: "Turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, flat indoor lighting, avoiding studio polish"
+- For partial face crops: "Apply close-up crop showing only [top/bottom/left/right] half of face, maintaining exact framing and preserving detail quality"
+
+I. Lighting quality strategies:
+- For quality improvements: use "balanced exposure" to prevent degradation
+- For casual/low-quality: use "flat indoor lighting", "dull lighting", or specific camera-based lighting
+- For degradation effects: omit "balanced exposure" to allow natural quality reduction
+- Use negative prompts: "avoiding studio lighting", "avoiding ultra-HD filters"
 
 HOW TO ADD:
 - Keep the existing relative reference unchanged
@@ -1495,9 +1509,11 @@ HOW:
 
 SEEDREAM 4.0 REALISM STRATEGY:
 When user requests "low-effort", "phone camera", "casual snapshot", or similar realism:
-- Use base pattern: "Turn this into a [STYLE] photo: [CAMERA/CONTEXT] with [LIGHTING] and [FAULTS]"
-- Mix & match style fragments: camera type, lighting quality, imperfections
+- Use base pattern: "Turn this into a [STYLE] photo: [CAMERA/CONTEXT] with [LIGHTING]"
+- Focus on camera type (older smartphone, front camera) and lower-quality lighting (flat indoor lighting)
 - Always add "avoiding studio lighting, avoiding ultra-HD or beauty filters"
+- For quality-lowering: use "flat indoor lighting" or "dull lighting" instead of "balanced exposure"
+- For quality-maintaining: use "balanced exposure"
 
 JEWELRY REMOVAL STRATEGY:
 When user requests jewelry removal:
@@ -1512,11 +1528,12 @@ When user requests clothing color change:
 - Format: "Change clothing color to [color], keeping everything else the exact same"
 
 COMPOSITION OPTIMIZATION STRATEGY:
-When user requests composition changes (off-center, casual snap):
+When user requests composition changes (off-center, casual snap, partial face):
 - For off-center: integrate into Camera section with specific framing details
-- For casual snap: combine Camera, Lighting, and Technical quality sections
+- For casual snap: combine Camera and Lighting with balanced exposure
+- For partial face crops: specify which part (top/bottom/left/right)
 - Use Seedream 4.0 structured format appropriately
-- Format: "Apply [composition type] with [specific details], keeping everything else the exact same"
+- Format: "Apply [composition type] with [specific details], maintaining exact framing, keeping everything else the exact same"
 
 EXAMPLES:
 - Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
@@ -1525,15 +1542,15 @@ EXAMPLES:
 
 - Original: "Take the person in the pink room and make them smile, keeping everything else the exact same"
   User: "make it look like a casual phone snapshot"
-  Result: "Take the person in the pink room and make them smile, turn this into a casual phone snapshot: taken on an older smartphone with flat indoor lighting and slight digital noise, avoiding studio lighting and ultra-HD filters, keeping everything else the exact same"
+  Result: "Take the person in the pink room and make them smile, turn this into a casual phone snapshot: taken on an older smartphone with flat indoor lighting, avoiding studio lighting and ultra-HD filters, keeping everything else the exact same"
 
 - Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
   User: "add low-effort realism with phone camera feel"
-  Result: "Take the woman with a white tank top and return her looking to the left, turn this into a casual phone photo: front camera smartphone selfie with slightly underexposed lighting and a touch of front-camera softness, avoiding studio polish, keeping everything else the exact same"
+  Result: "Take the woman with a white tank top and return her looking to the left, turn this into a casual phone photo: front camera smartphone selfie with flat indoor lighting, avoiding studio polish, keeping everything else the exact same"
 
 - Original: "Take the person in the pink room and make them smile, keeping everything else the exact same"
-  User: "make it look like an unedited phone photo with imperfections"
-  Result: "Take the person in the pink room and make them smile, turn this into an unedited phone snapshot: mid-range Android phone camera with flat dull indoor lighting, visible digital noise in darker areas, and subtle JPEG compression, no cinematic look, keeping everything else the exact same"
+  User: "make it look like an unedited phone photo"
+  Result: "Take the person in the pink room and make them smile, turn this into an unedited phone snapshot: mid-range Android phone camera with flat indoor lighting, no cinematic look, keeping everything else the exact same"
 
 - Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
   User: "add motion blur and grain"
@@ -1560,8 +1577,12 @@ EXAMPLES:
   Result: "Take the person in the pink room and make them smile, apply off-center composition with subject positioned using rule of thirds, asymmetric framing, informal camera placement, keeping everything else the exact same"
 
 - Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
-  User: "turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, natural imperfections and amateur lighting quality, avoiding studio polish"
-  Result: "Take the woman with a white tank top and return her looking to the left, turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, natural imperfections and amateur lighting quality, avoiding studio polish, keeping everything else the exact same"
+  User: "turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, avoiding studio polish"
+  Result: "Take the woman with a white tank top and return her looking to the left, turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, flat indoor lighting, avoiding studio polish, keeping everything else the exact same"
+
+- Original: "Take the person in the pink room and make them smile, keeping everything else the exact same"
+  User: "apply close-up crop showing only bottom half of face"
+  Result: "Take the person in the pink room and make them smile, apply close-up crop showing only bottom half of face (mouth and chin visible), maintaining exact framing, keeping everything else the exact same"
 
 RULES:
 - Keep existing relative reference unchanged

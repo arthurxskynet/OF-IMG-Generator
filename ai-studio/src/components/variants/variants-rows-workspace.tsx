@@ -11,7 +11,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { VariantRow, VariantRowImage } from '@/types/variants'
 import { getSignedUrl } from '@/lib/jobs'
-import { Wand2, Sparkles, Copy, Trash2, Plus, X, AlertCircle, Play, Eye, EyeOff, ChevronDown, ChevronUp, Star, ChevronLeft, ChevronRight, ImageIcon, Folder, Upload, Archive, CheckCircle, XCircle, Info } from 'lucide-react'
+import { Wand2, Sparkles, Copy, Trash2, Plus, X, AlertCircle, Play, Eye, EyeOff, ChevronDown, ChevronUp, Star, ChevronLeft, ChevronRight, ImageIcon, Folder, Upload, Archive, CheckCircle, XCircle, Info, Download, Check } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useJobPolling } from '@/hooks/use-job-polling'
 import { createClient } from '@/lib/supabase-browser'
@@ -24,6 +24,7 @@ import { Progress } from '@/components/ui/progress'
 import { Badge } from '@/components/ui/badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { uploadImage, validateFile } from '@/lib/client-upload'
+import { Checkbox } from '@/components/ui/checkbox'
 
 interface VariantsRowsWorkspaceProps {
   initialRows: VariantRow[]
@@ -37,18 +38,18 @@ const INTERNAL_IMAGE_MIME = 'application/x-ai-studio-image'
 // Preset enhancement chips for quick access - organized by category
 const PRESET_ENHANCEMENTS = {
   quality: [
-    { label: '✨ Professional studio', value: 'Apply professional studio quality with polished lighting' },
-    { label: '📸 Casual snapshot', value: 'Make casual snapshot with natural imperfections and amateur lighting' },
+    { label: '✨ Professional studio', value: 'Apply professional studio quality with even lighting distribution' },
+    { label: '📸 Casual snapshot', value: 'Make casual snapshot with balanced exposure and even ambient lighting' },
     { label: '🎥 Film grain', value: 'Add film grain texture with reduced sharpness' },
-    { label: '📱 iPhone selfie', value: 'Apply iPhone front camera selfie with wide-angle distortion and arm\'s length perspective' }
+    { label: '📱 iPhone selfie', value: 'Apply iPhone front camera selfie with balanced exposure' }
   ],
   lighting: [
-    { label: '🔥 Dramatic lighting', value: 'Apply dramatic lighting with high contrast and bold shadows' },
-    { label: '🌅 Golden hour', value: 'Add golden hour lighting with warm color temperature and amber tones' },
-    { label: '💡 Harsh overhead', value: 'Change to harsh overhead lighting with unflattering shadows' },
-    { label: '🌙 Low-key lighting', value: 'Apply low-key lighting with underexposed shadows and high ISO noise' },
-    { label: '🎭 Rembrandt lighting', value: 'Apply Rembrandt lighting with triangle of light under eye' },
-    { label: '🪟 Natural window light', value: 'Change to natural window lighting with soft directional illumination' }
+    { label: '🔥 Dramatic lighting', value: 'Apply dramatic lighting with balanced exposure' },
+    { label: '🌅 Golden hour', value: 'Add golden hour lighting with warm color temperature and balanced exposure' },
+    { label: '💡 Harsh overhead', value: 'Change to harsh overhead lighting with balanced exposure' },
+    { label: '🌙 Low-key lighting', value: 'Apply low-key lighting with balanced exposure' },
+    { label: '🎭 Rembrandt lighting', value: 'Apply Rembrandt lighting with balanced exposure' },
+    { label: '🪟 Natural window light', value: 'Change to natural window lighting with balanced exposure' }
   ],
   degradation: [
     { label: '🎨 Lo-fi aesthetic', value: 'Add lo-fi aesthetic with chromatic aberration and lens distortion' },
@@ -57,8 +58,13 @@ const PRESET_ENHANCEMENTS = {
     { label: '🎞️ Film grain texture', value: 'Add film grain with color shifts and reduced dynamic range' }
   ],
   composition: [
-    { label: '📷 Casual snap', value: 'Turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, natural imperfections and amateur lighting quality, avoiding studio polish, keeping everything else the exact same' },
-    { label: '🎯 Off-center framing', value: 'Apply off-center composition with subject positioned using rule of thirds, asymmetric framing, informal camera placement, keeping everything else the exact same' }
+    { label: '📷 Casual snap', value: 'Turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, flat indoor lighting, avoiding studio polish, keeping everything else the exact same' },
+    { label: '🎯 Off-center framing', value: 'Apply off-center composition with subject positioned using rule of thirds, asymmetric framing, informal camera placement, keeping everything else the exact same' },
+    { label: '👄 Bottom half face', value: 'Apply close-up crop showing only bottom half of face (mouth and chin visible), maintaining exact framing, keeping everything else the exact same' },
+    { label: '👁️ Top half face', value: 'Apply close-up crop showing only top half of face (eyes and forehead visible), maintaining exact framing, keeping everything else the exact same' },
+    { label: '⬅️ Left side crop', value: 'Apply side crop showing left side of face, maintaining exact framing, keeping everything else the exact same' },
+    { label: '➡️ Right side crop', value: 'Apply side crop showing right side of face, maintaining exact framing, keeping everything else the exact same' },
+    { label: '🔍 Close-up tight crop', value: 'Apply very tight close-up crop with minimal framing, maintaining exact composition, keeping everything else the exact same' }
   ],
   motion: [
     { label: '💨 Motion blur', value: 'Add motion blur with subtle streaking effect' },
@@ -174,6 +180,11 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
   const [bulkPromptProgress, setBulkPromptProgress] = useState<{ total: number; completed: number; failed: number }>({ total: 0, completed: 0, failed: 0 })
   const [bulkPromptStatus, setBulkPromptStatus] = useState<Record<string, 'pending' | 'processing' | 'success' | 'error'>>({})
   const bulkPromptCancelRef = useRef<boolean>(false)
+  // Bulk selection state
+  const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set())
+  const [isDownloading, setIsDownloading] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   
   // Sync initialRows prop changes to local state (aligns with rows tab pattern)
   // This ensures data stays fresh when parent re-renders with new data
@@ -832,6 +843,17 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       // Mark as deleted to prevent sync from bringing it back
       deletedRowIdsRef.current.add(rowId)
 
+      // Get all image IDs from this row to clean up selection
+      const rowToDelete = rows.find(r => r.id === rowId)
+      const imageIdsToRemove = new Set<string>()
+      if (rowToDelete?.variant_row_images) {
+        rowToDelete.variant_row_images.forEach(img => {
+          if (img.is_generated === true) {
+            imageIdsToRemove.add(img.id)
+          }
+        })
+      }
+
       // Remove from local state and clean up related state
       setRows(prev => {
         const filtered = prev.filter(r => r.id !== rowId)
@@ -865,6 +887,15 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         }
         return filtered
       })
+
+      // Clean up selection for images from deleted row
+      if (imageIdsToRemove.size > 0) {
+        setSelectedImageIds(prev => {
+          const next = new Set(prev)
+          imageIdsToRemove.forEach(id => next.delete(id))
+          return next
+        })
+      }
 
       toast({
         title: 'Row deleted',
@@ -902,6 +933,13 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         return row
       }))
 
+      // Remove from selection if it was selected
+      setSelectedImageIds(prev => {
+        const next = new Set(prev)
+        next.delete(imageId)
+        return next
+      })
+
       toast({
         title: 'Image deleted',
         description: 'Image removed from variant row'
@@ -915,6 +953,289 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       })
     }
   }, [toast])
+
+  // Handle toggle image selection
+  const handleToggleImageSelection = useCallback((imageId: string) => {
+    setSelectedImageIds(prev => {
+      const next = new Set(prev)
+      if (next.has(imageId)) {
+        next.delete(imageId)
+      } else {
+        next.add(imageId)
+      }
+      return next
+    })
+  }, [])
+
+  // Handle select all / clear all
+  const handleSelectAll = useCallback(() => {
+    // Collect all generated image IDs from all rows
+    const allGeneratedImageIds = new Set<string>()
+    rows.forEach(row => {
+      const allImages = row.variant_row_images || []
+      const generatedImages = allImages.filter((img: VariantRowImage) => img.is_generated === true)
+      generatedImages.forEach(img => {
+        allGeneratedImageIds.add(img.id)
+      })
+    })
+
+    // Check if all generated images are selected
+    const allSelected = allGeneratedImageIds.size > 0 && 
+      selectedImageIds.size === allGeneratedImageIds.size &&
+      Array.from(selectedImageIds).every(id => allGeneratedImageIds.has(id))
+
+    if (allSelected) {
+      // Clear all if all are selected
+      setSelectedImageIds(new Set())
+    } else {
+      // Select all
+      setSelectedImageIds(allGeneratedImageIds)
+    }
+  }, [rows, selectedImageIds])
+
+  // Handle bulk download selected images
+  const handleBulkDownloadSelected = useCallback(async () => {
+    if (selectedImageIds.size === 0) {
+      toast({
+        title: 'No images selected',
+        description: 'Please select at least one image to download',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    setIsDownloading(true)
+    try {
+      const JSZip = (await import('jszip')).default
+      const zip = new JSZip()
+      
+      let successCount = 0
+      let failCount = 0
+      
+      // Fetch each selected image and add to zip
+      for (const imageId of selectedImageIds) {
+        // Find the image in rows
+        let image: VariantRowImage | null = null
+        let rowId: string | null = null
+        
+        for (const row of rows) {
+          const images = row.variant_row_images || []
+          const foundImage = images.find((img: VariantRowImage) => img.id === imageId && img.is_generated === true)
+          if (foundImage) {
+            image = foundImage
+            rowId = row.id
+            break
+          }
+        }
+
+        if (!image || !rowId) {
+          console.warn(`Image ${imageId} not found in rows`)
+          failCount++
+          continue
+        }
+
+        try {
+          const imagePath = image.output_path || image.thumbnail_path || ''
+          if (!imagePath) {
+            console.error(`No image path available for image ${imageId}`)
+            failCount++
+            continue
+          }
+
+          let signedUrl: string
+          try {
+            const response = await getSignedUrl(imagePath)
+            signedUrl = response.url
+          } catch (error) {
+            console.error(`Failed to get signed URL for image ${imageId}:`, error)
+            failCount++
+            continue
+          }
+
+          if (!signedUrl) {
+            console.error(`No signed URL available for image ${imageId}`)
+            failCount++
+            continue
+          }
+
+          // Fetch the image as blob
+          const response = await fetch(signedUrl)
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+          }
+          
+          const blob = await response.blob()
+          
+          // Determine file extension from content type, URL, or default to jpg
+          let extension = 'jpg' // default
+          if (blob.type) {
+            if (blob.type.includes('png')) {
+              extension = 'png'
+            } else if (blob.type.includes('webp')) {
+              extension = 'webp'
+            } else if (blob.type.includes('jpeg') || blob.type.includes('jpg')) {
+              extension = 'jpg'
+            }
+          } else {
+            // Fallback: check URL for extension
+            const urlLower = signedUrl.toLowerCase()
+            if (urlLower.includes('.png')) {
+              extension = 'png'
+            } else if (urlLower.includes('.webp')) {
+              extension = 'webp'
+            }
+          }
+          
+          // Add to zip with a meaningful filename
+          const filename = `variant-${rowId.slice(0, 8)}-${imageId.slice(0, 8)}.${extension}`
+          zip.file(filename, blob)
+          successCount++
+        } catch (error) {
+          console.error(`Failed to fetch image ${imageId}:`, error)
+          failCount++
+        }
+      }
+
+      // Validate that at least one image was successfully added
+      if (successCount === 0) {
+        throw new Error('No images could be downloaded. Please try again.')
+      }
+
+      // Generate and download zip
+      const blob = await zip.generateAsync({ type: 'blob' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `variants-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.zip`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+
+      // Provide feedback on success/failure
+      if (failCount > 0) {
+        toast({
+          title: 'Download started with warnings',
+          description: `Downloaded ${successCount} image${successCount === 1 ? '' : 's'}, ${failCount} failed`,
+          variant: 'default'
+        })
+      } else {
+        toast({
+          title: 'Download started',
+          description: `Downloading ${successCount} image${successCount === 1 ? '' : 's'} as ZIP file`
+        })
+      }
+
+      // Clear selections after download
+      setSelectedImageIds(new Set())
+
+    } catch (error) {
+      console.error('Download failed:', error)
+      toast({
+        title: 'Download failed',
+        description: error instanceof Error ? error.message : 'Could not create ZIP file. Please try again.',
+        variant: 'destructive'
+      })
+    } finally {
+      setIsDownloading(false)
+    }
+  }, [selectedImageIds, rows, toast])
+
+  // Handle bulk delete selected images
+  const handleBulkDeleteSelected = useCallback(async () => {
+    if (selectedImageIds.size === 0) {
+      toast({
+        title: 'No images selected',
+        description: 'Please select at least one image to delete',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    setIsDeleting(true)
+    try {
+      let successCount = 0
+      let failCount = 0
+      const errors: string[] = []
+
+      // Delete each selected image
+      const deletePromises = Array.from(selectedImageIds).map(async (imageId) => {
+        // Find the image and its row
+        let rowId: string | null = null
+        
+        for (const row of rows) {
+          const images = row.variant_row_images || []
+          const foundImage = images.find((img: VariantRowImage) => img.id === imageId && img.is_generated === true)
+          if (foundImage) {
+            rowId = row.id
+            break
+          }
+        }
+
+        if (!rowId) {
+          console.warn(`Could not find row for image ${imageId}`)
+          failCount++
+          errors.push(`Image ${imageId.slice(0, 8)}: not found`)
+          return
+        }
+
+        try {
+          const response = await fetch(`/api/variants/rows/${rowId}/images/${imageId}`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' }
+          })
+
+          if (!response.ok) {
+            const error = await response.json()
+            throw new Error(error.error || 'Failed to delete image')
+          }
+
+          successCount++
+        } catch (error) {
+          console.error(`Failed to delete image ${imageId}:`, error)
+          failCount++
+          errors.push(`Image ${imageId.slice(0, 8)}: ${error instanceof Error ? error.message : 'Unknown error'}`)
+        }
+      })
+
+      await Promise.all(deletePromises)
+
+      // Update local state to remove deleted images
+      setRows(prev => prev.map(row => ({
+        ...row,
+        variant_row_images: (row.variant_row_images || []).filter(
+          (img: VariantRowImage) => !selectedImageIds.has(img.id)
+        )
+      })))
+
+      // Show toast with results
+      if (failCount > 0) {
+        toast({
+          title: 'Deletion completed with errors',
+          description: `Deleted ${successCount} image${successCount === 1 ? '' : 's'}, ${failCount} failed`,
+          variant: 'default'
+        })
+      } else {
+        toast({
+          title: 'Images deleted successfully',
+          description: `Deleted ${successCount} image${successCount === 1 ? '' : 's'}`
+        })
+      }
+
+      // Clear selections after deletion
+      setSelectedImageIds(new Set())
+      setDeleteDialogOpen(false)
+    } catch (error) {
+      console.error('Bulk delete error:', error)
+      toast({
+        title: 'Delete failed',
+        description: error instanceof Error ? error.message : 'Could not delete images',
+        variant: 'destructive'
+      })
+    } finally {
+      setIsDeleting(false)
+    }
+  }, [selectedImageIds, rows, toast])
 
   // Handle generate images for a row
   const handleGenerateImages = useCallback(async (rowId: string) => {
@@ -1922,6 +2243,16 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
           }
           return row
         }))
+
+        // Clean up selection if this image was selected
+        setSelectedImageIds(prev => {
+          if (prev.has(deletedImage.id)) {
+            const next = new Set(prev)
+            next.delete(deletedImage.id)
+            return next
+          }
+          return prev
+        })
       })
       .subscribe()
       ;(window as any).__variantImagesRealtime = imagesChannel
@@ -2947,6 +3278,91 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
               )
             })()}
 
+            {/* Bulk Selection Actions Bar */}
+            {selectedImageIds.size > 0 && (
+              <div className="p-4 bg-primary/5 border-b border-border sticky top-0 z-10">
+                <div className="flex items-center gap-4 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    {(() => {
+                      // Calculate if all generated images are selected
+                      const allGeneratedImageIds = new Set<string>()
+                      rows.forEach(row => {
+                        const allImages = row.variant_row_images || []
+                        const generatedImages = allImages.filter((img: VariantRowImage) => img.is_generated === true)
+                        generatedImages.forEach(img => {
+                          allGeneratedImageIds.add(img.id)
+                        })
+                      })
+                      const allSelected = allGeneratedImageIds.size > 0 && 
+                        selectedImageIds.size === allGeneratedImageIds.size &&
+                        Array.from(selectedImageIds).every(id => allGeneratedImageIds.has(id))
+                      
+                      return (
+                        <Checkbox
+                          checked={allSelected}
+                          onCheckedChange={handleSelectAll}
+                          className="h-4 w-4"
+                        />
+                      )
+                    })()}
+                    <span className="text-sm font-medium">
+                      {selectedImageIds.size} image{selectedImageIds.size === 1 ? '' : 's'} selected
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={handleBulkDownloadSelected}
+                      disabled={isDownloading || isDeleting}
+                      className="h-8 px-3 text-xs"
+                    >
+                      {isDownloading ? (
+                        <>
+                          <Spinner size="sm" className="mr-1" />
+                          Downloading...
+                        </>
+                      ) : (
+                        <>
+                          <Download className="w-3 h-3 mr-1" />
+                          Download
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => setDeleteDialogOpen(true)}
+                      disabled={isDownloading || isDeleting}
+                      className="h-8 px-3 text-xs"
+                    >
+                      {isDeleting ? (
+                        <>
+                          <Spinner size="sm" className="mr-1" />
+                          Deleting...
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 className="w-3 h-3 mr-1" />
+                          Delete
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setSelectedImageIds(new Set())
+                      }}
+                      className="h-8 px-3 text-xs"
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <Table>
               <TableHeader>
                 <TableRow>
@@ -3407,7 +3823,11 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                                   return (
                                     <div 
                                       key={img.id} 
-                                      className="relative group w-32 h-32 rounded-lg overflow-hidden bg-muted border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 hover:scale-105 hover:border-primary/50 cursor-zoom-in"
+                                      className={`relative group w-32 h-32 rounded-lg overflow-hidden bg-muted border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 hover:scale-105 hover:border-primary/50 cursor-zoom-in ${
+                                        selectedImageIds.has(img.id) 
+                                          ? 'ring-2 ring-blue-500 ring-offset-2' 
+                                          : ''
+                                      }`}
                                       onClick={async (e) => {
                                         e.stopPropagation()
                                         const actualIndex = generatedImages.findIndex(gImg => gImg.id === img.id)
@@ -3423,7 +3843,9 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                                           alt="Generated"
                                           fill
                                           sizes="128px"
-                                          className="object-cover"
+                                          className={`object-cover transition-opacity duration-200 ${
+                                            selectedImageIds.has(img.id) ? 'opacity-80' : ''
+                                          }`}
                                           onError={() => loadThumbnail(img.id, img.thumbnail_path || img.output_path)}
                                         />
                                       ) : (
@@ -3431,6 +3853,30 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                                           <div className="animate-spin rounded-full h-3 w-3 border-2 border-primary border-t-transparent"></div>
                                         </div>
                                       )}
+                                      
+                                      {/* Selection checkbox overlay - in bottom-right */}
+                                      <div 
+                                        className="absolute bottom-1 right-1 z-20"
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          e.preventDefault()
+                                          handleToggleImageSelection(img.id)
+                                        }}
+                                      >
+                                        <div className="p-1 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-sm">
+                                          <Checkbox
+                                            checked={selectedImageIds.has(img.id)}
+                                            onCheckedChange={() => {
+                                              handleToggleImageSelection(img.id)
+                                            }}
+                                            className="h-3.5 w-3.5"
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              e.preventDefault()
+                                            }}
+                                          />
+                                        </div>
+                                      </div>
                                       
                                       <button
                                         key={`star-${img.id}-${isFavorited}`}
@@ -3602,7 +4048,11 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                                 return (
                                   <div 
                                     key={`${row.id}-${img.id}-${index}`} 
-                                    className="relative group w-32 h-32 rounded-lg overflow-hidden bg-muted border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 hover:scale-105 hover:border-primary/50 cursor-zoom-in"
+                                    className={`relative group w-32 h-32 rounded-lg overflow-hidden bg-muted border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 hover:scale-105 hover:border-primary/50 cursor-zoom-in ${
+                                      selectedImageIds.has(img.id) 
+                                        ? 'ring-2 ring-blue-500 ring-offset-2' 
+                                        : ''
+                                    }`}
                                     onClick={async (e) => {
                                       e.stopPropagation()
                                       // Find the actual index in the generatedImages array
@@ -3620,7 +4070,9 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                                         alt="Generated"
                                         fill
                                         sizes="128px"
-                                        className="object-cover"
+                                        className={`object-cover transition-opacity duration-200 ${
+                                          selectedImageIds.has(img.id) ? 'opacity-80' : ''
+                                        }`}
                                         onError={() => loadThumbnail(img.id, img.thumbnail_path || img.output_path)}
                                       />
                                     ) : (
@@ -3628,6 +4080,30 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                                         <div className="animate-spin rounded-full h-3 w-3 border-2 border-primary border-t-transparent"></div>
                                       </div>
                                     )}
+                                    
+                                    {/* Selection checkbox overlay - in bottom-right */}
+                                    <div 
+                                      className="absolute bottom-1 right-1 z-20"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        e.preventDefault()
+                                        handleToggleImageSelection(img.id)
+                                      }}
+                                    >
+                                      <div className="p-1 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-sm">
+                                        <Checkbox
+                                          checked={selectedImageIds.has(img.id)}
+                                          onCheckedChange={() => {
+                                            handleToggleImageSelection(img.id)
+                                          }}
+                                          className="h-3.5 w-3.5"
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            e.preventDefault()
+                                          }}
+                                        />
+                                      </div>
+                                    </div>
                                     
                                     {/* Favorite button overlay - always visible in top-left */}
                                     <button
@@ -3981,6 +4457,44 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
               </>
             )
           })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Selected Images</DialogTitle>
+          </DialogHeader>
+          <div className="py-4">
+            <p className="text-sm text-muted-foreground">
+              Are you sure you want to delete {selectedImageIds.size} selected image{selectedImageIds.size === 1 ? '' : 's'}? 
+              This action cannot be undone.
+            </p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setDeleteDialogOpen(false)}
+              disabled={isDeleting}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleBulkDeleteSelected}
+              disabled={isDeleting}
+            >
+              {isDeleting ? (
+                <>
+                  <Spinner size="sm" className="mr-2" />
+                  Deleting...
+                </>
+              ) : (
+                'Delete'
+              )}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

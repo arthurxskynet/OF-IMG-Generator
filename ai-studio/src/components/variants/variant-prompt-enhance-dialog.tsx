@@ -11,18 +11,18 @@ import { Loader2, Wand2, Copy, RefreshCw, Check, Sparkles } from 'lucide-react'
 // Preset enhancement chips for quick access - organized by category
 const PRESET_ENHANCEMENTS = {
   quality: [
-    { label: '✨ Professional studio', value: 'Apply professional studio quality with polished lighting' },
-    { label: '📸 Casual snapshot', value: 'Make casual snapshot with natural imperfections and amateur lighting' },
+    { label: '✨ Professional studio', value: 'Apply professional studio quality with even lighting distribution' },
+    { label: '📸 Casual snapshot', value: 'Turn this into a casual phone snapshot: taken on smartphone front camera with flat indoor lighting, avoiding studio lighting and ultra-HD filters, keeping everything else the exact same' },
     { label: '🎥 Film grain', value: 'Add film grain texture with reduced sharpness' },
-    { label: '📱 iPhone selfie', value: 'Apply iPhone front camera selfie with wide-angle distortion and arm\'s length perspective' }
+    { label: '📱 iPhone selfie', value: 'Apply iPhone front camera selfie with soft focus, avoiding studio polish, keeping everything else the exact same' }
   ],
   lighting: [
-    { label: '🔥 Dramatic lighting', value: 'Apply dramatic lighting with high contrast and bold shadows' },
-    { label: '🌅 Golden hour', value: 'Add golden hour lighting with warm color temperature and amber tones' },
-    { label: '💡 Harsh overhead', value: 'Change to harsh overhead lighting with unflattering shadows' },
-    { label: '🌙 Low-key lighting', value: 'Apply low-key lighting with underexposed shadows and high ISO noise' },
-    { label: '🎭 Rembrandt lighting', value: 'Apply Rembrandt lighting with triangle of light under eye' },
-    { label: '🪟 Natural window light', value: 'Change to natural window lighting with soft directional illumination' }
+    { label: '🔥 Dramatic lighting', value: 'Apply dramatic lighting with balanced exposure' },
+    { label: '🌅 Golden hour', value: 'Add golden hour lighting with warm color temperature and balanced exposure' },
+    { label: '💡 Harsh overhead', value: 'Change to harsh overhead lighting with balanced exposure' },
+    { label: '🌙 Low-key lighting', value: 'Apply low-key lighting with balanced exposure' },
+    { label: '🎭 Rembrandt lighting', value: 'Apply Rembrandt lighting with balanced exposure' },
+    { label: '🪟 Natural window light', value: 'Change to natural window lighting with balanced exposure' }
   ],
   degradation: [
     { label: '🎨 Lo-fi aesthetic', value: 'Add lo-fi aesthetic with chromatic aberration and lens distortion' },
@@ -31,8 +31,13 @@ const PRESET_ENHANCEMENTS = {
     { label: '🎞️ Film grain texture', value: 'Add film grain with color shifts and reduced dynamic range' }
   ],
   composition: [
-    { label: '📷 Casual snap', value: 'Turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, natural imperfections and amateur lighting quality, avoiding studio polish, keeping everything else the exact same' },
-    { label: '🎯 Off-center framing', value: 'Apply off-center composition with subject positioned using rule of thirds, asymmetric framing, informal camera placement, keeping everything else the exact same' }
+    { label: '📷 Casual snap', value: 'Turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, flat indoor lighting, avoiding studio polish, keeping everything else the exact same' },
+    { label: '🎯 Off-center framing', value: 'Apply off-center composition with subject positioned using rule of thirds, asymmetric framing, informal camera placement, keeping everything else the exact same' },
+    { label: '👄 Bottom half face', value: 'Apply close-up crop showing only bottom half of face (mouth and chin visible), maintaining exact framing, keeping everything else the exact same' },
+    { label: '👁️ Top half face', value: 'Apply close-up crop showing only top half of face (eyes and forehead visible), maintaining exact framing, keeping everything else the exact same' },
+    { label: '⬅️ Left side crop', value: 'Apply side crop showing left side of face, maintaining exact framing, keeping everything else the exact same' },
+    { label: '➡️ Right side crop', value: 'Apply side crop showing right side of face, maintaining exact framing, keeping everything else the exact same' },
+    { label: '🔍 Close-up tight crop', value: 'Apply very tight close-up crop with minimal framing, maintaining exact composition, keeping everything else the exact same' }
   ],
   motion: [
     { label: '💨 Motion blur', value: 'Add motion blur with subtle streaking effect' },
