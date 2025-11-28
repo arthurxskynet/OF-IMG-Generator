@@ -925,7 +925,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
     })
 
     try {
-      validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 10)
+      validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 50)
       
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error('Not authenticated')
@@ -1261,7 +1261,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
       if (!user) throw new Error('Not authenticated')
 
       const uploadPromises = imageFiles.map(file => {
-        validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 10)
+        validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 50)
         return retryWithBackoff(async () => {
           await refreshAuth()
           return uploadImage(file, 'refs', user.id)
@@ -1819,7 +1819,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
     }
   }
 
-  // Handle bulk image upload using server-side processing for better production stability
+  // Handle bulk image upload using direct client-side uploads to bypass Vercel's 4.5MB limit
   const handleBulkImageUpload = async (imageFiles: File[]) => {
     setIsBulkUploading(true)
     setBulkUploadState([])
@@ -1830,117 +1830,154 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
 
       console.log('Bulk upload starting for model:', model.id, 'user:', user.id, 'files:', imageFiles.length);
 
-      // Initialize bulk upload state for UI feedback
-      const initialBulkState: BulkUploadItem[] = imageFiles.map((file, index) => ({
-        rowId: `temp-${index}`, // Temporary ID for UI
+      // Step 1: Create all rows first with improved retry logic
+      const createRowPromises = imageFiles.map(async (file, index) => {
+        return retryWithBackoff(async () => {
+          console.log('Creating row for file:', file.name, 'model:', model.id, 'index:', index);
+          
+          // Add staggered delay to prevent overwhelming the API
+          if (index > 0) {
+            await new Promise(resolve => setTimeout(resolve, index * 100))
+          }
+          
+          const { data: { user: authUser } } = await supabase.auth.getUser()
+          if (!authUser) throw new Error('Not authenticated')
+          const { data: { session } } = await supabase.auth.getSession()
+          const response = await fetch('/api/rows', {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${session?.access_token}`
+            },
+            body: JSON.stringify({
+              model_id: model.id
+            })
+          })
+
+          if (!response.ok) {
+            const errorText = await response.text()
+            console.error('Row creation failed:', { file: file.name, status: response.status, error: errorText });
+            throw new Error(`Failed to create row for ${file.name}: ${response.status} ${errorText}`)
+          }
+
+          const { row } = await response.json()
+          console.log('Row created successfully:', row.id);
+          return { row, file }
+        }, 5, 2000) // Increased retries and base delay for production
+      })
+
+      const createdRows = await Promise.all(createRowPromises)
+      
+      // Initialize bulk upload state
+      const initialBulkState: BulkUploadItem[] = createdRows.map(({ row, file }) => ({
+        rowId: row.id,
         filename: file.name,
         status: 'pending',
         progress: 0
       }))
       setBulkUploadState(initialBulkState)
 
-      // Convert files to base64 for server processing
-      const filesData = await Promise.all(
-        imageFiles.map(async (file) => {
-          return new Promise<{ name: string; size: number; type: string; data: string }>((resolve, reject) => {
-            const reader = new FileReader()
-            reader.onload = () => {
-              const base64 = (reader.result as string).split(',')[1] // Remove data:image/...;base64, prefix
-              resolve({
-                name: file.name,
-                size: file.size,
-                type: file.type,
-                data: base64
-              })
-            }
-            reader.onerror = reject
-            reader.readAsDataURL(file)
-          })
-        })
-      )
+      // Add new rows to the UI immediately
+      setRows(prev => [...prev, ...createdRows.map(({ row }) => row)])
 
-      // Update UI to show processing
-      setBulkUploadState(prev => prev.map(item => ({ ...item, status: 'uploading', progress: 50 })))
-
-      // Try server-side bulk upload first, fallback to client-side if it fails
-      let response: Response | null = null
-      let useServerSide = true
-      
-      try {
-        const { data: { user: authUser } } = await supabase.auth.getUser()
-        if (!authUser) throw new Error('Not authenticated')
-        const { data: { session } } = await supabase.auth.getSession()
-        response = await fetch('/api/upload/bulk', {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session?.access_token}`
-          },
-          body: JSON.stringify({
-            model_id: model.id,
-            files: filesData
-          })
-        })
-
-        if (!response.ok) {
-          throw new Error(`Server-side bulk upload failed: ${response.status}`)
-        }
-      } catch (serverError) {
-        console.warn('Server-side bulk upload failed, falling back to client-side:', serverError)
-        useServerSide = false
+      // Step 2: Upload images in smaller batches with longer delays for production stability
+      const BATCH_SIZE = 2 // Reduced batch size for production
+      const batches = []
+      for (let i = 0; i < createdRows.length; i += BATCH_SIZE) {
+        batches.push(createdRows.slice(i, i + BATCH_SIZE))
       }
 
-      if (!useServerSide || !response) {
-        // Fallback to original client-side approach with improved error handling
-        return await handleBulkImageUploadClientSide(imageFiles)
-      }
+      let successCount = 0
+      let errorCount = 0
 
-      const result = await response.json()
-      console.log('Bulk upload result:', result)
-
-      // Update UI with results
-      const updatedBulkState: BulkUploadItem[] = imageFiles.map((file, index) => {
-        const successResult = result.results.find((r: any) => r.filename === file.name)
-        const errorResult = result.errors.find((e: any) => e.filename === file.name)
+      for (const [batchIndex, batch] of batches.entries()) {
+        console.log(`Processing batch ${batchIndex + 1}/${batches.length} with ${batch.length} files`)
         
-        if (successResult) {
-          return {
-            rowId: successResult.row.id,
-            filename: file.name,
-            status: 'success',
-            progress: 100
-          }
-        } else if (errorResult) {
-          return {
-            rowId: `temp-${index}`,
-            filename: file.name,
-            status: 'error',
-            progress: 0,
-            error: errorResult.error
-          }
-        } else {
-          return {
-            rowId: `temp-${index}`,
-            filename: file.name,
-            status: 'error',
-            progress: 0,
-            error: 'Unknown error'
-          }
-        }
-      })
-      setBulkUploadState(updatedBulkState)
+        const batchPromises = batch.map(async ({ row, file }, fileIndex) => {
+          try {
+            // Update status to uploading
+            setBulkUploadState(prev => prev.map(item => 
+              item.rowId === row.id 
+                ? { ...item, status: 'uploading', progress: 0 }
+                : item
+            ))
 
-      // Add successful rows to the UI
-      if (result.results.length > 0) {
-        setRows(prev => [...prev, ...result.results.map((r: any) => r.row)])
+            // Add staggered delay within batch to prevent rate limiting
+            if (fileIndex > 0) {
+              await new Promise(resolve => setTimeout(resolve, fileIndex * 200))
+            }
+
+            await uploadSingleImage(row, file, user)
+            
+            // Update bulk upload state to success
+            setBulkUploadState(prev => prev.map(item => 
+              item.rowId === row.id 
+                ? { ...item, status: 'success', progress: 100 }
+                : item
+            ))
+
+            return { success: true, filename: file.name }
+          } catch (error) {
+            console.error(`Error uploading ${file.name}:`, error)
+            
+            // Cleanup: Delete the created row if upload failed
+            try {
+              const { data: { session } } = await supabase.auth.getSession()
+              await fetch(`/api/rows/${row.id}`, {
+                method: 'DELETE',
+                headers: {
+                  'Authorization': `Bearer ${session?.access_token}`
+                }
+              })
+              console.log(`Cleaned up orphaned row ${row.id} for failed upload: ${file.name}`)
+              
+              // Remove row from UI state
+              setRows(prev => prev.filter(r => r.id !== row.id))
+            } catch (cleanupError) {
+              console.error(`Failed to cleanup row ${row.id}:`, cleanupError)
+            }
+            
+            // Update bulk upload state to error
+            setBulkUploadState(prev => prev.map(item => 
+              item.rowId === row.id 
+                ? { 
+                    ...item, 
+                    status: 'error', 
+                    progress: 0,
+                    error: error instanceof Error ? error.message : 'Upload failed'
+                  }
+                : item
+            ))
+
+            return { success: false, filename: file.name, error }
+          }
+        })
+
+        // Wait for current batch to complete before starting next batch
+        const batchResults = await Promise.all(batchPromises)
+        
+        // Count results
+        batchResults.forEach(result => {
+          if (result.success) {
+            successCount++
+          } else {
+            errorCount++
+          }
+        })
+
+        // Longer delay between batches in production to prevent overwhelming the server
+        if (batchIndex < batches.length - 1) {
+          console.log(`Waiting 2 seconds before next batch...`)
+          await new Promise(resolve => setTimeout(resolve, 2000))
+        }
       }
 
       // Show completion toast
-      if (result.summary.successful > 0) {
+      if (successCount > 0) {
         toast({
           title: 'Bulk upload completed',
-          description: `Successfully uploaded ${result.summary.successful} image${result.summary.successful === 1 ? '' : 's'}${result.summary.failed > 0 ? `, ${result.summary.failed} failed` : ''}`,
-          variant: result.summary.failed > 0 ? 'destructive' : 'default'
+          description: `Successfully uploaded ${successCount} image${successCount === 1 ? '' : 's'}${errorCount > 0 ? `, ${errorCount} failed` : ''}`,
+          variant: errorCount > 0 ? 'destructive' : 'default'
         })
       }
 

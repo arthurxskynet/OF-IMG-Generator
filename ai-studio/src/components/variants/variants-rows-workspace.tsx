@@ -171,6 +171,8 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
   }>>([])
   const [isBulkUploading, setIsBulkUploading] = useState(false)
   const [dragOverRefRowId, setDragOverRefRowId] = useState<string | null>(null)
+  const [draggedImageId, setDraggedImageId] = useState<string | null>(null)
+  const [draggedImageSourceRowId, setDraggedImageSourceRowId] = useState<string | null>(null)
   const zipFileInputRef = useRef<HTMLInputElement>(null)
   const fileInputRefs = useRef<Map<string, HTMLInputElement>>(new Map())
   const [uploadingRowId, setUploadingRowId] = useState<string | null>(null)
@@ -1284,12 +1286,197 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     // Removed finally block - generating state is cleared by polling callback on completion
   }, [toast, startPolling])
 
+  // Handle reference image drag start
+  const handleImageDragStart = useCallback((e: React.DragEvent, image: VariantRowImage, sourceRowId: string) => {
+    e.stopPropagation()
+    setDraggedImageId(image.id)
+    setDraggedImageSourceRowId(sourceRowId)
+    
+    // Store image data in dataTransfer for drop handler
+    const imageData = JSON.stringify({
+      id: image.id,
+      output_path: image.output_path,
+      thumbnail_path: image.thumbnail_path,
+      source_row_id: image.source_row_id || sourceRowId
+    })
+    e.dataTransfer.setData('application/x-variant-image', imageData)
+    e.dataTransfer.effectAllowed = 'copy'
+  }, [])
+
+  // Handle reference image drag end
+  const handleImageDragEnd = useCallback(() => {
+    setDraggedImageId(null)
+    setDraggedImageSourceRowId(null)
+  }, [])
+
+  // Helper function to retry operations with exponential backoff
+  const retryWithBackoff = useCallback(async (
+    operation: () => Promise<any>,
+    maxRetries: number = 3,
+    baseDelay: number = 1000
+  ): Promise<any> => {
+    let lastError: Error
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation()
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error('Unknown error')
+        
+        if (attempt === maxRetries) {
+          throw lastError
+        }
+        
+        // Exponential backoff with jitter
+        const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000
+        await new Promise(resolve => setTimeout(resolve, delay))
+      }
+    }
+    
+    throw lastError!
+  }, [])
+
+  // Helper function to refresh authentication token
+  const refreshAuth = useCallback(async () => {
+    const { data: { session }, error } = await supabase.auth.refreshSession()
+    if (error) {
+      throw new Error('Failed to refresh authentication')
+    }
+    return session
+  }, [])
+
+  // Copy image from one row to another
+  const copyImageToRow = useCallback(async (imageData: { id: string; output_path: string; thumbnail_path: string | null; source_row_id: string | null }, targetRowId: string) => {
+    setUploadingRowId(targetRowId)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) throw new Error('Not authenticated')
+
+      // Prepare image data for API call (reuse existing paths, no file upload needed)
+      const imagesToAdd = [{
+        outputPath: imageData.output_path,
+        thumbnailPath: imageData.thumbnail_path,
+        sourceRowId: imageData.source_row_id || null
+      }]
+
+      const response = await fetch(`/api/variants/rows/${targetRowId}/images`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ images: imagesToAdd })
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Failed to copy image: ${response.status} ${errorText}`)
+      }
+
+      await refreshSingleRow(targetRowId, 0)
+      toast({ 
+        title: 'Image copied',
+        description: 'Reference image added to variant row'
+      })
+    } catch (err) {
+      toast({ 
+        title: 'Copy failed', 
+        description: err instanceof Error ? err.message : 'Error copying image', 
+        variant: 'destructive' 
+      })
+    } finally {
+      setUploadingRowId(null)
+    }
+  }, [toast, refreshSingleRow])
+
+  // Upload dropped files as references and add to variant row
+  const addRefsFromFiles = useCallback(async (files: File[], rowId: string) => {
+    const imageFiles = files.filter(f => f.type.startsWith('image/'))
+    if (imageFiles.length === 0) return
+    
+    setUploadingRowId(rowId)
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Not authenticated')
+
+      const uploadPromises = imageFiles.map(file => {
+        validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 50)
+        return retryWithBackoff(async () => {
+          await refreshAuth()
+          return uploadImage(file, 'refs', user.id)
+        }, 3, 1000)
+      })
+
+      const results = await Promise.all(uploadPromises)
+      
+      // Prepare images for API call
+      const imagesToAdd = results
+        .filter(r => r?.objectPath)
+        .map(r => ({
+          outputPath: r.objectPath,
+          thumbnailPath: null,
+          sourceRowId: null
+        }))
+
+      if (imagesToAdd.length === 0) {
+        toast({
+          title: 'No images uploaded',
+          description: 'Failed to upload images',
+          variant: 'destructive'
+        })
+        return
+      }
+
+      // Add images to variant row via API
+      const { data: { session } } = await supabase.auth.getSession()
+      const response = await fetch(`/api/variants/rows/${rowId}/images`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token}`
+        },
+        body: JSON.stringify({ images: imagesToAdd })
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Failed to add images: ${response.status} ${errorText}`)
+      }
+
+      await refreshSingleRow(rowId, 0)
+      toast({ 
+        title: `Added ${imagesToAdd.length} reference image${imagesToAdd.length === 1 ? '' : 's'}`,
+        description: 'Images added to variant row'
+      })
+    } catch (err) {
+      toast({ 
+        title: 'Ref upload failed', 
+        description: err instanceof Error ? err.message : 'Error', 
+        variant: 'destructive' 
+      })
+    } finally {
+      setUploadingRowId(null)
+    }
+  }, [toast, refreshSingleRow, retryWithBackoff, refreshAuth])
+
   // Handle reference image drag over
   const handleRefDragOver = useCallback((e: React.DragEvent, rowId: string) => {
     e.preventDefault()
     e.stopPropagation()
+    
+    // Check if dragging an internal image (not a file)
+    const hasImageData = e.dataTransfer.types.includes('application/x-variant-image')
+    if (hasImageData) {
+      // Prevent dropping on the same row
+      if (draggedImageSourceRowId === rowId) {
+        e.dataTransfer.dropEffect = 'none'
+        return
+      }
+      e.dataTransfer.dropEffect = 'copy'
+    }
+    
     setDragOverRefRowId(rowId)
-  }, [])
+  }, [draggedImageSourceRowId])
 
   // Handle reference image drag leave
   const handleRefDragLeave = useCallback((e: React.DragEvent, rowId: string) => {
@@ -1307,6 +1494,37 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     e.stopPropagation()
     setDragOverRefRowId(null)
 
+    // Check if this is an internal image drag (not a file)
+    const imageDataString = e.dataTransfer.getData('application/x-variant-image')
+    if (imageDataString) {
+      try {
+        const imageData = JSON.parse(imageDataString)
+        
+        // Prevent dropping on the same row
+        if (draggedImageSourceRowId === rowId) {
+          toast({
+            title: 'Cannot drop on same row',
+            description: 'Please drop the image on a different row',
+            variant: 'destructive'
+          })
+          return
+        }
+        
+        // Copy image to target row
+        await copyImageToRow(imageData, rowId)
+        return
+      } catch (error) {
+        console.error('Failed to parse image data:', error)
+        toast({
+          title: 'Drop failed',
+          description: 'Failed to process image data',
+          variant: 'destructive'
+        })
+        return
+      }
+    }
+
+    // Handle file drops (existing functionality)
     const files = Array.from(e.dataTransfer.files)
     const imageFiles = files.filter(file => file.type.startsWith('image/'))
 
@@ -1321,7 +1539,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
 
     // Use the existing addRefsFromFiles logic
     await addRefsFromFiles(imageFiles, rowId)
-  }, [toast])
+  }, [toast, draggedImageSourceRowId, copyImageToRow, addRefsFromFiles])
 
   // Toggle row expansion
   const toggleRowExpansion = useCallback((rowId: string) => {
@@ -2375,41 +2593,6 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     }
   }
 
-  // Helper function to retry operations with exponential backoff
-  const retryWithBackoff = async (
-    operation: () => Promise<any>,
-    maxRetries: number = 3,
-    baseDelay: number = 1000
-  ): Promise<any> => {
-    let lastError: Error
-    
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        return await operation()
-      } catch (error) {
-        lastError = error instanceof Error ? error : new Error('Unknown error')
-        
-        if (attempt === maxRetries) {
-          throw lastError
-        }
-        
-        // Exponential backoff with jitter
-        const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000
-        await new Promise(resolve => setTimeout(resolve, delay))
-      }
-    }
-    
-    throw lastError!
-  }
-
-  // Helper function to refresh authentication token
-  const refreshAuth = async () => {
-    const { data: { session }, error } = await supabase.auth.refreshSession()
-    if (error) {
-      throw new Error('Failed to refresh authentication')
-    }
-    return session
-  }
 
   // Extract all image files from dropped items (supports folders and zip files)
   const extractImageFiles = async (dataTransfer: DataTransfer): Promise<File[]> => {
@@ -2622,75 +2805,6 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     }
   }
 
-  // Upload dropped files as references and add to variant row
-  const addRefsFromFiles = async (files: File[], rowId: string) => {
-    const imageFiles = files.filter(f => f.type.startsWith('image/'))
-    if (imageFiles.length === 0) return
-    
-    setUploadingRowId(rowId)
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) throw new Error('Not authenticated')
-
-      const uploadPromises = imageFiles.map(file => {
-        validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 10)
-        return retryWithBackoff(async () => {
-          await refreshAuth()
-          return uploadImage(file, 'refs', user.id)
-        }, 3, 1000)
-      })
-
-      const results = await Promise.all(uploadPromises)
-      
-      // Prepare images for API call
-      const imagesToAdd = results
-        .filter(r => r?.objectPath)
-        .map(r => ({
-          outputPath: r.objectPath,
-          thumbnailPath: null,
-          sourceRowId: null
-        }))
-
-      if (imagesToAdd.length === 0) {
-        toast({
-          title: 'No images uploaded',
-          description: 'Failed to upload images',
-          variant: 'destructive'
-        })
-        return
-      }
-
-      // Add images to variant row via API
-      const { data: { session } } = await supabase.auth.getSession()
-      const response = await fetch(`/api/variants/rows/${rowId}/images`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session?.access_token}`
-        },
-        body: JSON.stringify({ images: imagesToAdd })
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Failed to add images: ${response.status} ${errorText}`)
-      }
-
-      await refreshSingleRow(rowId, 0)
-      toast({ 
-        title: `Added ${imagesToAdd.length} reference image${imagesToAdd.length === 1 ? '' : 's'}`,
-        description: 'Images added to variant row'
-      })
-    } catch (err) {
-      toast({ 
-        title: 'Ref upload failed', 
-        description: err instanceof Error ? err.message : 'Error', 
-        variant: 'destructive' 
-      })
-    } finally {
-      setUploadingRowId(null)
-    }
-  }
 
   // Handle add images button click
   const handleAddImagesClick = (rowId: string) => {
@@ -2719,7 +2833,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     }
   }
 
-  // Handle bulk image upload - creates rows and adds images
+  // Handle bulk image upload using direct client-side uploads to bypass Vercel's 4.5MB limit
   const handleBulkImageUpload = async (imageFiles: File[]) => {
     setIsBulkUploading(true)
     setBulkUploadState([])
@@ -2742,148 +2856,214 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
 
       console.log('Bulk upload starting for variants, user:', user.id, 'files:', imageFiles.length)
 
-      // Initialize bulk upload state for UI feedback
-      const initialBulkState = imageFiles.map((file, index) => ({
-        rowId: `temp-${index}`,
+      // Step 1: Create all variant rows first
+      const createRowPromises = imageFiles.map(async (file, index) => {
+        return retryWithBackoff(async () => {
+          console.log('Creating variant row for file:', file.name, 'index:', index)
+          
+          // Add staggered delay to prevent overwhelming the API
+          if (index > 0) {
+            await new Promise(resolve => setTimeout(resolve, index * 100))
+          }
+          
+          const { data: { session } } = await supabase.auth.getSession()
+          const response = await fetch('/api/variants/rows', {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${session?.access_token}`
+            },
+            body: JSON.stringify({
+              ...(modelId ? { model_id: modelId } : {})
+            })
+          })
+
+          if (!response.ok) {
+            const errorText = await response.text()
+            console.error('Variant row creation failed:', { file: file.name, status: response.status, error: errorText })
+            throw new Error(`Failed to create variant row for ${file.name}: ${response.status} ${errorText}`)
+          }
+
+          const { row } = await response.json()
+          console.log('Variant row created successfully:', row.id)
+          return { row, file }
+        }, 5, 2000)
+      })
+
+      const createdRows = await Promise.all(createRowPromises)
+
+      // Initialize bulk upload state
+      const initialBulkState = createdRows.map(({ row, file }) => ({
+        rowId: row.id,
         filename: file.name,
         status: 'pending' as const,
         progress: 0
       }))
       setBulkUploadState(initialBulkState)
 
-      // Convert files to base64 for server processing
-      const filesData = await Promise.all(
-        imageFiles.map(async (file) => {
-          return new Promise<{ name: string; size: number; type: string; data: string }>((resolve, reject) => {
-            const reader = new FileReader()
-            reader.onload = () => {
-              const base64 = (reader.result as string).split(',')[1] // Remove data:image/...;base64, prefix
-              resolve({
-                name: file.name,
-                size: file.size,
-                type: file.type,
-                data: base64
-              })
-            }
-            reader.onerror = reject
-            reader.readAsDataURL(file)
-          })
-        })
-      )
-
-      // Update UI to show processing
-      setBulkUploadState(prev => prev.map(item => ({ ...item, status: 'uploading', progress: 50 })))
-
-      // Call server-side bulk upload API
-      const { data: { session } } = await supabase.auth.getSession()
-      const response = await fetch('/api/variants/upload/bulk', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session?.access_token}`
-        },
-        body: JSON.stringify({
-          model_id: modelId || null,
-          files: filesData
-        })
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Server-side bulk upload failed: ${response.status} ${errorText}`)
-      }
-
-      const result = await response.json()
-      console.log('Bulk upload result:', result)
-
-      // Update UI with results and add rows immediately for real-time updates
-      const updatedBulkState = imageFiles.map((file, index) => {
-        const successResult = result.results.find((r: any) => r.filename === file.name)
-        const errorResult = result.errors.find((e: any) => e.filename === file.name)
+      // Add new rows to the UI immediately
+      const normalizedRows = createdRows.map(({ row }) => ({
+        ...row,
+        variant_row_images: row.variant_row_images || []
+      }))
+      setRows(prev => {
+        const existingIds = new Set(prev.map(r => r.id))
+        const newRows = normalizedRows.filter((row: any) => !existingIds.has(row.id))
+        const updatedRows = [...newRows, ...prev]
         
-        if (successResult) {
-          return {
-            rowId: successResult.row.id,
-            filename: file.name,
-            status: 'success' as const,
-            progress: 100
-          }
-        } else if (errorResult) {
-          return {
-            rowId: `temp-${index}`,
-            filename: file.name,
-            status: 'error' as const,
-            progress: 0,
-            error: errorResult.error
-          }
-        } else {
-          return {
-            rowId: `temp-${index}`,
-            filename: file.name,
-            status: 'error' as const,
-            progress: 0,
-            error: 'Unknown error'
-          }
+        if (onRowsChange) {
+          setTimeout(() => {
+            onRowsChange(updatedRows)
+          }, 0)
         }
-      })
-      setBulkUploadState(updatedBulkState)
-
-      // Add successful rows to the UI immediately for real-time updates
-      if (result.results.length > 0) {
-        // Normalize rows to ensure images are properly structured
-        const normalizedRows = result.results.map((r: any) => {
-          const row = r.row
-          // Ensure variant_row_images is properly structured
-          const normalizedRow = {
-            ...row,
-            variant_row_images: (row.variant_row_images || []).map((img: any) => ({
-              ...img,
-              is_generated: img.is_generated === true
-            }))
-          }
-          return normalizedRow
-        })
-
-        // Add rows to state immediately with images included
-        setRows(prev => {
-          const existingIds = new Set(prev.map(r => r.id))
-          const newRows = normalizedRows.filter((row: any) => !existingIds.has(row.id))
-          const updatedRows = [...newRows, ...prev]
-          
-          // Trigger onRowsChange callback immediately for parent component updates
-          if (onRowsChange) {
-            // Use setTimeout to ensure state update completes first
-            setTimeout(() => {
-              onRowsChange(updatedRows)
-            }, 0)
-          }
-          
-          return updatedRows
-        })
-
-        // Refresh rows in parallel (not sequentially) to load images and thumbnails immediately
-        // This is much faster than sequential refreshes
-        const refreshPromises = normalizedRows.map((row: any) => 
-          refreshSingleRow(row.id, 0).catch((err) => {
-            console.warn(`Failed to refresh row ${row.id}:`, err)
-            // Don't throw - individual failures shouldn't block others
-            return null
-          })
-        )
         
-        // Wait for all refreshes to complete in parallel
-        await Promise.all(refreshPromises)
+        return updatedRows
+      })
+
+      // Step 2: Upload images directly to Supabase Storage and add to rows
+      const BATCH_SIZE = 2
+      const batches = []
+      for (let i = 0; i < createdRows.length; i += BATCH_SIZE) {
+        batches.push(createdRows.slice(i, i + BATCH_SIZE))
       }
 
-      // Clear timeout since upload completed successfully
+      let successCount = 0
+      let errorCount = 0
+
+      for (const [batchIndex, batch] of batches.entries()) {
+        console.log(`Processing batch ${batchIndex + 1}/${batches.length} with ${batch.length} files`)
+        
+        const batchPromises = batch.map(async ({ row, file }, fileIndex) => {
+          let uploadedFilePath: string | null = null
+          try {
+            // Update status to uploading
+            setBulkUploadState(prev => prev.map(item => 
+              item.rowId === row.id 
+                ? { ...item, status: 'uploading' as const, progress: 0 }
+                : item
+            ))
+
+            // Add staggered delay within batch
+            if (fileIndex > 0) {
+              await new Promise(resolve => setTimeout(resolve, fileIndex * 200))
+            }
+
+            // Upload image directly to Supabase Storage
+            const uploadResult = await retryWithBackoff(async () => {
+              await refreshAuth()
+              return uploadImage(file, 'refs', user.id)
+            }, 3, 1000)
+
+            uploadedFilePath = uploadResult.objectPath
+
+            // Add image to variant row via API
+            const { data: { session } } = await supabase.auth.getSession()
+            const addImageResponse = await fetch(`/api/variants/rows/${row.id}/images`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session?.access_token}`
+              },
+              body: JSON.stringify({
+                images: [{
+                  outputPath: uploadResult.objectPath,
+                  thumbnailPath: null,
+                  sourceRowId: null
+                }]
+              })
+            })
+
+            if (!addImageResponse.ok) {
+              const errorText = await addImageResponse.text()
+              throw new Error(`Failed to add image to row: ${addImageResponse.status} ${errorText}`)
+            }
+
+            // Refresh row to get full data
+            await refreshSingleRow(row.id, 0)
+            
+            // Update bulk upload state to success
+            setBulkUploadState(prev => prev.map(item => 
+              item.rowId === row.id 
+                ? { ...item, status: 'success' as const, progress: 100 }
+                : item
+            ))
+
+            return { success: true, filename: file.name }
+          } catch (error) {
+            console.error(`Error uploading ${file.name}:`, error)
+            
+            // Cleanup: Delete uploaded file and created row if upload failed
+            try {
+              // Delete uploaded file from storage if it was uploaded
+              if (uploadedFilePath) {
+                const [bucket, ...keyParts] = uploadedFilePath.split('/')
+                const key = keyParts.join('/')
+                if (bucket && key) {
+                  await supabase.storage.from(bucket).remove([key])
+                  console.log(`Cleaned up uploaded file: ${uploadedFilePath}`)
+                }
+              }
+              
+              // Delete the created row
+              const { data: { session } } = await supabase.auth.getSession()
+              await fetch(`/api/variants/rows/${row.id}`, {
+                method: 'DELETE',
+                headers: {
+                  'Authorization': `Bearer ${session?.access_token}`
+                }
+              })
+              console.log(`Cleaned up orphaned variant row ${row.id} for failed upload: ${file.name}`)
+              
+              // Remove row from UI state
+              setRows(prev => prev.filter(r => r.id !== row.id))
+            } catch (cleanupError) {
+              console.error(`Failed to cleanup row ${row.id} and file:`, cleanupError)
+            }
+            
+            // Update bulk upload state to error
+            setBulkUploadState(prev => prev.map(item => 
+              item.rowId === row.id 
+                ? { 
+                    ...item, 
+                    status: 'error' as const, 
+                    progress: 0,
+                    error: error instanceof Error ? error.message : 'Upload failed'
+                  }
+                : item
+            ))
+
+            return { success: false, filename: file.name, error }
+          }
+        })
+
+        // Wait for current batch to complete
+        const batchResults = await Promise.all(batchPromises)
+        
+        // Count results
+        batchResults.forEach(result => {
+          if (result.success) {
+            successCount++
+          } else {
+            errorCount++
+          }
+        })
+
+        // Delay between batches
+        if (batchIndex < batches.length - 1) {
+          console.log(`Waiting 2 seconds before next batch...`)
+          await new Promise(resolve => setTimeout(resolve, 2000))
+        }
+      }
+
+      // Clear timeout since upload completed
       clearTimeout(timeoutId)
 
       // Show completion toast
-      if (result.summary.successful > 0) {
+      if (successCount > 0) {
         toast({
           title: 'Bulk upload completed',
-          description: `Successfully uploaded ${result.summary.successful} image${result.summary.successful === 1 ? '' : 's'}${result.summary.failed > 0 ? `, ${result.summary.failed} failed` : ''}`,
-          variant: result.summary.failed > 0 ? 'destructive' : 'default'
+          description: `Successfully uploaded ${successCount} image${successCount === 1 ? '' : 's'}${errorCount > 0 ? `, ${errorCount} failed` : ''}`,
+          variant: errorCount > 0 ? 'destructive' : 'default'
         })
       }
 
@@ -2915,7 +3095,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         variant: 'destructive'
       })
     } finally {
-      // Always clear the uploading flag, even if timeout or error occurred
+      // Always clear the uploading flag
       clearTimeout(timeoutId)
       setIsBulkUploading(false)
     }
@@ -3485,7 +3665,11 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                       {/* Reference Images Column */}
                       <TableCell 
                         className={`align-top p-2 transition-all duration-200 ${
-                          dragOverRefRowId === row.id ? 'bg-primary/10 ring-2 ring-primary ring-offset-2' : ''
+                          dragOverRefRowId === row.id 
+                            ? draggedImageSourceRowId === row.id 
+                              ? 'bg-destructive/10 ring-2 ring-destructive ring-offset-2' 
+                              : 'bg-primary/10 ring-2 ring-primary ring-offset-2'
+                            : ''
                         }`}
                         onDragOver={(e) => handleRefDragOver(e, row.id)}
                         onDragLeave={(e) => handleRefDragLeave(e, row.id)}
@@ -3493,14 +3677,19 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                       >
                         {dragOverRefRowId === row.id && (
                           <div className="mb-2 p-2 bg-primary/20 border-2 border-dashed border-primary rounded text-center text-xs font-medium text-primary">
-                            Drop images here
+                            {draggedImageId ? 'Drop to copy image here' : 'Drop images here'}
                           </div>
                         )}
                         <div className="flex flex-col gap-1.5">
                           {referenceImages.slice(0, isExpanded ? 4 : 2).map((image, refIndex) => (
                             <div 
                               key={image.id} 
-                              className="group relative w-32 h-32 rounded overflow-hidden bg-muted border border-border/50 shadow-sm hover:shadow-md transition-all duration-200 hover:scale-105 hover:border-primary/50 cursor-zoom-in"
+                              draggable={true}
+                              onDragStart={(e) => handleImageDragStart(e, image, row.id)}
+                              onDragEnd={handleImageDragEnd}
+                              className={`group relative w-32 h-32 rounded overflow-hidden bg-muted border border-border/50 shadow-sm hover:shadow-md transition-all duration-200 hover:scale-105 hover:border-primary/50 cursor-grab active:cursor-grabbing ${
+                                draggedImageId === image.id ? 'opacity-50 scale-95' : ''
+                              } ${draggedImageSourceRowId === row.id && draggedImageId ? 'ring-2 ring-primary' : ''}`}
                               onClick={async (e) => {
                                 e.stopPropagation()
                                 const actualIndex = referenceImages.findIndex(refImg => refImg.id === image.id)
@@ -3859,8 +4048,6 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                                         className="absolute bottom-1 right-1 z-20"
                                         onClick={(e) => {
                                           e.stopPropagation()
-                                          e.preventDefault()
-                                          handleToggleImageSelection(img.id)
                                         }}
                                       >
                                         <div className="p-1 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-sm">
@@ -3872,7 +4059,6 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                                             className="h-3.5 w-3.5"
                                             onClick={(e) => {
                                               e.stopPropagation()
-                                              e.preventDefault()
                                             }}
                                           />
                                         </div>
@@ -4086,8 +4272,6 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                                       className="absolute bottom-1 right-1 z-20"
                                       onClick={(e) => {
                                         e.stopPropagation()
-                                        e.preventDefault()
-                                        handleToggleImageSelection(img.id)
                                       }}
                                     >
                                       <div className="p-1 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-sm">
@@ -4099,7 +4283,6 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                                           className="h-3.5 w-3.5"
                                           onClick={(e) => {
                                             e.stopPropagation()
-                                            e.preventDefault()
                                           }}
                                         />
                                       </div>

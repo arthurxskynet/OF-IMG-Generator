@@ -51,7 +51,7 @@ const Page = () => {
 
     try {
       // Validate file
-      validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 10);
+      validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 50);
       
       // Show preview
       const previewUrl = URL.createObjectURL(file);
@@ -163,7 +163,7 @@ const Page = () => {
                     Choose Image
                   </Button>
                   <p className="text-xs text-muted-foreground mt-1">
-                    JPEG, PNG, WebP up to 10MB
+                    JPEG, PNG, WebP up to 50MB
                   </p>
                 </div>
               </div>

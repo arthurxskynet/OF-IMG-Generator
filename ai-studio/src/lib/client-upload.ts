@@ -78,7 +78,7 @@ export async function uploadToBucket(
 export function validateFile(
   file: File,
   allowedTypes: string[] = ['image/jpeg', 'image/png', 'image/webp'],
-  maxSizeMB: number = 10
+  maxSizeMB: number = 50
 ): void {
   if (!allowedTypes.includes(file.type)) {
     throw new Error(`File type ${file.type} not allowed. Allowed types: ${allowedTypes.join(', ')}`)
@@ -104,7 +104,7 @@ export async function uploadImage(
   options: UploadOptions = {}
 ): Promise<UploadResult> {
   // Validate image file
-  validateFile(file, ['image/jpeg', 'image/png', 'image/webp', 'image/gif'], 10)
+  validateFile(file, ['image/jpeg', 'image/png', 'image/webp', 'image/gif'], 50)
   
   return uploadToBucket(file, bucket, keyPrefix, {
     ...options,
