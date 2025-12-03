@@ -56,6 +56,7 @@ const Page = async ({ params, searchParams }: PageProps) => {
           output_url,
           thumbnail_url,
           is_favorited,
+          prompt_text,
           created_at
         )
       )

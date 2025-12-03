@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServer } from '@/lib/supabase-server'
 import { promptQueueService } from '@/lib/prompt-queue'
-import { signPath } from '@/lib/storage'
+import { signPath, normalizeStoragePath } from '@/lib/storage'
 import { getRemoteImageDimensions, computeMaxQualityDimensionsForRatio } from '@/lib/server-utils'
 import { isAdminUser } from '@/lib/admin'
+import { DEFAULT_MODEL_ID } from '@/lib/wavespeed-models'
 
 export async function POST(req: NextRequest) {
   const supabase = await createServer()
@@ -13,9 +14,9 @@ export async function POST(req: NextRequest) {
   try {
     const { rowId, useAiPrompt = false, preserveComposition = true } = await req.json()
 
-    // Get the row details
+    // Get the row details (including generation_model)
     const { data: row, error: er1 } = await supabase
-      .from('model_rows').select('*').eq('id', rowId).single()
+      .from('model_rows').select('*, generation_model').eq('id', rowId).single()
     if (er1 || !row) return NextResponse.json({ error: 'Row not found' }, { status: 404 })
 
     // Get the model details
@@ -172,12 +173,41 @@ export async function POST(req: NextRequest) {
       }
     }
     
+    // Get generation_model from row (default to nano-banana-pro-edit)
+    const generationModel = (row as any).generation_model || DEFAULT_MODEL_ID
+    
+    // Normalize all paths before storing in payload for consistency
+    const normalizedRefPaths = (refImages || [])
+      .map((path: string) => normalizeStoragePath(path))
+      .filter((path: string | null): path is string => path !== null)
+    const normalizedTargetPath = normalizeStoragePath(row.target_image_url)
+    
+    // Validate paths
+    if (!normalizedTargetPath) {
+      console.error('[JobCreate] Target path failed to normalize', {
+        rowId,
+        rawTargetPath: row.target_image_url
+      })
+      return NextResponse.json({ 
+        error: 'Invalid target image path. Please re-upload the image.' 
+      }, { status: 400 })
+    }
+    
+    if (normalizedRefPaths.length < refImages.length) {
+      console.warn('[JobCreate] Some reference paths failed to normalize', {
+        rowId,
+        totalRefPaths: refImages.length,
+        normalizedCount: normalizedRefPaths.length
+      })
+    }
+    
     const payload = {
-      refPaths: refImages,
-      targetPath: row.target_image_url,
+      refPaths: normalizedRefPaths,
+      targetPath: normalizedTargetPath,
       prompt: finalPrompt, // Will be updated when AI prompt completes
       width: outputWidth,
       height: outputHeight,
+      generation_model: generationModel,
       options: {
         preserveComposition
       }

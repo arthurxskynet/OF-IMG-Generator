@@ -17,7 +17,7 @@ import { useThumbnailLoader } from '@/hooks/use-thumbnail-loader'
 import { uploadImage, validateFile } from '@/lib/client-upload'
 import { createClient } from '@/lib/supabase-browser'
 import { getCachedSignedUrl, getOptimizedImageUrl } from '@/lib/image-loader'
-import { Plus, Upload, X, Sparkles, Folder, CheckCircle, XCircle, Wand2, Star, Download, Check, ChevronLeft, ChevronRight, Trash2, Maximize2, ImageIcon } from 'lucide-react'
+import { Plus, Upload, X, Sparkles, Folder, CheckCircle, XCircle, Wand2, Star, Download, Check, ChevronLeft, ChevronRight, Trash2, Maximize2, ImageIcon, Copy, AlertCircle, RefreshCw } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Progress } from '@/components/ui/progress'
@@ -25,8 +25,10 @@ import { Spinner } from '@/components/ui/spinner'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DimensionControls } from '@/components/dimension-controls'
 import { PromptEnhanceDialog } from '@/components/prompt-enhance-dialog'
+import { getAvailableModels, getWaveSpeedModel, DEFAULT_MODEL_ID } from '@/lib/wavespeed-models'
 
 interface ModelWorkspaceProps {
   model: Model
@@ -361,6 +363,23 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
         loadFullImageFromHook(image.id).catch(() => {})
       }
     })
+  }
+
+  // Copy prompt to clipboard
+  const handleCopyPrompt = async (promptText: string) => {
+    try {
+      await navigator.clipboard.writeText(promptText)
+      toast({
+        title: 'Prompt Copied',
+        description: 'Prompt has been copied to clipboard'
+      })
+    } catch {
+      toast({
+        title: 'Copy Failed',
+        description: 'Failed to copy prompt to clipboard',
+        variant: 'destructive'
+      })
+    }
   }
 
   // Keyboard navigation
@@ -727,6 +746,57 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
     if (live.status === 'succeeded') return 'done'
     if (live.status === 'failed') return 'error'
     return String(live.status)
+  }
+
+  // Check if a job appears stuck (no update for extended period or marked as stuck)
+  const isJobStuck = (rowId: string): boolean => {
+    const live = Object.values(pollingState).find(s => s.rowId === rowId && s.polling)
+    if (!live) return false
+    
+    // Check if explicitly marked as stuck
+    if ((live as any).isStuck) return true
+    
+    // Check if job has been in active status for too long without updates
+    const timeSinceLastUpdate = Date.now() - live.lastUpdate
+    const timeSinceCreated = Date.now() - ((live as any).createdAt || live.lastUpdate)
+    
+    // Consider stuck if:
+    // - No update for 2+ minutes AND job is at least 90 seconds old
+    // - OR job has been active for 5+ minutes
+    return (timeSinceLastUpdate > 2 * 60 * 1000 && timeSinceCreated > 90 * 1000) ||
+           (timeSinceCreated > 5 * 60 * 1000 && ['queued', 'submitted', 'running', 'saving'].includes(live.status))
+  }
+
+  // Retry stuck job by triggering cleanup and re-dispatch
+  const retryStuckJob = async (rowId: string) => {
+    try {
+      // Trigger cleanup to potentially recover the job
+      await fetch('/api/jobs/cleanup', { method: 'POST', cache: 'no-store' })
+      
+      // Trigger dispatch to pick up any recovered jobs
+      await fetch('/api/dispatch', { method: 'POST', cache: 'no-store' })
+      
+      // Restart polling for this row's jobs
+      const rowJobs = Object.values(pollingState).filter(s => s.rowId === rowId)
+      for (const jobState of rowJobs) {
+        const jobId = Object.keys(pollingState).find(id => pollingState[id] === jobState)
+        if (jobId) {
+          startPolling(jobId, jobState.status, rowId)
+        }
+      }
+      
+      toast({
+        title: 'Retry initiated',
+        description: 'Attempting to recover stuck job...'
+      })
+    } catch (error) {
+      console.error('Failed to retry stuck job:', error)
+      toast({
+        title: 'Retry failed',
+        description: 'Could not recover stuck job. Please try again.',
+        variant: 'destructive'
+      })
+    }
   }
 
   const statusToProgress = (status: string): number => {
@@ -3545,8 +3615,50 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
                             : ''
                           const isDisabled = !hasTarget || rowState.isGenerating || isActiveStatus(displayStatus) || rowState.isTargetSaving
                           const isActive = isActiveStatus(displayStatus) || rowState.isGenerating
+                          const currentModel = (row as any).generation_model || DEFAULT_MODEL_ID
+                          const availableModels = getAvailableModels()
                           return (
                             <div className="flex flex-col gap-2">
+                              {/* Model Selection Dropdown */}
+                              <Select
+                                value={currentModel}
+                                onValueChange={async (value) => {
+                                  try {
+                                    const response = await fetch(`/api/model-rows/${row.id}/generation-model`, {
+                                      method: 'PATCH',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ generation_model: value })
+                                    })
+                                    if (!response.ok) {
+                                      throw new Error('Failed to update model')
+                                    }
+                                    // Update local state
+                                    setRows(prev => prev.map(r => r.id === row.id ? { ...r, generation_model: value } : r))
+                                    toast({
+                                      title: 'Model updated',
+                                      description: `Switched to ${getWaveSpeedModel(value).name}`
+                                    })
+                                  } catch (error) {
+                                    toast({
+                                      title: 'Failed to update model',
+                                      description: error instanceof Error ? error.message : 'Unknown error',
+                                      variant: 'destructive'
+                                    })
+                                  }
+                                }}
+                                disabled={isDisabled}
+                              >
+                                <SelectTrigger className="h-7 text-xs w-full">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {availableModels.map((model) => (
+                                    <SelectItem key={model.id} value={model.id}>
+                                      {model.name}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
                               <Tooltip open={Boolean(isDisabled && !!disabledReason)}>
                                 <TooltipTrigger asChild>
                                   <Button
@@ -3610,31 +3722,65 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
                       {/* 6. Status */}
                       <TableCell className="align-top">
                         <div className="flex flex-col gap-2.5 min-w-[6.5rem]" aria-live="polite">
-                          <Badge 
-                            variant={getStatusColor(displayStatus) as any} 
-                            className={`w-fit shadow-sm ${
-                              isActiveStatus(displayStatus) 
-                                ? 'ring-2 ring-primary/20' 
-                                : ''
-                            }`}
-                          >
-                            <span className="inline-flex items-center gap-1.5">
-                              {isActiveStatus(displayStatus) && (
-                                <span className="h-2 w-2 rounded-full bg-current animate-pulse shadow-sm" />
-                              )}
-                              <span className="font-medium">{getStatusLabel(displayStatus)}</span>
-                            </span>
-                          </Badge>
+                          {(() => {
+                            const stuck = isJobStuck(row.id)
+                            return (
+                              <>
+                                <Badge 
+                                  variant={stuck ? 'destructive' : (getStatusColor(displayStatus) as any)} 
+                                  className={`w-fit shadow-sm ${
+                                    isActiveStatus(displayStatus) 
+                                      ? stuck
+                                        ? 'ring-2 ring-destructive/30'
+                                        : 'ring-2 ring-primary/20'
+                                      : ''
+                                  }`}
+                                >
+                                  <span className="inline-flex items-center gap-1.5">
+                                    {stuck && (
+                                      <AlertCircle className="h-3 w-3" />
+                                    )}
+                                    {isActiveStatus(displayStatus) && !stuck && (
+                                      <span className="h-2 w-2 rounded-full bg-current animate-pulse shadow-sm" />
+                                    )}
+                                    <span className="font-medium">
+                                      {stuck ? 'Stuck' : getStatusLabel(displayStatus)}
+                                    </span>
+                                  </span>
+                                </Badge>
+                                {stuck && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-7 text-xs"
+                                        onClick={() => retryStuckJob(row.id)}
+                                      >
+                                        <RefreshCw className="h-3 w-3 mr-1" />
+                                        Retry
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      <p>Attempt to recover this stuck job</p>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                )}
+                              </>
+                            )
+                          })()}
                           <div className="relative">
                             <Progress 
                               value={displayProgress} 
                               className={`h-2 rounded-full ${
                                 isActiveStatus(displayStatus)
-                                  ? 'bg-primary/10'
+                                  ? isJobStuck(row.id)
+                                    ? 'bg-destructive/10'
+                                    : 'bg-primary/10'
                                   : 'bg-muted'
                               }`}
                             />
-                            {isActiveStatus(displayStatus) && displayProgress > 0 && (
+                            {isActiveStatus(displayStatus) && displayProgress > 0 && !isJobStuck(row.id) && (
                               <div className="absolute inset-0 bg-gradient-to-r from-primary/20 via-primary/40 to-primary/20 rounded-full animate-pulse" />
                             )}
                           </div>
@@ -4008,6 +4154,27 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
                     </Button>
                   )}
                 </div>
+                
+                {/* Prompt Display */}
+                {currentImage.prompt_text && (
+                  <div className="border border-border/50 rounded-xl p-5 bg-gradient-to-br from-muted/50 to-muted/30 shadow-sm mt-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-sm font-semibold text-foreground">Prompt Used</h4>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleCopyPrompt(currentImage.prompt_text!)}
+                        className="h-8 px-3 text-xs"
+                      >
+                        <Copy className="h-3 w-3 mr-1.5" />
+                        Copy
+                      </Button>
+                    </div>
+                    <p className="text-sm text-muted-foreground max-h-32 overflow-y-auto whitespace-pre-wrap leading-relaxed font-mono bg-background/50 p-3 rounded-md border border-border/30">
+                      {currentImage.prompt_text}
+                    </p>
+                  </div>
+                )}
               </>
             )
           })()}

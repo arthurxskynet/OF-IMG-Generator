@@ -17,18 +17,36 @@ const PRESET_ENHANCEMENTS = {
     { label: '📱 iPhone selfie', value: 'Apply iPhone front camera selfie with soft focus, avoiding studio polish, keeping everything else the exact same' }
   ],
   lighting: [
+    // Quality improvements (with balanced exposure)
     { label: '🔥 Dramatic lighting', value: 'Apply dramatic lighting with balanced exposure' },
     { label: '🌅 Golden hour', value: 'Add golden hour lighting with warm color temperature and balanced exposure' },
-    { label: '💡 Harsh overhead', value: 'Change to harsh overhead lighting with balanced exposure' },
     { label: '🌙 Low-key lighting', value: 'Apply low-key lighting with balanced exposure' },
     { label: '🎭 Rembrandt lighting', value: 'Apply Rembrandt lighting with balanced exposure' },
-    { label: '🪟 Natural window light', value: 'Change to natural window lighting with balanced exposure' }
+    { label: '🪟 Natural window light', value: 'Change to natural window lighting with balanced exposure' },
+    // Degradation lighting (no balanced exposure)
+    { label: '💡 Flat overhead', value: 'Change to flat overhead ceiling light, slightly underexposed, no studio lighting, keeping everything else the exact same' },
+    { label: '🌓 Mixed color temps', value: 'Apply mixed warm indoor lights and cool daylight from window, auto-exposure struggling, shadows under eyes, keeping everything else the exact same' },
+    { label: '💡 Harsh fluorescent', value: 'Change to harsh overhead fluorescent light, slight green cast, no professional lighting, keeping everything else the exact same' },
+    { label: '🟠 Streetlight orange', value: 'Apply orange streetlight glow, uneven lighting across face, some areas in shadow, visible noise, keeping everything else the exact same' },
+    { label: '☀️ Backlit window', value: 'Apply strong backlight from window, subject slightly underexposed, details in face slightly muddy, background mildly blown out, keeping everything else the exact same' },
+    { label: '🎉 Mixed neon bar', value: 'Apply mixed neon and warm lighting, slight colour shift on skin, grainy dark corners, no clean studio edges, keeping everything else the exact same' }
   ],
   degradation: [
-    { label: '🎨 Lo-fi aesthetic', value: 'Add lo-fi aesthetic with chromatic aberration and lens distortion' },
-    { label: '💨 Motion blur artifacts', value: 'Apply motion blur with camera shake and streaking' },
-    { label: '✨ Lens flare', value: 'Add lens flare artifacts with washed-out highlights' },
-    { label: '🎞️ Film grain texture', value: 'Add film grain with color shifts and reduced dynamic range' }
+    { label: '📱 Dull room light', value: 'Turn this into a shot on an older iPhone in a small bedroom: flat overhead ceiling light, slightly underexposed, soft focus with hint of motion blur, faint grain and phone camera noise, no studio lighting, no depth-of-field effect, looks like an everyday unedited phone snapshot, keeping everything else the exact same' },
+    { label: '🌓 Auto-exposure struggling', value: 'Turn this into a casual iPhone photo: auto-exposure struggling with mixed warm indoor lights and cool daylight from window, shadows under eyes, slight overexposure on skin highlights, subtle digital noise, no professional lighting, looks like a quick photo a friend took, not a photoshoot, keeping everything else the exact same' },
+    { label: '🤳 Front camera selfie', value: 'Turn this into a shot captured with an iPhone front camera: arm\'s-length distance, slightly distorted wide-angle perspective, soft detail on skin, mild smoothing from phone processing, tiny bit of motion blur, default camera app look, no studio sharpness or cinematic feel, keeping everything else the exact same' },
+    { label: '📸 ISO noise + compression', value: 'Turn this into a realistic smartphone photo at high ISO: visible fine grain in darker areas, touch of colour noise, slightly muddy shadows, gentle JPEG compression artifacts around edges, ordinary 12-megapixel phone resolution, not ultra-sharp or 4K, keeping everything else the exact same' },
+    { label: '📷 Accidental pocket shot', value: 'Turn this into an unremarkable iPhone snapshot: awkward framing, subject slightly off-center, touch of motion blur from moving phone, mildly blown highlights on brightest areas, everyday camera-roll quality, looks like it was taken quickly without careful setup, keeping everything else the exact same' },
+    { label: '🌙 Dim bedroom at night', value: 'Turn this into a low-light iPhone photo in a dim bedroom: only bedside lamp on, soft yellow light, visible noise in background, slightly soft details, no dramatic contrast, realistic handheld phone shot at night, no pro lighting, keeping everything else the exact same' },
+    { label: '🪞 Grainy changing-room mirror', value: 'Turn this into an iPhone mirror selfie in a clothing changing room: harsh overhead fluorescent light, slight green cast, grainy midtones, soft edges around model, mirror smudges faintly visible, looks like a quick try-on photo for friends, keeping everything else the exact same' },
+    { label: '🟠 Streetlight glow', value: 'Turn this into a casual night-time iPhone photo under orange streetlights: uneven lighting across face, some areas in shadow, slight motion blur from slow shutter, visible noise in sky and background, looks like a real late-night phone snap, not a polished night portrait mode, keeping everything else the exact same' },
+    { label: '☀️ Backlit and muddy', value: 'Turn this into a realistic smartphone shot with strong backlight from window: subject a little underexposed, details in face slightly muddy, background mildly blown out, subtle lens flare streaks, overall soft contrast, like a quick phone pic taken against the light, keeping everything else the exact same' },
+    { label: '🎉 Club bar lighting', value: 'Turn this into a handheld iPhone photo in a bar: mixed neon and warm lighting, slight colour shift on skin, grainy dark corners, small motion blur from dancing or moving, no clean studio edges, looks like a social photo from a night out, keeping everything else the exact same' },
+    { label: '📸 Average camera-roll', value: 'Turn this into a simple vertical iPhone portrait: everyday camera-roll quality, medium sharpness but not hyper-detailed, slightly crooked horizon, cluttered background still in focus, no bokeh, no cinematic look, feels like a casual friend photo rather than a photoshoot, keeping everything else the exact same' },
+    { label: '🔍 Over-sharpened phone', value: 'Turn this into a standard iPhone camera processing: light over-sharpening on edges, slight halo around hair and clothing, textures not ultra-fine, small amount of HDR look in sky and shadows, typical modern phone photo rather than professional lens rendering, keeping everything else the exact same' },
+    { label: '👓 Slightly dirty lens', value: 'Turn this into a realistic smartphone photo taken with slightly smudged lens: very subtle hazy glow over bright areas, reduced micro-contrast, softer detail around highlights, no crisp studio lighting, gives impression of a real, imperfect phone camera, keeping everything else the exact same' },
+    { label: '🚶 Quick hallway snap', value: 'Turn this into a quick iPhone hallway snapshot: subject mid-step, little motion blur in hands or legs, uneven indoor lighting, background objects in full focus, mild noise, overall feel of an unplanned photo rather than a staged shoot, keeping everything else the exact same' },
+    { label: '💬 Sent to a mate', value: 'Turn this into a low-effort iPhone photo: casual pose, slightly awkward crop cutting off parts of body, plain indoor lighting with no dramatic shadows, moderate grain, normal phone dynamic range with some clipped whites and crushed blacks, looks like something sent over WhatsApp, not an advert, keeping everything else the exact same' }
   ],
   composition: [
     { label: '📷 Casual snap', value: 'Turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, flat indoor lighting, avoiding studio polish, keeping everything else the exact same' },
@@ -155,16 +173,8 @@ export function VariantPromptEnhanceDialog({
     }
 
     // Get the absolute latest prompt value from ref to avoid stale closures
-    const latestPrompt = latestPromptRef.current || currentPrompt
-    
-    if (!latestPrompt) {
-      toast({
-        title: "No prompt",
-        description: "Please provide a prompt to enhance.",
-        variant: "destructive"
-      })
-      return
-    }
+    // Use empty string if no prompt exists (allows generating new prompts from presets)
+    const latestPrompt = latestPromptRef.current || currentPrompt || ''
 
     setIsLoading(true)
 
@@ -175,7 +185,7 @@ export function VariantPromptEnhanceDialog({
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          existingPrompt: latestPrompt,
+          existingPrompt: latestPrompt || '',
           userInstructions: instructions,
           imagePaths
         }),
@@ -282,7 +292,10 @@ export function VariantPromptEnhanceDialog({
             Enhance Variant Prompt with AI
           </DialogTitle>
           <DialogDescription>
-            Give instructions to refine the current variant prompt while keeping the same structure and safety rules.
+            {currentPrompt ? 
+              "Give instructions to refine the current variant prompt while keeping the same structure and safety rules." :
+              "Select presets or provide instructions to generate a new variant prompt."
+            }
           </DialogDescription>
         </DialogHeader>
 
@@ -290,12 +303,14 @@ export function VariantPromptEnhanceDialog({
           <div className="grid gap-4 py-2">
             {step === 'input' && (
               <>
-                <div className="grid gap-2">
-                  <Label>Current Prompt</Label>
-                  <div className="rounded-md border bg-muted p-3 text-sm text-muted-foreground max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words">
-                    {latestPromptRef.current || currentPrompt}
+                {currentPrompt && (
+                  <div className="grid gap-2">
+                    <Label>Current Prompt</Label>
+                    <div className="rounded-md border bg-muted p-3 text-sm text-muted-foreground max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words">
+                      {latestPromptRef.current || currentPrompt}
+                    </div>
                   </div>
-                </div>
+                )}
 
                 <div className="grid gap-2">
                   <Label htmlFor="instructions">
@@ -354,7 +369,10 @@ export function VariantPromptEnhanceDialog({
                     className="resize-y max-h-[200px] overflow-y-auto font-mono text-sm"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Select multiple presets to combine effects. The AI will analyze your images and adjust the prompt accordingly with Seedream v4 principles.
+                    {currentPrompt ? 
+                      "Select multiple presets to combine effects. The AI will analyze your images and adjust the prompt accordingly with Seedream v4 principles." :
+                      "Select multiple presets to combine effects. The AI will generate a new prompt based on your selections using Seedream v4 principles."
+                    }
                   </p>
                 </div>
               </>
@@ -399,12 +417,12 @@ export function VariantPromptEnhanceDialog({
                 {isLoading ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Enhancing...
+                    {currentPrompt ? 'Enhancing...' : 'Generating...'}
                   </>
                 ) : (
                   <>
                     <Wand2 className="mr-2 h-4 w-4" />
-                    Enhance Prompt
+                    {currentPrompt ? 'Enhance Prompt' : 'Generate Prompt'}
                   </>
                 )}
               </Button>

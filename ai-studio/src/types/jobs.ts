@@ -32,6 +32,7 @@ export interface Job {
     prompt: string
     width: number
     height: number
+    generation_model?: string
     options?: {
       preserveComposition?: boolean
     }
@@ -48,6 +49,7 @@ export interface ModelRow {
   target_image_url?: string
   prompt_override?: string
   match_target_ratio?: boolean
+  generation_model?: string
   status: RowStatus
   created_at: string
   updated_at: string

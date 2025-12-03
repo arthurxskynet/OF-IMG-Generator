@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import axios from 'axios'
 import { supabaseAdmin } from '@/lib/supabase-admin'
-import { signPath } from '@/lib/storage'
+import { signPath, normalizeStoragePath } from '@/lib/storage'
+import { getWaveSpeedModel, dimensionsToAspectRatio, dimensionsToResolution, DEFAULT_MODEL_ID } from '@/lib/wavespeed-models'
 // import { getRemoteImageSizeAsSeedream } from '@/lib/server-utils'
 // import { normalizeSizeOrDefault } from '@/lib/utils'
 import type { Job } from '@/types/jobs'
@@ -10,6 +11,8 @@ const MAX_CONCURRENCY = Number(process.env.DISPATCH_MAX_CONCURRENCY || 3)
 const ACTIVE_WINDOW_MS = Number(process.env.DISPATCH_ACTIVE_WINDOW_MS || 10 * 60 * 1000) // 10 minutes
 const STALE_MAX_MS = Number(process.env.DISPATCH_STALE_MAX_MS || 60 * 60 * 1000) // 60 minutes
 const ACTIVE_STATUSES: Job['status'][] = ['submitted', 'running', 'saving']
+// Track last cleanup time for periodic cleanup (every 30 seconds)
+let lastCleanupTime = 0
 
 export async function POST(req: NextRequest) {
   const supabase = supabaseAdmin
@@ -85,9 +88,15 @@ export async function POST(req: NextRequest) {
     }
 
     // Mark associated rows as running if they were queued/idle
-    const rowIds = [...new Set(claimed.map(job => job.row_id))]
+    const rowIds = [...new Set(claimed.map(job => job.row_id).filter(Boolean))]
     if (rowIds.length > 0) {
       await supabase.rpc('mark_rows_running', { p_row_ids: rowIds })
+    }
+
+    // Mark associated variant rows as running if they were queued/idle
+    const variantRowIds = [...new Set(claimed.map(job => job.variant_row_id).filter(Boolean))]
+    if (variantRowIds.length > 0) {
+      await supabase.rpc('mark_variant_rows_running', { p_variant_row_ids: variantRowIds })
     }
 
     // Process claimed jobs in parallel to utilize available slots
@@ -101,6 +110,7 @@ export async function POST(req: NextRequest) {
           prompt: string
           width: number
           height: number
+          generation_model?: string
         }
 
         // Check if this job is waiting for AI prompt generation
@@ -175,28 +185,76 @@ export async function POST(req: NextRequest) {
         }
 
         console.log('[Dispatch] job start', { 
-          jobId: job.id, 
+          jobId: job.id,
+          currentStatus: job.status,
+          variantRowId: job.variant_row_id,
+          rowId: job.row_id,
+          modelId: job.model_id,
           refPathsCount: payload.refPaths?.length || 0,
           refPaths: payload.refPaths?.map(p => p.slice(-30)) || [],
           targetPath: payload.targetPath?.slice(-30),
-          promptLength: payload.prompt?.length || 0
+          promptLength: payload.prompt?.length || 0,
+          generationModel: payload.generation_model || DEFAULT_MODEL_ID
         })
 
-        // Sign URLs for the images (120s expiry for external API call)
+        // Normalize all paths before signing URLs
+        const normalizedRefPaths = (payload.refPaths || [])
+          .map(path => normalizeStoragePath(path))
+          .filter((path): path is string => path !== null)
+        const normalizedTargetPath = normalizeStoragePath(payload.targetPath)
+        
+        // Log any paths that failed to normalize
+        if (normalizedRefPaths.length < (payload.refPaths?.length || 0)) {
+          const failedPaths = (payload.refPaths || [])
+            .map(path => ({ original: path, normalized: normalizeStoragePath(path) }))
+            .filter(({ normalized }) => !normalized)
+            .map(({ original }) => original)
+          console.error('[Dispatch] Some reference paths failed to normalize', {
+            jobId: job.id,
+            failedPaths,
+            totalRefPaths: payload.refPaths?.length || 0,
+            normalizedCount: normalizedRefPaths.length
+          })
+        }
+        
+        if (!normalizedTargetPath) {
+          console.error('[Dispatch] Target path failed to normalize', {
+            jobId: job.id,
+            rawTargetPath: payload.targetPath
+          })
+          throw new Error(`Target image path is invalid: ${payload.targetPath}`)
+        }
+
+        // Sign URLs for the images (600s expiry for external API call)
         const signStart = Date.now()
         const [refUrlsRaw, targetUrl] = await Promise.all([
-          payload.refPaths && payload.refPaths.length > 0 
-            ? Promise.all(payload.refPaths.map(path => signPath(path, 600)))
+          normalizedRefPaths.length > 0 
+            ? Promise.all(normalizedRefPaths.map(path => signPath(path, 600)))
             : Promise.resolve([]),
-          signPath(payload.targetPath, 600)
+          signPath(normalizedTargetPath, 600)
         ])
         
-        // Filter out null values (missing files)
+        // Filter out null values (missing files) and log which ones failed
         const refUrls = (Array.isArray(refUrlsRaw) ? refUrlsRaw : []).filter((url): url is string => url !== null)
+        const failedRefSigns = normalizedRefPaths.filter((path, index) => !refUrlsRaw[index])
+        
+        if (failedRefSigns.length > 0) {
+          console.warn('[Dispatch] Some reference image URLs failed to sign', {
+            jobId: job.id,
+            failedPaths: failedRefSigns.map(p => p.slice(-40)),
+            totalRefPaths: normalizedRefPaths.length,
+            successfulSigns: refUrls.length
+          })
+        }
         
         // Validate target URL exists
         if (!targetUrl) {
-          throw new Error('Target image not found or cannot be accessed')
+          console.error('[Dispatch] Target image URL signing failed', {
+            jobId: job.id,
+            normalizedPath: normalizedTargetPath,
+            rawPath: payload.targetPath
+          })
+          throw new Error(`Target image not found or cannot be accessed: ${normalizedTargetPath}`)
         }
         
         console.log('[Dispatch] signed URLs', { 
@@ -219,12 +277,16 @@ export async function POST(req: NextRequest) {
         const clampedWidth = Math.max(1024, Math.min(4096, width))
         const clampedHeight = Math.max(1024, Math.min(4096, height))
         
-        const finalSize = `${clampedWidth}*${clampedHeight}`
-        console.log('[Dispatch] using model dimensions', { 
+        // Get generation model (default to nano-banana-pro-edit)
+        const generationModel = payload.generation_model || DEFAULT_MODEL_ID
+        const modelConfig = getWaveSpeedModel(generationModel)
+        
+        console.log('[Dispatch] using model', { 
           jobId: job.id, 
+          generationModel,
+          modelName: modelConfig.name,
           width: clampedWidth,
-          height: clampedHeight,
-          size: finalSize
+          height: clampedHeight
         })
 
         // Base URL fallback to docs value if unset
@@ -246,27 +308,62 @@ export async function POST(req: NextRequest) {
         // Handle case where no reference images exist (target-only processing)
         const allImages = refUrls.length > 0 ? [...refUrls, targetUrl] : [targetUrl]
         
-        console.log('[WaveSpeed] submit', {
-          jobId: job.id,
-          endpoint: '/api/v3/bytedance/seedream-v4/edit',
-          imagesCount: allImages.length,
-          refImagesCount: refUrls.length,
-          operationType: refUrls.length > 0 ? 'face-swap' : 'target-only',
-          promptLength: finalPrompt ? finalPrompt.length : 0,
-          size: finalSize,
-          urlPreviews: allImages.map(previewUrl)
-        })
-
-        // Make the WaveSpeed API call in async mode with retry (network/transient 5xx)
-        const submitOnce = () => axios.post(
-          `${base}/api/v3/bytedance/seedream-v4/edit`,
-          {
+        // Build request payload based on model type
+        let requestPayload: any
+        if (generationModel === 'nano-banana-pro-edit') {
+          // Nano Banana Pro Edit uses resolution, aspect_ratio, and output_format
+          const resolution = dimensionsToResolution(clampedWidth, clampedHeight)
+          const aspectRatio = dimensionsToAspectRatio(clampedWidth, clampedHeight)
+          
+          requestPayload = {
+            prompt: finalPrompt,
+            images: allImages,
+            resolution: resolution,
+            aspect_ratio: aspectRatio,
+            output_format: modelConfig.defaultOutputFormat,
+            enable_sync_mode: false,
+            enable_base64_output: false
+          }
+          
+          console.log('[WaveSpeed] submit (Nano Banana Pro Edit)', {
+            jobId: job.id,
+            endpoint: modelConfig.endpoint,
+            imagesCount: allImages.length,
+            refImagesCount: refUrls.length,
+            operationType: refUrls.length > 0 ? 'face-swap' : 'target-only',
+            promptLength: finalPrompt ? finalPrompt.length : 0,
+            resolution,
+            aspectRatio,
+            urlPreviews: allImages.map(previewUrl)
+          })
+        } else {
+          // Seedream V4 Edit uses size parameter
+          const finalSize = `${clampedWidth}*${clampedHeight}`
+          
+          requestPayload = {
             prompt: finalPrompt,
             images: allImages,
             size: finalSize,
             enable_sync_mode: false,
             enable_base64_output: false
-          },
+          }
+          
+          console.log('[WaveSpeed] submit (Seedream V4 Edit)', {
+            jobId: job.id,
+            endpoint: modelConfig.endpoint,
+            imagesCount: allImages.length,
+            refImagesCount: refUrls.length,
+            operationType: refUrls.length > 0 ? 'face-swap' : 'target-only',
+            promptLength: finalPrompt ? finalPrompt.length : 0,
+            size: finalSize,
+            urlPreviews: allImages.map(previewUrl)
+          })
+        }
+
+        // Make the WaveSpeed API call in async mode with retry (network/transient 5xx)
+        const submitOnce = () => axios.post(
+          `${base}${modelConfig.endpoint}`,
+          requestPayload,
           {
             headers: {
               Authorization: `Bearer ${process.env.WAVESPEED_API_KEY}`,
@@ -284,11 +381,23 @@ export async function POST(req: NextRequest) {
             (e?.code === 'ECONNRESET' || e?.code === 'ETIMEDOUT')
           if (retriable) {
             console.warn('[WaveSpeed] submit retrying once due to transient error', {
-              status: e?.response?.status, code: e?.code
+              jobId: job.id,
+              status: e?.response?.status,
+              code: e?.code,
+              message: e?.message,
+              endpoint: modelConfig.endpoint
             })
             await new Promise(r => setTimeout(r, 1000))
             resp = await submitOnce()
+            console.log('[WaveSpeed] retry successful', { jobId: job.id })
           } else {
+            console.error('[WaveSpeed] submit failed with non-retriable error', {
+              jobId: job.id,
+              status: e?.response?.status,
+              code: e?.code,
+              message: e?.message,
+              endpoint: modelConfig.endpoint
+            })
             throw e
           }
         }
@@ -296,14 +405,21 @@ export async function POST(req: NextRequest) {
         // Unwrap provider response and save request id for polling
         // WaveSpeed API response structure: { code, message, data: { id, status, ... } }
         const responseData = resp?.data?.data
-        const providerId = responseData?.id || null
+        // Try multiple possible locations for provider ID
+        const providerId = responseData?.id 
+          || responseData?.request_id 
+          || responseData?.requestId 
+          || resp?.data?.id 
+          || null
 
         console.log('[WaveSpeed] submitted', {
           jobId: job.id,
           providerId,
           status: responseData?.status,
           responseCode: resp?.data?.code,
-          responseMessage: resp?.data?.message
+          responseMessage: resp?.data?.message,
+          responseDataKeys: responseData ? Object.keys(responseData) : [],
+          hasResponseData: !!responseData
         })
 
         // If we got a successful response but no provider ID, mark as failed
@@ -311,19 +427,70 @@ export async function POST(req: NextRequest) {
           console.error(`[WaveSpeed] No provider ID returned for job ${job.id}`, {
             responseCode: resp?.data?.code,
             responseMessage: resp?.data?.message,
-            fullResponse: resp?.data
+            responseDataStructure: {
+              hasData: !!responseData,
+              dataKeys: responseData ? Object.keys(responseData) : [],
+              dataId: responseData?.id,
+              rootId: resp?.data?.id,
+              fullResponse: JSON.stringify(resp?.data).substring(0, 500) // Limit log size
+            },
+            generationModel: payload.generation_model || DEFAULT_MODEL_ID,
+            endpoint: modelConfig.endpoint
           })
+          
+          // Update job status to failed with detailed error
           await supabase.from('jobs').update({
             status: 'failed',
-            error: 'No provider request ID returned from WaveSpeed API',
+            error: `No provider request ID returned from WaveSpeed API. Response code: ${resp?.data?.code || 'unknown'}, Message: ${resp?.data?.message || 'none'}`,
             updated_at: new Date().toISOString()
           }).eq('id', job.id)
+
+          // Update row status (model rows or variant rows)
+          if (job.row_id) {
+            const [{ count: remaining }, { count: succeeded }] = await Promise.all([
+              supabase.from('jobs')
+                .select('*', { count: 'exact', head: true })
+                .eq('row_id', job.row_id)
+                .in('status', ['queued', 'running', 'submitted', 'saving']),
+              supabase.from('jobs')
+                .select('*', { count: 'exact', head: true })
+                .eq('row_id', job.row_id)
+                .eq('status', 'succeeded')
+            ])
+
+            await supabase.from('model_rows').update({
+              status: (remaining ?? 0) > 0
+                ? 'partial'
+                : (succeeded ?? 0) > 0
+                  ? 'done'
+                  : 'error'
+            }).eq('id', job.row_id)
+          } else if (job.variant_row_id) {
+            // Update variant row status using database function
+            await supabase.rpc('update_variant_row_status', { p_variant_row_id: job.variant_row_id })
+          }
         } else {
-          await supabase.from('jobs').update({
+          // Successfully got provider ID - update job with provider_request_id and status
+          const updateResult = await supabase.from('jobs').update({
             provider_request_id: providerId,
             status: 'submitted', // Update status to submitted once we have provider ID
             updated_at: new Date().toISOString()
-          }).eq('id', job.id)
+          }).eq('id', job.id).select('id, provider_request_id, status')
+          
+          if (updateResult.error) {
+            console.error('[Dispatch] Failed to update job with provider_request_id', {
+              jobId: job.id,
+              providerId,
+              error: updateResult.error.message,
+              errorCode: updateResult.error.code
+            })
+          } else {
+            console.log('[Dispatch] Successfully updated job with provider_request_id', {
+              jobId: job.id,
+              providerId,
+              updatedJob: updateResult.data?.[0]
+            })
+          }
         }
       } catch (e: any) {
         const providerMessage = e?.response?.data?.error
@@ -332,12 +499,18 @@ export async function POST(req: NextRequest) {
           ?? null
         const errMessage = providerMessage || (e?.message ?? 'submit error')
 
+        // Safely extract generation_model from job payload (payload may not be defined if error occurred early)
+        const jobPayload = job.request_payload as { generation_model?: string } | null
+        const generationModel = jobPayload?.generation_model || DEFAULT_MODEL_ID
+        const modelConfig = getWaveSpeedModel(generationModel)
+        
         console.error(`Failed to submit job ${job.id}:`, {
           status: e?.response?.status,
           statusText: e?.response?.statusText,
           error: errMessage,
           fullResponseData: e?.response?.data,
-          endpoint: '/api/v3/bytedance/seedream-v4/edit'
+          endpoint: modelConfig.endpoint,
+          generationModel
         })
         await supabase.from('jobs').update({
           status: 'failed',
@@ -345,24 +518,30 @@ export async function POST(req: NextRequest) {
           updated_at: new Date().toISOString()
         }).eq('id', job.id)
 
-        const [{ count: remaining }, { count: succeeded }] = await Promise.all([
-          supabase.from('jobs')
-            .select('*', { count: 'exact', head: true })
-            .eq('row_id', job.row_id)
-            .in('status', ['queued', 'running', 'submitted', 'saving']),
-          supabase.from('jobs')
-            .select('*', { count: 'exact', head: true })
-            .eq('row_id', job.row_id)
-            .eq('status', 'succeeded')
-        ])
+        // Update row status (model rows or variant rows)
+        if (job.row_id) {
+          const [{ count: remaining }, { count: succeeded }] = await Promise.all([
+            supabase.from('jobs')
+              .select('*', { count: 'exact', head: true })
+              .eq('row_id', job.row_id)
+              .in('status', ['queued', 'running', 'submitted', 'saving']),
+            supabase.from('jobs')
+              .select('*', { count: 'exact', head: true })
+              .eq('row_id', job.row_id)
+              .eq('status', 'succeeded')
+          ])
 
-        await supabase.from('model_rows').update({
-          status: (remaining ?? 0) > 0
-            ? 'partial'
-            : (succeeded ?? 0) > 0
-              ? 'done'
-              : 'error'
-        }).eq('id', job.row_id)
+          await supabase.from('model_rows').update({
+            status: (remaining ?? 0) > 0
+              ? 'partial'
+              : (succeeded ?? 0) > 0
+                ? 'done'
+                : 'error'
+          }).eq('id', job.row_id)
+        } else if (job.variant_row_id) {
+          // Update variant row status using database function
+          await supabase.rpc('update_variant_row_status', { p_variant_row_id: job.variant_row_id })
+        }
       }
     }))
 
@@ -372,6 +551,19 @@ export async function POST(req: NextRequest) {
     console.log('[Dispatch] complete', {
       processed: claimed.length
     })
+    
+    // Run cleanup periodically (every 60 seconds, reduced frequency for efficiency)
+    const now = Date.now()
+    if (now - lastCleanupTime > 60 * 1000) {
+      lastCleanupTime = now
+      // Trigger cleanup asynchronously (don't wait for it, with timeout)
+      fetch(new URL('/api/jobs/cleanup', req.url), { 
+        method: 'POST', 
+        cache: 'no-store',
+        signal: AbortSignal.timeout(5000) // 5 second timeout
+      }).catch(() => {}) // Silently ignore - cleanup is best-effort
+      console.log('[Dispatch] Periodic cleanup triggered')
+    }
     
     if (claimed.length > 0) {
       console.log('[Dispatch] recursive dispatch triggered to check for more jobs')

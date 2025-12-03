@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServer } from '@/lib/supabase-server'
-import { signPath } from '@/lib/storage'
+import { signPath, normalizeStoragePath } from '@/lib/storage'
 import { generateVariantPromptWithGrok } from '@/lib/ai-prompt-generator'
 import { isAdminUser } from '@/lib/admin'
 
@@ -110,15 +110,42 @@ export async function POST(
       }, { status: 400 })
     }
     
-    const imagePaths = referenceImages.map((img: any) => img.output_path)
+    const rawImagePaths = referenceImages.map((img: any) => img.output_path)
+    
+    // Normalize paths before signing URLs
+    const normalizedImagePaths = rawImagePaths
+      .map((path: string) => normalizeStoragePath(path))
+      .filter((path: string | null): path is string => path !== null)
+    
+    if (normalizedImagePaths.length === 0) {
+      console.error('[VariantRowPrompt] All image paths failed to normalize', {
+        rowId,
+        rawPaths: rawImagePaths
+      })
+      return NextResponse.json({ 
+        error: 'Invalid image paths. Please re-upload the images.' 
+      }, { status: 400 })
+    }
+    
+    if (normalizedImagePaths.length < rawImagePaths.length) {
+      console.warn('[VariantRowPrompt] Some image paths failed to normalize', {
+        rowId,
+        totalPaths: rawImagePaths.length,
+        normalizedCount: normalizedImagePaths.length
+      })
+    }
 
     // Sign URLs for the images
     const signed = await Promise.all(
-      imagePaths.map((path: string) => signPath(path, 600))
+      normalizedImagePaths.map((path: string) => signPath(path, 600))
     )
     const signedUrls = signed.filter((url): url is string => url !== null)
     
     if (signedUrls.length === 0) {
+      console.error('[VariantRowPrompt] Failed to sign any image URLs', {
+        rowId,
+        normalizedPaths: normalizedImagePaths
+      })
       return NextResponse.json({ 
         error: 'Failed to sign image URLs' 
       }, { status: 400 })

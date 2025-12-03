@@ -15,6 +15,9 @@ interface JobPollingState {
     step?: 'queued' | 'submitted' | 'running' | 'saving' | 'done' | 'failed'
     failedAttempts?: number
     createdAt?: number
+    lastPollAttempt?: number
+    consecutiveErrors?: number
+    isStuck?: boolean
   }
 }
 
@@ -31,15 +34,24 @@ export function useJobPolling(onJobComplete?: (jobId: string, status: JobStatus 
   const startPolling = useCallback((jobId: string, initialStatus: JobStatus | string = 'queued', rowId?: string) => {
     setPollingState(prev => {
       const existing = prev[jobId]
+      const now = Date.now()
+      // Resume polling for jobs that were previously stuck but are now recoverable
+      const shouldResume = existing && !existing.polling && 
+        ['queued', 'submitted', 'running', 'saving'].includes(existing.status) &&
+        (now - (existing.lastUpdate || 0)) < 5 * 60 * 1000 // Only resume if less than 5 minutes old
+      
       return {
         ...prev,
         [jobId]: {
-          status: initialStatus,
+          status: initialStatus || existing?.status || 'queued',
           polling: true,
-          lastUpdate: Date.now(),
-          rowId,
+          lastUpdate: existing?.lastUpdate || now,
+          rowId: rowId || existing?.rowId,
           failedAttempts: existing?.failedAttempts || 0,
-          createdAt: existing?.createdAt || Date.now()
+          createdAt: existing?.createdAt || now,
+          lastPollAttempt: existing?.lastPollAttempt,
+          consecutiveErrors: shouldResume ? 0 : (existing?.consecutiveErrors || 0),
+          isStuck: false
         }
       }
     })
@@ -91,40 +103,59 @@ export function useJobPolling(onJobComplete?: (jobId: string, status: JobStatus 
           }
         }
         
-        // Adaptive polling: slower for newly queued jobs, faster for running jobs
+        // Check if job appears stuck (no update for extended period)
         const timeSinceLastUpdate = now - state.lastUpdate
+        const timeSinceCreated = now - (state.createdAt || now)
+        const isStuck = timeSinceLastUpdate > 2 * 60 * 1000 && // No update for 2+ minutes
+          ['queued', 'submitted', 'running', 'saving'].includes(state.status) &&
+          timeSinceCreated > 90 * 1000 // Job is at least 90 seconds old
+        
+        // Adaptive polling with exponential backoff for errors
+        const consecutiveErrors = state.consecutiveErrors || 0
+        const backoffDelay = Math.min(30000, 1000 * Math.pow(2, consecutiveErrors)) // Max 30s backoff
+        const timeSinceLastPoll = now - (state.lastPollAttempt || 0)
+        
+        // Optimized polling intervals - less frequent to reduce server load
         const shouldPoll = 
-          state.status === 'running' || state.status === 'saving' ||
-          (state.status === 'queued' && timeSinceLastUpdate > 2000) ||
-          (state.status === 'submitted' && timeSinceLastUpdate > 1500)
+          (state.status === 'running' || state.status === 'saving') && timeSinceLastPoll > Math.max(2000, backoffDelay) ||
+          (state.status === 'queued' && timeSinceLastPoll > Math.max(3000, backoffDelay)) ||
+          (state.status === 'submitted' && timeSinceLastPoll > Math.max(2000, backoffDelay)) ||
+          (isStuck && timeSinceLastPoll > 10000) // Poll stuck jobs much less frequently
 
         if (!shouldPoll) continue
         
         // Additional safety: don't poll if we just polled very recently (within 500ms)
         // This prevents rapid-fire polling that can cause race conditions
-        if (timeSinceLastUpdate < 500) continue
+        if (timeSinceLastPoll < 500) continue
 
         try {
           const result = await pollJob(jobId)
           
-          // Reset failed attempts on successful poll
+          // Reset consecutive errors on successful poll (even if status is failed, the poll succeeded)
+          const newConsecutiveErrors = 0
+          
+          // Track failed attempts separately (for job status failures)
           const failedAttempts = result.status === 'failed' 
             ? (state.failedAttempts || 0) + 1 
-            : 0
+            : (state.failedAttempts || 0)
           
-          // Stop polling if job has failed multiple times (likely a permanent failure)
+          // Continue polling for active statuses, but stop after 10 failed status checks
+          // This is more resilient than the previous 3-attempt limit
           const shouldContinuePolling = ['queued', 'running', 'submitted', 'saving'].includes(result.status as JobStatus) &&
-            failedAttempts < 3 // Stop after 3 failed attempts
+            failedAttempts < 10 // Increased from 3 to 10 for better resilience
           
           updates[jobId] = {
             ...state,
             status: result.status,
             lastUpdate: now,
+            lastPollAttempt: now,
             polling: shouldContinuePolling,
             error: result.error,
             queuePosition: result.queuePosition,
             step: result.step,
-            failedAttempts
+            failedAttempts,
+            consecutiveErrors: newConsecutiveErrors,
+            isStuck: isStuck && shouldContinuePolling // Mark as stuck if still active after timeout
           }
 
           // Call completion callback if job finished
@@ -133,17 +164,22 @@ export function useJobPolling(onJobComplete?: (jobId: string, status: JobStatus 
           }
         } catch (error) {
           console.error('Failed to poll job:', jobId, error)
-          const failedAttempts = (state.failedAttempts || 0) + 1
+          const failedAttempts = (state.failedAttempts || 0)
+          const consecutiveErrors = (state.consecutiveErrors || 0) + 1
           
-          // Stop polling after too many consecutive failures
-          const shouldContinuePolling = failedAttempts < 5
+          // Use exponential backoff - stop polling after 10 consecutive network errors
+          // This is more resilient than the previous 5-attempt limit
+          const shouldContinuePolling = consecutiveErrors < 10
           
           updates[jobId] = {
             ...state,
             error: error instanceof Error ? error.message : 'Polling failed',
             lastUpdate: now,
+            lastPollAttempt: now,
             failedAttempts,
-            polling: shouldContinuePolling
+            consecutiveErrors,
+            polling: shouldContinuePolling,
+            isStuck: isStuck || consecutiveErrors >= 5 // Mark as stuck after 5 consecutive errors
           }
           
           // If we've given up polling, mark as failed
@@ -162,7 +198,7 @@ export function useJobPolling(onJobComplete?: (jobId: string, status: JobStatus 
           return next
         })
       }
-    }, 1000) // Base interval of 1 second, but jobs are polled less frequently based on status
+    }, 1500) // Base interval of 1.5 seconds, but jobs are polled less frequently based on status (reduced from 1s)
 
     return () => clearInterval(interval)
   }, [pollingState, onJobComplete])

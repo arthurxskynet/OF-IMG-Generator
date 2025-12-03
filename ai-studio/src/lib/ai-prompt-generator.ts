@@ -1220,6 +1220,12 @@ If the image suggests a casual, unedited phone photo style, you may optionally i
 - Anti-studio: "avoiding studio lighting", "no cinematic look"
 Keep these brief and natural within the action description.
 
+IMPORTANT - AVOID QUALITY-ENHANCING TERMS FOR DEGRADATION:
+If the image appears to be a casual phone photo or user requests degradation/low-quality effects:
+- DO NOT add: "8K", "ultra detailed", "studio lighting", "cinematic", "balanced exposure", "professional quality", "high resolution", "crystal clear", "perfectly sharp", "tack sharp", "ultra realistic", "4K", "hyper-detailed", "beauty filters", "ultra-HD filters", "studio polish", "professional shoot"
+- DO use: specific camera types, realistic lighting flaws, natural imperfections, phone camera characteristics
+- Focus on realistic phone snapshot qualities, not professional photography
+
 NATIVE LANGUAGE HANDLING (Seedream 4.0 Principle):
 - For professional or cultural terms, use original language when appropriate
 - Style terms: Use native language (e.g., "chiaroscuro" for Italian lighting style)
@@ -1393,6 +1399,48 @@ Seedream 4.0 responds well to camera type/context, lighting/dynamic range, and i
 BASE PATTERN (for realism requests):
 "Keep the person's face, body, and clothing exactly the same as the original. Turn this into a [STYLE] photo: [CAMERA/CONTEXT] with [LIGHTING] and [FAULTS/IMPERFECTIONS]. Avoid studio lighting, avoid ultra-HD or beauty filters."
 
+REALISTIC IPHONE SNAPSHOT EXAMPLES (Use these exact patterns for degradation requests):
+
+GENERIC LOW-EFFORT (1-5):
+1. "shot on an older iPhone in a small bedroom, flat overhead ceiling light, slightly underexposed, soft focus with hint of motion blur, faint grain and phone camera noise, no studio lighting, no depth-of-field effect, looks like an everyday unedited phone snapshot"
+
+2. "casual iPhone photo, auto-exposure struggling with mixed warm indoor lights and cool daylight from window, shadows under eyes, slight overexposure on skin highlights, subtle digital noise, no professional lighting, looks like a quick photo a friend took, not a photoshoot"
+
+3. "captured with an iPhone front camera, arm's-length distance, slightly distorted wide-angle perspective, soft detail on skin, mild smoothing from phone processing, tiny bit of motion blur, default camera app look, no studio sharpness or cinematic feel"
+
+4. "realistic smartphone photo at high ISO, visible fine grain in darker areas, touch of colour noise, slightly muddy shadows, gentle JPEG compression artifacts around edges, ordinary 12-megapixel phone resolution, not ultra-sharp or 4K"
+
+5. "unremarkable iPhone snapshot with awkward framing, subject slightly off-center, touch of motion blur from moving phone, mildly blown highlights on brightest areas, everyday camera-roll quality, looks like it was taken quickly without careful setup"
+
+DIM / LOW-LIGHT (6-10):
+6. "low-light iPhone photo in a dim bedroom, only bedside lamp on, soft yellow light, visible noise in background, slightly soft details, no dramatic contrast, realistic handheld phone shot at night, no pro lighting"
+
+7. "iPhone mirror selfie in a clothing changing room, harsh overhead fluorescent light, slight green cast, grainy midtones, soft edges around model, mirror smudges faintly visible, looks like a quick try-on photo for friends"
+
+8. "casual night-time iPhone photo under orange streetlights, uneven lighting across face, some areas in shadow, slight motion blur from slow shutter, visible noise in sky and background, looks like a real late-night phone snap, not a polished night portrait mode"
+
+9. "realistic smartphone shot with strong backlight from window, subject a little underexposed, details in face slightly muddy, background mildly blown out, subtle lens flare streaks, overall soft contrast, like a quick phone pic taken against the light"
+
+10. "handheld iPhone photo in a bar, mixed neon and warm lighting, slight colour shift on skin, grainy dark corners, small motion blur from dancing or moving, no clean studio edges, looks like a social photo from a night out"
+
+COMPOSITION FLAWS (11-15):
+11. "simple vertical iPhone portrait, everyday camera-roll quality, medium sharpness but not hyper-detailed, slightly crooked horizon, cluttered background still in focus, no bokeh, no cinematic look, feels like a casual friend photo rather than a photoshoot"
+
+12. "standard iPhone camera processing with light over-sharpening on edges, slight halo around hair and clothing, textures not ultra-fine, small amount of HDR look in sky and shadows, typical modern phone photo rather than professional lens rendering"
+
+13. "realistic smartphone photo taken with slightly smudged lens, very subtle hazy glow over bright areas, reduced micro-contrast, softer detail around highlights, no crisp studio lighting, gives impression of a real, imperfect phone camera"
+
+14. "quick iPhone hallway snapshot, subject mid-step, little motion blur in hands or legs, uneven indoor lighting, background objects in full focus, mild noise, overall feel of an unplanned photo rather than a staged shoot"
+
+15. "low-effort iPhone photo, casual pose, slightly awkward crop cutting off parts of body, plain indoor lighting with no dramatic shadows, moderate grain, normal phone dynamic range with some clipped whites and crushed blacks, looks like something sent over WhatsApp, not an advert"
+
+HOW TO USE THESE EXAMPLES:
+- When user requests "degradation", "low-quality", "phone camera", "casual snapshot", select the most appropriate example pattern
+- Combine camera context + lighting + imperfections from examples
+- Always end with "avoiding studio lighting, avoiding ultra-HD or beauty filters"
+- Remove any quality-enhancing terms from the prompt before adding degradation
+- Use exact phrasing from examples for best results
+
 REUSABLE STYLE FRAGMENTS (mix & match):
 A. Low effort / non-pro vibes:
 - "look like an unedited phone snapshot, not a professional shoot"
@@ -1453,6 +1501,24 @@ I. Lighting quality strategies:
 - For degradation effects: omit "balanced exposure" to allow natural quality reduction
 - Use negative prompts: "avoiding studio lighting", "avoiding ultra-HD filters"
 
+DEGRADATION DETECTION & CONFLICT REMOVAL:
+Before enhancing, check if user request is for degradation/low-quality:
+- Keywords: "degradation", "low-quality", "phone camera", "casual snapshot", "unedited", "amateur", "low-effort", "realistic phone photo", "iPhone", "smartphone", "phone snapshot", "camera-roll", "everyday", "quick photo", "friend took", "not a photoshoot", "no studio", "no professional", "flat lighting", "dull lighting"
+- Preset categories: degradation, lighting_degradation, quality (casual snapshot)
+
+IF degradation detected:
+1. Remove quality-enhancing terms from existing prompt:
+   - Remove: "8K", "ultra detailed", "studio lighting", "cinematic", "balanced exposure", "professional quality"
+   - Remove: "high resolution", "crystal clear", "perfectly sharp", "tack sharp", "ultra realistic", "4K", "hyper-detailed", "beauty filters", "ultra-HD filters", "studio polish", "professional shoot"
+2. Use degradation patterns from iPhone snapshot examples above
+3. Always add: "avoiding studio lighting, avoiding ultra-HD or beauty filters"
+4. Use specific camera/lighting/imperfection combinations from examples
+
+IF quality improvement detected:
+1. Keep or add "balanced exposure" for lighting improvements
+2. Use professional quality terms appropriately
+3. Maintain existing quality level or enhance it
+
 HOW TO ADD:
 - Keep the existing relative reference unchanged
 - Keep the existing action
@@ -1475,6 +1541,14 @@ EXAMPLES:
   User: "add low-effort realism with phone camera feel"
   Result: "Take the woman with a white tank top and return her looking to the left, turn this into a casual phone photo: front camera smartphone selfie with slightly underexposed lighting and a touch of front-camera softness, avoiding studio polish, keeping everything else the exact same"
 
+- Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
+  User: "make it look like a low-effort iPhone snapshot"
+  Result: "Take the woman with a white tank top and return her looking to the left, turn this into a shot on an older iPhone in a small bedroom: flat overhead ceiling light, slightly underexposed, soft focus with hint of motion blur, faint grain and phone camera noise, no studio lighting, no depth-of-field effect, looks like an everyday unedited phone snapshot, keeping everything else the exact same"
+
+- Original: "Take the person in the pink room and make them smile, keeping everything else the exact same"
+  User: "add dim bedroom lighting with phone camera feel"
+  Result: "Take the person in the pink room and make them smile, turn this into a low-light iPhone photo in a dim bedroom: only bedside lamp on, soft yellow light, visible noise in background, slightly soft details, no dramatic contrast, realistic handheld phone shot at night, no pro lighting, keeping everything else the exact same"
+
 RULES:
 - Keep existing relative reference
 - Add new action to existing actions
@@ -1490,7 +1564,80 @@ OUTPUT: One sentence only.`
  * Build user message for variant prompt enhancement
  * Enhanced with Seedream 4.0 realism examples
  */
-function buildVariantEnhanceUserText(existingPrompt: string, userInstructions: string): string {
+function buildVariantEnhanceUserText(existingPrompt: string, userInstructions: string, isDegradation: boolean = false): string {
+  const hasExistingPrompt = existingPrompt && existingPrompt.trim().length > 0
+  
+  if (!hasExistingPrompt) {
+    // Generate new prompt from instructions
+    return `USER'S REQUEST:
+"${userInstructions}"
+
+TASK: Generate a new variant prompt based on the user's request using Seedream 4.0 principles.
+${isDegradation ? '\nIMPORTANT: This is a degradation/low-quality request. Use degradation patterns from iPhone snapshot examples.' : ''}
+
+HOW:
+1. Create a relative reference (e.g., "the woman with...", "the person in...")
+2. Incorporate the user's request as the main action
+   - For realism requests: use camera/context, lighting, and imperfection fragments
+   - For style requests: incorporate appropriate style fragments
+3. End with "keeping everything else the exact same"
+
+SEEDREAM 4.0 REALISM STRATEGY:
+When user requests "low-effort", "phone camera", "casual snapshot", or similar realism:
+- Use base pattern: "Turn this into a [STYLE] photo: [CAMERA/CONTEXT] with [LIGHTING]"
+- Focus on camera type (older smartphone, front camera) and lower-quality lighting (flat indoor lighting)
+- Always add "avoiding studio lighting, avoiding ultra-HD or beauty filters"
+- For quality-lowering: use "flat indoor lighting" or "dull lighting" instead of "balanced exposure"
+- For quality-maintaining: use "balanced exposure"
+
+DEGRADATION DETECTION & CONFLICT REMOVAL:
+${isDegradation ? '⚠️ DEGRADATION REQUEST DETECTED - Use degradation patterns from iPhone snapshot examples.\n' : ''}
+Check if user request is for degradation/low-quality:
+- Keywords: "degradation", "low-quality", "phone camera", "casual snapshot", "unedited", "amateur", "low-effort", "realistic phone photo", "iPhone", "smartphone", "phone snapshot", "camera-roll", "everyday", "quick photo", "friend took", "not a photoshoot", "no studio", "no professional", "flat lighting", "dull lighting"
+- Preset categories: degradation, lighting_degradation, quality (casual snapshot)
+
+IF degradation detected:
+1. Use degradation patterns from iPhone snapshot examples in system prompt
+2. Always add: "avoiding studio lighting, avoiding ultra-HD or beauty filters"
+3. Use specific camera/lighting/imperfection combinations from examples
+4. Do NOT add "balanced exposure" or any quality-enhancing terms
+
+IF quality improvement detected:
+1. Add "balanced exposure" for lighting improvements
+2. Use professional quality terms appropriately
+
+JEWELRY REMOVAL STRATEGY:
+When user requests jewelry removal:
+- Explicitly state "remove [jewelry type]" or "remove all jewelry"
+- Ensure removal doesn't affect clothing or other accessories
+- Format: "Remove [jewelry type] from subject, keeping everything else the exact same"
+
+CLOTHING COLOR CHANGE STRATEGY:
+When user requests clothing color change:
+- Specify "change clothing color to [color]" while preserving all other clothing details
+- Maintain style, texture, fit, and other attributes
+- Format: "Change clothing color to [color], keeping everything else the exact same"
+
+COMPOSITION OPTIMIZATION STRATEGY:
+When user requests composition changes (off-center, casual snap, partial face):
+- For off-center: integrate into Camera section with specific framing details
+- For casual snap: combine Camera and Lighting with balanced exposure
+- For partial face crops: specify which part (top/bottom/left/right)
+- Use Seedream 4.0 structured format appropriately
+- Format: "Apply [composition type] with [specific details], maintaining exact framing, keeping everything else the exact same"
+
+RULES:
+- Create a relative reference (the woman with..., the person in...)
+- Incorporate user's request as the main action
+- For realism: use camera/lighting/imperfection fragments appropriately
+- 15-35 words total (can be slightly longer for realism details)
+- End with "keeping everything else the exact same"
+- NEVER describe facial features, skin tone, or ethnicity
+
+OUTPUT: One sentence only.`
+  }
+  
+  // Enhance existing prompt
   return `EXISTING PROMPT:
 "${existingPrompt}"
 
@@ -1498,6 +1645,7 @@ USER'S REQUEST:
 "${userInstructions}"
 
 TASK: Add the user's request to the existing prompt using Seedream 4.0 editing strategies.
+${isDegradation ? '\nIMPORTANT: This is a degradation/low-quality request. The existing prompt has been cleaned of quality-enhancing terms. Use degradation patterns from iPhone snapshot examples.' : ''}
 
 HOW:
 1. Keep the existing relative reference (the woman with..., the person in...)
@@ -1514,6 +1662,24 @@ When user requests "low-effort", "phone camera", "casual snapshot", or similar r
 - Always add "avoiding studio lighting, avoiding ultra-HD or beauty filters"
 - For quality-lowering: use "flat indoor lighting" or "dull lighting" instead of "balanced exposure"
 - For quality-maintaining: use "balanced exposure"
+
+DEGRADATION DETECTION & CONFLICT REMOVAL:
+${isDegradation ? '⚠️ DEGRADATION REQUEST DETECTED - The existing prompt has been cleaned of quality-enhancing terms.\n' : ''}
+Check if user request is for degradation/low-quality:
+- Keywords: "degradation", "low-quality", "phone camera", "casual snapshot", "unedited", "amateur", "low-effort", "realistic phone photo", "iPhone", "smartphone", "phone snapshot", "camera-roll", "everyday", "quick photo", "friend took", "not a photoshoot", "no studio", "no professional", "flat lighting", "dull lighting"
+- Preset categories: degradation, lighting_degradation, quality (casual snapshot)
+
+IF degradation detected:
+1. The existing prompt has been cleaned of quality-enhancing terms (if not already done)
+2. Use degradation patterns from iPhone snapshot examples in system prompt
+3. Always add: "avoiding studio lighting, avoiding ultra-HD or beauty filters"
+4. Use specific camera/lighting/imperfection combinations from examples
+5. Do NOT add "balanced exposure" or any quality-enhancing terms
+
+IF quality improvement detected:
+1. Keep or add "balanced exposure" for lighting improvements
+2. Use professional quality terms appropriately
+3. Maintain existing quality level or enhance it
 
 JEWELRY REMOVAL STRATEGY:
 When user requests jewelry removal:
@@ -1556,6 +1722,14 @@ EXAMPLES:
   User: "add motion blur and grain"
   Result: "Take the woman with a white tank top and return her looking to the left with very slight motion blur from hand shake and light high-ISO grain, keeping everything else the exact same"
 
+- Original: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
+  User: "make it look like a low-effort iPhone snapshot"
+  Result: "Take the woman with a white tank top and return her looking to the left, turn this into a shot on an older iPhone in a small bedroom: flat overhead ceiling light, slightly underexposed, soft focus with hint of motion blur, faint grain and phone camera noise, no studio lighting, no depth-of-field effect, looks like an everyday unedited phone snapshot, keeping everything else the exact same"
+
+- Original: "Take the person in the pink room and make them smile, keeping everything else the exact same"
+  User: "add dim bedroom lighting with phone camera feel"
+  Result: "Take the person in the pink room and make them smile, turn this into a low-light iPhone photo in a dim bedroom: only bedside lamp on, soft yellow light, visible noise in background, slightly soft details, no dramatic contrast, realistic handheld phone shot at night, no pro lighting, keeping everything else the exact same"
+
 - Original: "Take the person in the pink room and make them smile, keeping everything else the exact same"
   User: "remove all jewelry"
   Result: "Take the person in the pink room and make them smile, remove all jewelry including necklaces, earrings, rings, bracelets, and watches, keeping everything else the exact same"
@@ -1595,6 +1769,51 @@ RULES:
 OUTPUT: One sentence only.`
 }
 
+
+/**
+ * Remove quality-enhancing terms from prompt when degradation is requested
+ */
+function removeQualityConflicts(prompt: string, isDegradation: boolean): string {
+  if (!isDegradation) return prompt
+  
+  const qualityTerms = [
+    '8K', 'ultra detailed', 'ultra-detailed', 'ultra HD', 'ultra-HD',
+    'studio lighting', 'cinematic', 'cinematic lighting', 'professional',
+    'high resolution', 'crystal clear', 'perfectly sharp', 'tack sharp',
+    'balanced exposure', 'even lighting', 'professional quality',
+    'ultra realistic', '4K', 'hyper-detailed', 'beauty filters',
+    'ultra-HD filters', 'studio polish', 'professional shoot'
+  ]
+  
+  let cleaned = prompt
+  qualityTerms.forEach(term => {
+    const regex = new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi')
+    cleaned = cleaned.replace(regex, '')
+  })
+  
+  // Clean up extra spaces and punctuation artifacts
+  cleaned = cleaned.replace(/\s+/g, ' ').trim()
+  cleaned = cleaned.replace(/\s*,\s*,/g, ',') // Remove double commas
+  cleaned = cleaned.replace(/\s*\.\s*\./g, '.') // Remove double periods
+  
+  return cleaned
+}
+
+/**
+ * Detect if user instructions request degradation/low-quality effects
+ */
+function isDegradationRequest(userInstructions: string): boolean {
+  const degradationKeywords = [
+    'degradation', 'low-quality', 'phone camera', 'casual snapshot',
+    'unedited', 'amateur', 'low-effort', 'realistic phone photo',
+    'iPhone', 'smartphone', 'phone snapshot', 'camera-roll',
+    'everyday', 'quick photo', 'friend took', 'not a photoshoot',
+    'no studio', 'no professional', 'flat lighting', 'dull lighting'
+  ]
+  
+  const lowerInstructions = userInstructions.toLowerCase()
+  return degradationKeywords.some(keyword => lowerInstructions.includes(keyword))
+}
 
 /**
  * Validate variant prompts - simplified to only essential checks
@@ -1824,12 +2043,26 @@ export async function enhanceVariantPromptWithGrok(
   imageUrls?: string[]
 ): Promise<string> {
   const hasImages = imageUrls && imageUrls.length > 0
+  const hasExistingPrompt = existingPrompt && existingPrompt.trim().length > 0
+  
+  // Detect if this is a degradation request
+  const isDegradation = isDegradationRequest(userInstructions)
+  
+  // Remove quality conflicts from existing prompt if degradation is requested
+  // Skip cleaning if there's no existing prompt (we're generating new)
+  const cleanedPrompt = hasExistingPrompt && isDegradation
+    ? removeQualityConflicts(existingPrompt, true)
+    : existingPrompt || ''
   
   console.log('[enhanceVariantPromptWithGrok] Entry point:', {
     existingPromptLength: existingPrompt.length,
+    cleanedPromptLength: cleanedPrompt.length,
     instructionsLength: userInstructions.length,
     imageUrlsCount: imageUrls?.length || 0,
     hasImages,
+    hasExistingPrompt,
+    isDegradation,
+    isNewPrompt: !hasExistingPrompt,
     promptStyle: 'variant',
     mode: hasImages ? 'with-images' : 'text-only'
   })
@@ -1841,7 +2074,7 @@ export async function enhanceVariantPromptWithGrok(
 
   // Use simplified variant enhancement templates
   const systemPrompt = buildVariantEnhanceSystemPrompt()
-  const userText = buildVariantEnhanceUserText(existingPrompt, userInstructions)
+  const userText = buildVariantEnhanceUserText(cleanedPrompt, userInstructions, isDegradation)
 
   // Build user message content - only include images if provided
   const userContent: GrokVisionContent[] = [
@@ -1874,7 +2107,8 @@ export async function enhanceVariantPromptWithGrok(
         userContent, 
         apiKey,
         imageUrls?.length || 0,
-        complexity
+        complexity,
+        isDegradation
       )
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
@@ -1898,13 +2132,278 @@ export async function enhanceVariantPromptWithGrok(
   throw new Error(`All Grok models failed to enhance variant prompt. Errors: ${errors.map(e => `${e.model}: ${e.error}`).join('; ')}`)
 }
 
+/**
+ * Improve a variant prompt automatically using Grok with Seedream 4.0 guidance
+ * Analyzes both the prompt structure and the actual images to optimize the prompt
+ */
+export async function improveVariantPromptWithGrok(
+  existingPrompt: string,
+  imageUrls?: string[]
+): Promise<string> {
+  const hasImages = imageUrls && imageUrls.length > 0
+  
+  console.log('[improveVariantPromptWithGrok] Entry point:', {
+    existingPromptLength: existingPrompt.length,
+    imageUrlsCount: imageUrls?.length || 0,
+    hasImages,
+    promptStyle: 'variant',
+    mode: hasImages ? 'with-images' : 'text-only'
+  })
+
+  const apiKey = process.env.XAI_API_KEY
+  if (!apiKey) {
+    throw new Error('XAI_API_KEY environment variable is not set')
+  }
+
+  // Use variant improve templates
+  const systemPrompt = buildVariantImproveSystemPrompt()
+  const userText = buildVariantImproveUserText(existingPrompt)
+
+  // Build user message content - include images if provided
+  const userContent: GrokVisionContent[] = [
+    {
+      type: 'text',
+      text: userText
+    }
+  ]
+
+  // Add images if provided for visual context
+  if (hasImages) {
+    imageUrls!.forEach((url) => {
+      userContent.push({
+        type: 'image_url',
+        image_url: { url }
+      })
+    })
+  }
+
+  // Try each model until one succeeds
+  const errors: Array<{ model: string; error: string }> = []
+  for (const model of GROK_MODELS) {
+    try {
+      return await improveVariantPromptWithModel(
+        model, 
+        systemPrompt, 
+        userContent, 
+        apiKey,
+        imageUrls?.length || 0
+      )
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      errors.push({ model, error: errorMessage })
+      console.warn(`Model ${model} variant improvement failed, trying next model:`, {
+        model,
+        imagesCount: imageUrls?.length || 0,
+        promptStyle: 'variant',
+        error: errorMessage
+      })
+    }
+  }
+
+  console.error('All models failed for variant improvement', {
+    imagesCount: imageUrls?.length || 0,
+    promptStyle: 'variant',
+    errors: errors.map(e => `${e.model}: ${e.error}`)
+  })
+  throw new Error(`All Grok models failed to improve variant prompt. Errors: ${errors.map(e => `${e.model}: ${e.error}`).join('; ')}`)
+}
+
+async function improveVariantPromptWithModel(
+  model: string,
+  systemPrompt: string,
+  userContent: GrokVisionContent[],
+  apiKey: string,
+  imagesCount: number
+): Promise<string> {
+  // For requests with images, we need vision-capable models
+  if (imagesCount > 0) {
+    const isVisionModel = model.includes('vision') || 
+                         ['grok-4-fast-reasoning', 'grok-4', 'grok-3-mini'].includes(model)
+
+    if (!isVisionModel) {
+      throw new Error(`Model ${model} does not support vision capabilities`)
+    }
+  }
+
+  // Newer models don't support presence_penalty or frequency_penalty
+  const isNewerModel = ['grok-4-fast-reasoning', 'grok-4', 'grok-3-mini'].includes(model)
+  
+  // Seedream v4 parameters optimized for prompt improvement
+  const requestBody: GrokVisionRequest = {
+    model: model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userContent }
+    ],
+    temperature: 0.45, // Lower for more consistent optimization
+    max_tokens: 500,  // Sufficient for variant prompt improvement
+    top_p: 0.9
+  }
+
+  // Only add penalty parameters for older models that support them
+  if (!isNewerModel) {
+    requestBody.frequency_penalty = 0.3
+    requestBody.presence_penalty = 0.2
+  }
+
+  console.log(`${model} sending improvement request to Grok:`, {
+    promptStyle: 'seedream-4.0',
+    operationType: 'variant-improvement',
+    maxTokens: requestBody.max_tokens,
+    temperature: requestBody.temperature,
+    hasImages: imagesCount > 0,
+    imagesCount
+  })
+
+  const response = await fetch(`${XAI_API_BASE}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(requestBody)
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    console.error(`${model} API error:`, {
+      model,
+      status: response.status,
+      statusText: response.statusText,
+      error: errorText
+    })
+    throw new Error(`${model} API error: ${response.status} ${response.statusText} - ${errorText}`)
+  }
+
+  const data: GrokVisionResponse = await response.json()
+  
+  if (!data.choices || data.choices.length === 0) {
+    throw new Error(`No response from ${model} API`)
+  }
+
+  const improvedPrompt = data.choices[0].message.content.trim()
+  
+  if (!improvedPrompt) {
+    throw new Error(`Empty prompt generated by ${model}`)
+  }
+
+  console.log(`${model} improved prompt:`, {
+    prompt: improvedPrompt,
+    promptLength: improvedPrompt.length,
+    wordCount: improvedPrompt.split(/\s+/).length,
+    imagesCount,
+    promptStyle: 'seedream-4.0'
+  })
+
+  return improvedPrompt
+}
+
+/**
+ * Build system prompt for variant prompt improvement
+ * Guides Grok to optimize prompts based on Seedream 4.0 best practices
+ */
+function buildVariantImproveSystemPrompt(): string {
+  return `You are an expert at optimizing Seedream 4.0 variant prompts.
+
+YOUR TASK: Analyze and improve an existing variant prompt to better align with Seedream 4.0 best practices and accurately describe the images.
+
+SEEDREAM 4.0 KEY PRINCIPLES:
+1. **Natural Language Structure**: Combine subject + action + environment with concise style/color/lighting/composition keywords
+2. **Specificity Over Abstraction**: Use concrete, detailed language - "crimson velvet evening gown" NOT "nice dress"
+3. **Visible Elements Only**: Describe only what is actually visible in the images - no speculation
+4. **Proper Format**: Use the variant prompt format: "Take [relative reference] and [action], keeping everything else the exact same"
+
+VARIANT PROMPT FORMAT:
+- Structure: "Take [relative reference] and [action], keeping everything else the exact same"
+- Relative reference: "the woman with...", "the person in...", "the subject wearing..."
+- Action: Specific editing instruction (pose change, expression, lighting, style, etc.)
+- Always end with: "keeping everything else the exact same"
+
+IMPROVEMENT GUIDELINES:
+1. **Optimize Structure**: Ensure prompt follows proper variant format
+2. **Enhance Specificity**: Replace vague terms with concrete, detailed descriptions
+3. **Align with Images**: If images are provided, ensure prompt accurately describes what's visible
+4. **Natural Language**: Ensure prompt flows naturally and reads well
+5. **Maintain Intent**: Preserve the original intent while improving clarity and accuracy
+6. **Seedream 4.0 Compliance**: Ensure prompt follows all Seedream 4.0 principles
+
+WHAT TO IMPROVE:
+- Make relative references more specific and descriptive
+- Enhance action descriptions with concrete details
+- Ensure prompt accurately reflects image content (if images provided)
+- Improve natural language flow
+- Add missing specificity where appropriate
+- Fix any structural issues
+
+CRITICAL RULES:
+- NEVER describe facial features, skin tone, or ethnicity
+- Keep prompt concise (15-35 words typically, can be slightly longer for complex actions)
+- Maintain the "keeping everything else the exact same" ending
+- Preserve the original intent and action
+- Only describe what's visible in images (if provided)
+
+OUTPUT: Improved variant prompt only. No markdown, no explanations, just the optimized prompt.`
+}
+
+/**
+ * Build user message for variant prompt improvement
+ * Includes current prompt and instructions to analyze and improve
+ */
+function buildVariantImproveUserText(existingPrompt: string): string {
+  return `EXISTING PROMPT:
+"${existingPrompt}"
+
+YOUR TASK:
+Analyze this prompt and improve it to better align with Seedream 4.0 best practices. Optimize both the structure and content.
+
+IMPROVEMENT FOCUS:
+1. **Structure Optimization**: Ensure proper variant prompt format
+2. **Specificity Enhancement**: Replace vague terms with concrete, detailed language
+3. **Image Alignment**: If images are provided, analyze them and ensure the prompt accurately describes what's visible
+4. **Natural Language**: Improve flow and readability
+5. **Seedream 4.0 Compliance**: Ensure all principles are followed
+
+ANALYSIS STEPS:
+1. Review the current prompt structure - does it follow the variant format?
+2. Identify vague or abstract terms - replace with specific, concrete descriptions
+3. If images are provided, compare prompt to actual image content - ensure accuracy
+4. Check natural language flow - improve readability
+5. Verify Seedream 4.0 compliance - ensure all principles are met
+
+IMPROVEMENT EXAMPLES:
+
+Example 1 - Enhancing Specificity:
+Before: "Take the person and make them smile, keeping everything else the exact same"
+After: "Take the person in the pink room and make them smile, keeping everything else the exact same"
+
+Example 2 - Better Image Alignment:
+Before: "Take the woman and return her looking to the left, keeping everything else the exact same"
+After: "Take the woman with a white tank top and return her looking to the left, keeping everything else the exact same"
+
+Example 3 - Adding Missing Details:
+Before: "Take the person and change the lighting, keeping everything else the exact same"
+After: "Take the person in the modern office and change the lighting to warm golden hour with balanced exposure, keeping everything else the exact same"
+
+RULES:
+- Keep the same relative reference structure (or improve it if too vague)
+- Preserve the original action intent
+- Enhance with specific, concrete details
+- Ensure prompt accurately reflects images (if provided)
+- Maintain "keeping everything else the exact same" ending
+- 15-35 words typically (can be slightly longer for complex improvements)
+- NEVER describe facial features, skin tone, or ethnicity
+
+OUTPUT: Improved prompt only. One sentence. No markdown or explanations.`
+}
+
 async function enhanceVariantPromptWithModel(
   model: string,
   systemPrompt: string,
   userContent: GrokVisionContent[],
   apiKey: string,
   imagesCount: number,
-  instructionComplexity: 'low' | 'medium' | 'high'
+  instructionComplexity: 'low' | 'medium' | 'high',
+  isDegradation: boolean = false
 ): Promise<string> {
   // For text-only requests, we can use any model (vision models work fine with text-only)
   // For requests with images, we need vision-capable models
@@ -1994,7 +2493,7 @@ async function enhanceVariantPromptWithModel(
     throw new Error(`Variant enhancement failed: ${model} returned no response choices`)
   }
 
-  const enhancedPrompt = data.choices[0].message.content.trim()
+  let enhancedPrompt = data.choices[0].message.content.trim()
   
   if (!enhancedPrompt) {
     const errorContext = {
@@ -2005,6 +2504,18 @@ async function enhanceVariantPromptWithModel(
     }
     console.error(`${model} variant enhancement: empty prompt`, errorContext)
     throw new Error(`Variant enhancement failed: ${model} returned empty prompt`)
+  }
+
+  // Remove quality conflicts if this is a degradation request
+  if (isDegradation) {
+    const beforeClean = enhancedPrompt
+    enhancedPrompt = removeQualityConflicts(enhancedPrompt, true)
+    if (beforeClean !== enhancedPrompt) {
+      console.log(`${model} removed quality conflicts from enhanced prompt:`, {
+        beforeLength: beforeClean.length,
+        afterLength: enhancedPrompt.length
+      })
+    }
   }
 
   // Validate variant prompt
@@ -2027,7 +2538,8 @@ async function enhanceVariantPromptWithModel(
   console.log(`${model} variant enhancement successful:`, {
         promptStyle: 'variant',
     enhancedLength: enhancedPrompt.length,
-    wordCount: enhancedPrompt.split(/\s+/).length
+    wordCount: enhancedPrompt.split(/\s+/).length,
+    isDegradation
   })
 
   return enhancedPrompt

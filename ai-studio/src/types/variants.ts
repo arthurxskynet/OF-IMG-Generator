@@ -23,6 +23,12 @@ export interface VariantRowImage {
    */
   is_generated?: boolean
   is_favorited?: boolean
+  /**
+   * The exact prompt used to generate this image.
+   * Only present for generated images (is_generated === true).
+   * NULL for reference images or images created before the prompt_text migration.
+   */
+  prompt_text?: string | null
   created_at: string
 }
 
@@ -58,6 +64,8 @@ export interface VariantRow {
   output_width?: number
   output_height?: number
   match_target_ratio?: boolean
+  generation_model?: string
+  status?: 'idle' | 'queued' | 'running' | 'partial' | 'done' | 'error'
   created_at: string
   updated_at: string
   variant_row_images?: VariantRowImage[]

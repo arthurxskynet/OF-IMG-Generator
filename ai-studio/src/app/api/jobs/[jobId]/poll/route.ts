@@ -13,6 +13,7 @@ interface VariantImageInsert {
   source_row_id: string | null
   position: number
   is_generated: true
+  prompt_text: string | null
 }
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ jobId: string }> }) {
@@ -24,8 +25,35 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
   try {
     // Use admin client for DB access; enforce ownership with explicit check
     const admin = supabaseAdmin
-    const { data: job } = await admin.from('jobs').select('*').eq('id', jobId).single()
-    if (!job) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    const { data: job, error: jobFetchError } = await admin.from('jobs').select('*').eq('id', jobId).single()
+    
+    // Handle job not found (404) - update variant row status if applicable
+    if (!job || jobFetchError) {
+      console.error('[Poll] Job not found', { 
+        jobId, 
+        error: jobFetchError?.message,
+        code: jobFetchError?.code 
+      })
+      
+      // Try to find if this was a variant row job and update its status
+      // We can't query by job_id since job doesn't exist, but we can check variant_rows
+      // for any rows that might be stuck in queued/running status
+      try {
+        // This is a best-effort cleanup - we can't reliably determine which variant_row
+        // this job belonged to without the job record, so we'll just return the error
+        console.warn('[Poll] Cannot update variant row status - job record missing', { jobId })
+      } catch (cleanupError) {
+        console.warn('[Poll] Failed to cleanup after job not found', { 
+          jobId, 
+          error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError) 
+        })
+      }
+      
+      return NextResponse.json({ 
+        error: 'Job not found', 
+        status: 'not_found' 
+      }, { status: 404 })
+    }
     
     // Check access: admin, owner, or team member
     const isAdmin = await isAdminUser()
@@ -62,53 +90,128 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
     
     // If no provider request ID, attempt recovery + stop infinite loops after TTL
     if (!job.provider_request_id) {
+      const createdAtMs = job.created_at ? Date.parse(job.created_at) : Date.now()
+      const ageSec = Math.max(0, Math.floor((Date.now() - createdAtMs) / 1000))
+      
       console.log('[Poll] no provider_request_id', { 
         jobId, 
         status: job.status,
-        createdAt: job.created_at 
+        createdAt: job.created_at,
+        ageSec,
+        variantRowId: job.variant_row_id,
+        rowId: job.row_id,
+        error: job.error
       })
 
-      const createdAtMs = job.created_at ? Date.parse(job.created_at) : Date.now()
-      const ageSec = Math.max(0, Math.floor((Date.now() - createdAtMs) / 1000))
-
       // Best-effort retry: if queued/submitted for >10s, try to trigger dispatch again
-      // But only retry periodically to avoid spam (every 15 seconds)
-      if (['queued', 'submitted', 'saving'].includes(job.status) && ageSec > 10 && ageSec % 15 < 2) {
+      // But only retry periodically to avoid spam (every 20 seconds, reduced frequency)
+      // Only retry for queued jobs (submitted jobs should already have provider_request_id)
+      if (job.status === 'queued' && ageSec > 10 && ageSec % 20 < 2) {
         try {
-          await fetch(new URL('/api/dispatch', req.url), { method: 'POST', cache: 'no-store' })
+          // Fire and forget - don't wait for response to avoid blocking poll
+          fetch(new URL('/api/dispatch', req.url), { 
+            method: 'POST', 
+            cache: 'no-store',
+            signal: AbortSignal.timeout(2000) // 2 second timeout
+          }).catch(() => {}) // Silently ignore errors
           console.log('[Poll] re-dispatch triggered', { jobId, ageSec })
         } catch (e) {
-          console.warn('[Poll] re-dispatch failed', { jobId, error: e instanceof Error ? e.message : String(e) })
+          // Ignore errors - this is best-effort
         }
       }
 
-      // Hard timeout: fail the job after 90 seconds without a provider id
-      if (['queued', 'submitted', 'saving'].includes(job.status) && ageSec > 90) {
-        await supabase.from('jobs').update({
+      // Aggressive cleanup: fail submitted jobs without provider_request_id after 30 seconds
+      // This prevents jobs from getting stuck in submitted status for too long
+      if (job.status === 'submitted' && ageSec > 30) {
+        console.error('[Poll] Job stuck in submitted status without provider_request_id, failing', {
+          jobId: job.id,
+          status: job.status,
+          ageSec,
+          variantRowId: job.variant_row_id,
+          rowId: job.row_id,
+          requestPayload: job.request_payload
+        })
+        
+        await admin.from('jobs').update({
+          status: 'failed',
+          error: 'timeout: submitted without provider request id',
+          updated_at: new Date().toISOString()
+        }).eq('id', job.id)
+
+        // Update row status (model rows or variant rows)
+        if (job.row_id) {
+          const [{ count: remaining }, { count: succeeded }] = await Promise.all([
+            admin.from('jobs')
+              .select('*', { count: 'exact', head: true })
+              .eq('row_id', job.row_id)
+              .in('status', ['queued', 'running', 'submitted', 'saving']),
+            admin.from('jobs')
+              .select('*', { count: 'exact', head: true })
+              .eq('row_id', job.row_id)
+              .eq('status', 'succeeded')
+          ])
+
+          await admin.from('model_rows').update({
+            status: (remaining ?? 0) > 0
+              ? 'partial'
+              : (succeeded ?? 0) > 0
+                ? 'done'
+                : 'error'
+          }).eq('id', job.row_id)
+        } else if (job.variant_row_id) {
+          // Update variant row status using database function
+          await admin.rpc('update_variant_row_status', { p_variant_row_id: job.variant_row_id })
+        }
+
+        // Kick dispatcher to move on to next jobs
+        try {
+          await fetch(new URL('/api/dispatch', req.url), { method: 'POST', cache: 'no-store' })
+        } catch {}
+
+        return NextResponse.json({ status: 'failed', error: 'timeout: submitted without provider request id' })
+      }
+
+      // Hard timeout: fail the job after 60 seconds (reduced from 90) without a provider id
+      if (['queued', 'saving'].includes(job.status) && ageSec > 60) {
+        console.error('[Poll] Job stuck without provider_request_id, failing', {
+          jobId: job.id,
+          status: job.status,
+          ageSec,
+          variantRowId: job.variant_row_id,
+          rowId: job.row_id,
+          requestPayload: job.request_payload
+        })
+        
+        await admin.from('jobs').update({
           status: 'failed',
           error: 'timeout: no provider request id',
           updated_at: new Date().toISOString()
         }).eq('id', job.id)
 
-        // Update row status to error if all jobs failed
-        const [{ count: remaining }, { count: succeeded }] = await Promise.all([
-          supabase.from('jobs')
-            .select('*', { count: 'exact', head: true })
-            .eq('row_id', job.row_id)
-            .in('status', ['queued', 'running', 'submitted', 'saving']),
-          supabase.from('jobs')
-            .select('*', { count: 'exact', head: true })
-            .eq('row_id', job.row_id)
-            .eq('status', 'succeeded')
-        ])
+        // Update row status (model rows or variant rows)
+        if (job.row_id) {
+          const [{ count: remaining }, { count: succeeded }] = await Promise.all([
+            admin.from('jobs')
+              .select('*', { count: 'exact', head: true })
+              .eq('row_id', job.row_id)
+              .in('status', ['queued', 'running', 'submitted', 'saving']),
+            admin.from('jobs')
+              .select('*', { count: 'exact', head: true })
+              .eq('row_id', job.row_id)
+              .eq('status', 'succeeded')
+          ])
 
-        await supabase.from('model_rows').update({
-          status: (remaining ?? 0) > 0
-            ? 'partial'
-            : (succeeded ?? 0) > 0
-              ? 'done'
-              : 'error'
-        }).eq('id', job.row_id)
+          await admin.from('model_rows').update({
+            status: (remaining ?? 0) > 0
+              ? 'partial'
+              : (succeeded ?? 0) > 0
+                ? 'done'
+                : 'error'
+          }).eq('id', job.row_id)
+        } else if (job.variant_row_id) {
+          // Update variant row status using database function
+          await admin.rpc('update_variant_row_status', { p_variant_row_id: job.variant_row_id })
+        }
 
         // Kick dispatcher to move on to next jobs
         try {
@@ -120,33 +223,93 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
 
       // Additional cleanup: fail very old queued jobs (2+ minutes) immediately
       if (job.status === 'queued' && ageSec > 120) {
-        await supabase.from('jobs').update({
+        console.error('[Poll] Job stuck in queue too long, failing', {
+          jobId: job.id,
+          status: job.status,
+          ageSec,
+          variantRowId: job.variant_row_id,
+          rowId: job.row_id
+        })
+        
+        await admin.from('jobs').update({
           status: 'failed',
           error: 'timeout: stuck in queue too long',
           updated_at: new Date().toISOString()
         }).eq('id', job.id)
 
-        // Update row status
-        const [{ count: remaining2 }, { count: succeeded2 }] = await Promise.all([
-          supabase.from('jobs')
-            .select('*', { count: 'exact', head: true })
-            .eq('row_id', job.row_id)
-            .in('status', ['queued', 'running', 'submitted', 'saving']),
-          supabase.from('jobs')
-            .select('*', { count: 'exact', head: true })
-            .eq('row_id', job.row_id)
-            .eq('status', 'succeeded')
-        ])
+        // Update row status (model rows or variant rows)
+        if (job.row_id) {
+          const [{ count: remaining2 }, { count: succeeded2 }] = await Promise.all([
+            admin.from('jobs')
+              .select('*', { count: 'exact', head: true })
+              .eq('row_id', job.row_id)
+              .in('status', ['queued', 'running', 'submitted', 'saving']),
+            admin.from('jobs')
+              .select('*', { count: 'exact', head: true })
+              .eq('row_id', job.row_id)
+              .eq('status', 'succeeded')
+          ])
 
-        await supabase.from('model_rows').update({
-          status: (remaining2 ?? 0) > 0
-            ? 'partial'
-            : (succeeded2 ?? 0) > 0
-              ? 'done'
-              : 'error'
-        }).eq('id', job.row_id)
+          await admin.from('model_rows').update({
+            status: (remaining2 ?? 0) > 0
+              ? 'partial'
+              : (succeeded2 ?? 0) > 0
+                ? 'done'
+                : 'error'
+          }).eq('id', job.row_id)
+        } else if (job.variant_row_id) {
+          // Update variant row status using database function
+          await admin.rpc('update_variant_row_status', { p_variant_row_id: job.variant_row_id })
+        }
 
         return NextResponse.json({ status: 'failed', error: 'timeout: stuck in queue too long' })
+      }
+
+      // Timeout for jobs stuck in "saving" status (10 minutes)
+      const updatedAtMs = job.updated_at ? Date.parse(job.updated_at) : Date.now()
+      const timeSinceUpdateSec = Math.max(0, Math.floor((Date.now() - updatedAtMs) / 1000))
+      if (job.status === 'saving' && timeSinceUpdateSec > 600) {
+        console.error('[Poll] Job stuck in saving status too long, failing', {
+          jobId: job.id,
+          status: job.status,
+          timeSinceUpdateSec,
+          variantRowId: job.variant_row_id,
+          rowId: job.row_id,
+          providerRequestId: job.provider_request_id
+        })
+        
+        await admin.from('jobs').update({
+          status: 'failed',
+          error: 'timeout: stuck in saving',
+          updated_at: new Date().toISOString()
+        }).eq('id', job.id)
+
+        // Update row status (model rows or variant rows)
+        if (job.row_id) {
+          const [{ count: remaining3 }, { count: succeeded3 }] = await Promise.all([
+            admin.from('jobs')
+              .select('*', { count: 'exact', head: true })
+              .eq('row_id', job.row_id)
+              .in('status', ['queued', 'running', 'submitted', 'saving']),
+            admin.from('jobs')
+              .select('*', { count: 'exact', head: true })
+              .eq('row_id', job.row_id)
+              .eq('status', 'succeeded')
+          ])
+
+          await admin.from('model_rows').update({
+            status: (remaining3 ?? 0) > 0
+              ? 'partial'
+              : (succeeded3 ?? 0) > 0
+                ? 'done'
+                : 'error'
+          }).eq('id', job.row_id)
+        } else if (job.variant_row_id) {
+          // Update variant row status using database function
+          await admin.rpc('update_variant_row_status', { p_variant_row_id: job.variant_row_id })
+        }
+
+        return NextResponse.json({ status: 'failed', error: 'timeout: stuck in saving' })
       }
 
       // Also return queuePosition for visibility while waiting for provider id
@@ -173,6 +336,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
     // Still processing
     if (!responseData || responseData.status === 'processing' || responseData.status === 'created') {
       if (job.status !== 'running') {
+        console.log('[Poll] Job status transition: submitted -> running', {
+          jobId: job.id,
+          previousStatus: job.status,
+          providerRequestId: job.provider_request_id,
+          variantRowId: job.variant_row_id,
+          rowId: job.row_id
+        })
         await admin.from('jobs').update({ 
           status: 'running', 
           updated_at: new Date().toISOString() 
@@ -196,6 +366,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
 
       // Use a more robust atomic approach: try to claim the job for processing
       // This prevents race conditions by using a database-level atomic operation
+      console.log('[Poll] Attempting to claim job for processing', {
+        jobId: job.id,
+        currentStatus: job.status,
+        providerRequestId: job.provider_request_id,
+        variantRowId: job.variant_row_id,
+        rowId: job.row_id
+      })
+      
       const { data: claimResult, error: claimError } = await admin
         .from('jobs')
         .update({ 
@@ -211,10 +389,18 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         console.log('[Poll] Job already claimed by another request', { 
           jobId: job.id, 
           currentStatus: job.status,
-          claimError: claimError?.message 
+          claimError: claimError?.message,
+          claimResult: claimResult
         })
         return NextResponse.json({ status: 'succeeded', step: 'done' })
       }
+      
+      console.log('[Poll] Job successfully claimed for processing', {
+        jobId: job.id,
+        claimedStatus: claimResult[0]?.status,
+        variantRowId: job.variant_row_id,
+        rowId: job.row_id
+      })
 
       const raw = responseData?.outputs ?? []
       // SeaDream only returns one image, so take only the first one
@@ -351,7 +537,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
             thumbnail_path: uploaded.thumbnailPath || null,
             source_row_id: job.row_id || null,
             position: variantStartPosition + variantInserts.length, // Use current insert count for position
-            is_generated: true as const // Explicitly set to true, never null/undefined
+            is_generated: true as const, // Explicitly set to true, never null/undefined
+            prompt_text: job?.request_payload?.prompt ?? null // Save the prompt used to generate this image
           }
           
           // Validate before pushing
@@ -472,20 +659,38 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         }
       }
 
-      await admin.from('jobs').update({ 
+      const { error: updateError } = await admin.from('jobs').update({ 
         status: 'succeeded', 
         updated_at: new Date().toISOString() 
       }).eq('id', job.id)
+      
+      if (updateError) {
+        console.error('[Poll] Failed to update job status to succeeded', {
+          jobId: job.id,
+          error: updateError.message,
+          errorCode: updateError.code
+        })
+      } else {
+        console.log('[Poll] Job status transition: saving -> succeeded', {
+          jobId: job.id,
+          variantRowId: job.variant_row_id,
+          rowId: job.row_id,
+          imagesProcessed: variantInserts.length + inserts.length
+        })
+      }
 
-      // Update row status (model rows only)
+      // Update row status (model rows or variant rows)
       if (job.row_id) {
-      const { count: remaining } = await admin.from('jobs')
-        .select('*', { count: 'exact', head: true })
-        .eq('row_id', job.row_id)
-        .in('status', ['queued','submitted','running','saving'])
-      await admin.from('model_rows').update({ 
-        status: (remaining ?? 0) > 0 ? 'partial' : 'done' 
-      }).eq('id', job.row_id)
+        const { count: remaining } = await admin.from('jobs')
+          .select('*', { count: 'exact', head: true })
+          .eq('row_id', job.row_id)
+          .in('status', ['queued','submitted','running','saving'])
+        await admin.from('model_rows').update({ 
+          status: (remaining ?? 0) > 0 ? 'partial' : 'done' 
+        }).eq('id', job.row_id)
+      } else if (job.variant_row_id) {
+        // Update variant row status using database function
+        await admin.rpc('update_variant_row_status', { p_variant_row_id: job.variant_row_id })
       }
 
       // Try dispatching more if capacity available (hard cap 3)
@@ -498,11 +703,46 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
     }
 
     // Failed
+    const failureError = responseData?.error ?? resp?.data?.message ?? 'provider failed'
+    console.error('[Poll] Job failed at provider', {
+      jobId: job.id,
+      providerRequestId: job.provider_request_id,
+      error: failureError,
+      responseStatus: responseData?.status,
+      variantRowId: job.variant_row_id,
+      rowId: job.row_id
+    })
+    
     await admin.from('jobs').update({
       status: 'failed',
-      error: responseData?.error ?? resp?.data?.message ?? 'provider failed',
+      error: failureError,
       updated_at: new Date().toISOString()
     }).eq('id', job.id)
+
+    // Update row status (model rows or variant rows)
+    if (job.row_id) {
+      const [{ count: remaining }, { count: succeeded }] = await Promise.all([
+        admin.from('jobs')
+          .select('*', { count: 'exact', head: true })
+          .eq('row_id', job.row_id)
+          .in('status', ['queued', 'running', 'submitted', 'saving']),
+        admin.from('jobs')
+          .select('*', { count: 'exact', head: true })
+          .eq('row_id', job.row_id)
+          .eq('status', 'succeeded')
+      ])
+
+      await admin.from('model_rows').update({
+        status: (remaining ?? 0) > 0
+          ? 'partial'
+          : (succeeded ?? 0) > 0
+            ? 'done'
+            : 'error'
+      }).eq('id', job.row_id)
+    } else if (job.variant_row_id) {
+      // Update variant row status using database function
+      await admin.rpc('update_variant_row_status', { p_variant_row_id: job.variant_row_id })
+    }
 
     // Free up slot and dispatch next
     await fetch(new URL('/api/dispatch', req.url), { 

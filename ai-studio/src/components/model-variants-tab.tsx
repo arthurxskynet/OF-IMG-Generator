@@ -1,11 +1,13 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { VariantsRowsWorkspace } from '@/components/variants/variants-rows-workspace'
 import { VariantRow } from '@/types/variants'
 import { Button } from '@/components/ui/button'
 import { Sparkles } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
+import { DEBOUNCE_TIMES } from '@/lib/debounce'
 
 interface ModelVariantsTabContentProps {
   modelId: string
@@ -16,6 +18,7 @@ interface ModelVariantsTabContentProps {
 export function ModelVariantsTabContent({ modelId, initialRows, onRowsChange }: ModelVariantsTabContentProps) {
   const [isCreating, setIsCreating] = useState(false)
   const { toast } = useToast()
+  const router = useRouter()
   const addRowRef = useRef<((row: VariantRow) => void) | null>(null)
 
   const handleCreateNewRow = async () => {
@@ -46,20 +49,31 @@ export function ModelVariantsTabContent({ modelId, initialRows, onRowsChange }: 
       }
 
       // Add row to workspace state immediately for instant UI update
+      // This must happen BEFORE router.refresh() to ensure the row appears immediately
       if (addRowRef.current) {
         console.log('[ModelVariantsTab] Adding row via callback:', { rowId: row.id })
         addRowRef.current(rowWithImages)
+      } else {
+        console.warn('[ModelVariantsTab] addRowRef.current is null, using event fallback')
       }
 
       // Always trigger custom event to ensure workspace fetches full row data
       // This ensures we get complete data including model relationship, etc.
+      // The event handler will also add the row if the callback didn't work
       window.dispatchEvent(new CustomEvent('variants:rows-added', {
         detail: {
           modelId: modelId,
           rowsCreated: 1,
-          rows: [row]
+          rows: [rowWithImages] // Use rowWithImages to ensure variant_row_images is included
         }
       }))
+
+      // Refresh Server Component to update initialRows prop
+      // Delay slightly to ensure local state update completes first
+      // This prevents the Server Component from overwriting the optimistic update
+      setTimeout(() => {
+        router.refresh()
+      }, DEBOUNCE_TIMES.ROUTER_REFRESH)
 
       toast({
         title: 'Variant row created',

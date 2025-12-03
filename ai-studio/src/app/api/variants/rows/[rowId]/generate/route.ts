@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServer } from '@/lib/supabase-server'
-import { signPath } from '@/lib/storage'
+import { signPath, normalizeStoragePath } from '@/lib/storage'
 import { getRemoteImageDimensions, computeMaxQualityDimensionsForRatio } from '@/lib/server-utils'
 import { isAdminUser } from '@/lib/admin'
+import { DEFAULT_MODEL_ID } from '@/lib/wavespeed-models'
 
 export async function POST(
   req: NextRequest,
@@ -17,7 +18,7 @@ export async function POST(
   }
 
   try {
-    // Get variant row with images and prompt
+    // Get variant row with images and prompt (including generation_model)
     const { data: row, error: rowError } = await supabase
       .from('variant_rows')
       .select(`
@@ -27,7 +28,8 @@ export async function POST(
           thumbnail_path,
           position,
           source_row_id,
-          is_generated
+          is_generated,
+          prompt_text
         )
       `)
       .eq('id', rowId)
@@ -124,8 +126,36 @@ export async function POST(
 
     // For Seedream API: use all reference images as refs, last reference image as target
     // This allows multiple reference images to be used in the generation
-    const refPaths = referenceImages.map((img: any) => img.output_path)
-    const targetPath = referenceImages[referenceImages.length - 1].output_path
+    // Normalize all paths to ensure consistent format (bucket/user_id/filename)
+    const rawRefPaths = referenceImages.map((img: any) => img.output_path)
+    const rawTargetPath = referenceImages[referenceImages.length - 1].output_path
+    
+    // Normalize paths - filter out any that fail to normalize
+    const refPaths = rawRefPaths
+      .map((path: string) => normalizeStoragePath(path))
+      .filter((path: string | null): path is string => path !== null)
+    const targetPath = normalizeStoragePath(rawTargetPath)
+    
+    // Validate that we have at least one valid reference path and a valid target path
+    if (refPaths.length === 0 && rawRefPaths.length > 0) {
+      console.error('[VariantGenerate] All reference paths failed to normalize', {
+        rowId,
+        rawPaths: rawRefPaths
+      })
+      return NextResponse.json({ 
+        error: 'Invalid reference image paths. Please re-upload the images.' 
+      }, { status: 400 })
+    }
+    
+    if (!targetPath) {
+      console.error('[VariantGenerate] Target path failed to normalize', {
+        rowId,
+        rawTargetPath
+      })
+      return NextResponse.json({ 
+        error: 'Invalid target image path. Please re-upload the image.' 
+      }, { status: 400 })
+    }
 
     console.log('[VariantGenerate] Creating job', {
       rowId,
@@ -133,7 +163,9 @@ export async function POST(
       refImagesCount: refPaths.length,
       generatedImagesCount: generatedImages.length,
       matchTargetRatio: row.match_target_ratio || false,
-      prompt: row.prompt.substring(0, 100) + '...'
+      prompt: row.prompt.substring(0, 100) + '...',
+      normalizedRefPaths: refPaths.map((p: string) => p.slice(-40)),
+      normalizedTargetPath: targetPath.slice(-40)
     })
 
     // Resolve a real model_id (required FK) and get its team_id
@@ -252,16 +284,18 @@ export async function POST(
       
       // Use the first reference image (by position) for dimension matching
       const firstReferenceImage = referenceImages[0]
-      const referenceImagePath = firstReferenceImage.output_path
+      const rawReferenceImagePath = firstReferenceImage.output_path
+      const referenceImagePath = normalizeStoragePath(rawReferenceImagePath)
       
       if (referenceImagePath) {
         try {
-          // Short-lived signed URL for probing dimensions
+          // Short-lived signed URL for probing dimensions (fail fast if file doesn't exist)
           const signedRefUrl = await signPath(referenceImagePath, 120)
           if (!signedRefUrl) {
             console.warn('[VariantRowGenerate] Reference image not found, skipping dimension matching:', referenceImagePath)
           } else {
-            const dims = await getRemoteImageDimensions(signedRefUrl)
+            // Add timeout to prevent hanging on missing/inaccessible files (3 second timeout)
+            const dims = await getRemoteImageDimensions(signedRefUrl, 3000)
             
             // Use reference image dimensions as baseline for max quality computation
             // Start with a high-quality baseline (4096) to compute max quality dimensions
@@ -355,6 +389,7 @@ export async function POST(
           prompt: row.prompt,
           width,
           height,
+          generation_model: (row as any).generation_model || DEFAULT_MODEL_ID,
           variantRowId: rowId // Also store in payload for reference
         }
       })
@@ -373,13 +408,26 @@ export async function POST(
       rowId
     })
 
-    // Trigger dispatcher asynchronously after response (mirror model flow)
+    // Update variant row status to 'queued' when job is created (non-blocking)
+    ;(async () => {
+      try {
+        await supabase
+          .from('variant_rows')
+          .update({ status: 'queued', updated_at: new Date().toISOString() })
+          .eq('id', rowId)
+      } catch (e: any) {
+        console.warn('[VariantGenerate] Failed to update variant row status:', e)
+      }
+    })()
+
+    // Trigger dispatcher asynchronously after response (mirror model flow, with timeout)
     const dispatchUrl = new URL('/api/dispatch', req.url)
     fetch(dispatchUrl, { 
       method: 'POST', 
       cache: 'no-store',
-      headers: { 'x-dispatch-variant-row': rowId }
-    }).catch(e => console.warn('[VariantGenerate] dispatcher failed:', e))
+      headers: { 'x-dispatch-variant-row': rowId },
+      signal: AbortSignal.timeout(3000) // 3 second timeout to prevent hanging
+    }).catch(() => {}) // Silently ignore - dispatch is best-effort
 
     return NextResponse.json({ 
       jobId: job.id,

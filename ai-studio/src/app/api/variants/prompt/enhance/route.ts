@@ -16,11 +16,15 @@ export async function POST(req: NextRequest) {
     const body: VariantPromptEnhanceRequest = await req.json()
     const { existingPrompt, userInstructions, imagePaths } = body
 
-    if (!existingPrompt || !userInstructions) {
+    // Allow empty existingPrompt to enable generating new prompts from presets
+    if (existingPrompt === undefined || existingPrompt === null || !userInstructions) {
       return NextResponse.json({ 
-        error: 'existingPrompt and userInstructions are required' 
+        error: 'userInstructions is required, and existingPrompt must be provided (can be empty string)' 
       }, { status: 400 })
     }
+
+    // Normalize empty prompt to empty string
+    const normalizedPrompt = existingPrompt || ''
 
     // Images are optional for enhancement - text-only is faster for preset enhancements
     let signedUrls: string[] | undefined = undefined
@@ -33,16 +37,18 @@ export async function POST(req: NextRequest) {
     }
 
     console.log('[VariantPromptEnhance] Enhancing with Grok', {
-      existingPromptLength: existingPrompt.length,
+      existingPromptLength: normalizedPrompt.length,
       instructionsLength: userInstructions.length,
       imagesCount: signedUrls?.length || 0,
       mode: signedUrls ? 'with-images' : 'text-only',
-      useRichPrompts: process.env.PROMPT_VARIANTS_RICH !== 'false'
+      useRichPrompts: process.env.PROMPT_VARIANTS_RICH !== 'false',
+      isNewPrompt: normalizedPrompt.length === 0
     })
 
     // Enhance variant prompt using Grok (text-only for speed, images optional)
+    // If normalizedPrompt is empty, this will generate a new prompt from instructions
     const enhancedPrompt = await enhanceVariantPromptWithGrok(
-      existingPrompt,
+      normalizedPrompt,
       userInstructions,
       signedUrls
     )

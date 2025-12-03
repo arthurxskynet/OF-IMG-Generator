@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useCallback, useRef, useEffect } from 'react'
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -11,7 +11,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { VariantRow, VariantRowImage } from '@/types/variants'
 import { getSignedUrl } from '@/lib/jobs'
-import { Wand2, Sparkles, Copy, Trash2, Plus, X, AlertCircle, Play, Eye, EyeOff, ChevronDown, ChevronUp, Star, ChevronLeft, ChevronRight, ImageIcon, Folder, Upload, Archive, CheckCircle, XCircle, Info, Download, Check } from 'lucide-react'
+import { Wand2, Sparkles, Copy, Trash2, Plus, X, AlertCircle, Play, Eye, EyeOff, ChevronDown, ChevronUp, Star, ChevronLeft, ChevronRight, ImageIcon, Folder, Upload, Archive, CheckCircle, XCircle, Info, Download, Check, TrendingUp, RefreshCw } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useJobPolling } from '@/hooks/use-job-polling'
 import { createClient } from '@/lib/supabase-browser'
@@ -25,6 +25,9 @@ import { Badge } from '@/components/ui/badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { uploadImage, validateFile } from '@/lib/client-upload'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { getAvailableModels, getWaveSpeedModel, DEFAULT_MODEL_ID } from '@/lib/wavespeed-models'
+import { DEBOUNCE_TIMES } from '@/lib/debounce'
 
 interface VariantsRowsWorkspaceProps {
   initialRows: VariantRow[]
@@ -44,18 +47,36 @@ const PRESET_ENHANCEMENTS = {
     { label: '📱 iPhone selfie', value: 'Apply iPhone front camera selfie with balanced exposure' }
   ],
   lighting: [
+    // Quality improvements (with balanced exposure)
     { label: '🔥 Dramatic lighting', value: 'Apply dramatic lighting with balanced exposure' },
     { label: '🌅 Golden hour', value: 'Add golden hour lighting with warm color temperature and balanced exposure' },
-    { label: '💡 Harsh overhead', value: 'Change to harsh overhead lighting with balanced exposure' },
     { label: '🌙 Low-key lighting', value: 'Apply low-key lighting with balanced exposure' },
     { label: '🎭 Rembrandt lighting', value: 'Apply Rembrandt lighting with balanced exposure' },
-    { label: '🪟 Natural window light', value: 'Change to natural window lighting with balanced exposure' }
+    { label: '🪟 Natural window light', value: 'Change to natural window lighting with balanced exposure' },
+    // Degradation lighting (no balanced exposure)
+    { label: '💡 Flat overhead', value: 'Change to flat overhead ceiling light, slightly underexposed, no studio lighting, keeping everything else the exact same' },
+    { label: '🌓 Mixed color temps', value: 'Apply mixed warm indoor lights and cool daylight from window, auto-exposure struggling, shadows under eyes, keeping everything else the exact same' },
+    { label: '💡 Harsh fluorescent', value: 'Change to harsh overhead fluorescent light, slight green cast, no professional lighting, keeping everything else the exact same' },
+    { label: '🟠 Streetlight orange', value: 'Apply orange streetlight glow, uneven lighting across face, some areas in shadow, visible noise, keeping everything else the exact same' },
+    { label: '☀️ Backlit window', value: 'Apply strong backlight from window, subject slightly underexposed, details in face slightly muddy, background mildly blown out, keeping everything else the exact same' },
+    { label: '🎉 Mixed neon bar', value: 'Apply mixed neon and warm lighting, slight colour shift on skin, grainy dark corners, no clean studio edges, keeping everything else the exact same' }
   ],
   degradation: [
-    { label: '🎨 Lo-fi aesthetic', value: 'Add lo-fi aesthetic with chromatic aberration and lens distortion' },
-    { label: '💨 Motion blur artifacts', value: 'Apply motion blur with camera shake and streaking' },
-    { label: '✨ Lens flare', value: 'Add lens flare artifacts with washed-out highlights' },
-    { label: '🎞️ Film grain texture', value: 'Add film grain with color shifts and reduced dynamic range' }
+    { label: '📱 Dull room light', value: 'Turn this into a shot on an older iPhone in a small bedroom: flat overhead ceiling light, slightly underexposed, soft focus with hint of motion blur, faint grain and phone camera noise, no studio lighting, no depth-of-field effect, looks like an everyday unedited phone snapshot, keeping everything else the exact same' },
+    { label: '🌓 Auto-exposure struggling', value: 'Turn this into a casual iPhone photo: auto-exposure struggling with mixed warm indoor lights and cool daylight from window, shadows under eyes, slight overexposure on skin highlights, subtle digital noise, no professional lighting, looks like a quick photo a friend took, not a photoshoot, keeping everything else the exact same' },
+    { label: '🤳 Front camera selfie', value: 'Turn this into a shot captured with an iPhone front camera: arm\'s-length distance, slightly distorted wide-angle perspective, soft detail on skin, mild smoothing from phone processing, tiny bit of motion blur, default camera app look, no studio sharpness or cinematic feel, keeping everything else the exact same' },
+    { label: '📸 ISO noise + compression', value: 'Turn this into a realistic smartphone photo at high ISO: visible fine grain in darker areas, touch of colour noise, slightly muddy shadows, gentle JPEG compression artifacts around edges, ordinary 12-megapixel phone resolution, not ultra-sharp or 4K, keeping everything else the exact same' },
+    { label: '📷 Accidental pocket shot', value: 'Turn this into an unremarkable iPhone snapshot: awkward framing, subject slightly off-center, touch of motion blur from moving phone, mildly blown highlights on brightest areas, everyday camera-roll quality, looks like it was taken quickly without careful setup, keeping everything else the exact same' },
+    { label: '🌙 Dim bedroom at night', value: 'Turn this into a low-light iPhone photo in a dim bedroom: only bedside lamp on, soft yellow light, visible noise in background, slightly soft details, no dramatic contrast, realistic handheld phone shot at night, no pro lighting, keeping everything else the exact same' },
+    { label: '🪞 Grainy changing-room mirror', value: 'Turn this into an iPhone mirror selfie in a clothing changing room: harsh overhead fluorescent light, slight green cast, grainy midtones, soft edges around model, mirror smudges faintly visible, looks like a quick try-on photo for friends, keeping everything else the exact same' },
+    { label: '🟠 Streetlight glow', value: 'Turn this into a casual night-time iPhone photo under orange streetlights: uneven lighting across face, some areas in shadow, slight motion blur from slow shutter, visible noise in sky and background, looks like a real late-night phone snap, not a polished night portrait mode, keeping everything else the exact same' },
+    { label: '☀️ Backlit and muddy', value: 'Turn this into a realistic smartphone shot with strong backlight from window: subject a little underexposed, details in face slightly muddy, background mildly blown out, subtle lens flare streaks, overall soft contrast, like a quick phone pic taken against the light, keeping everything else the exact same' },
+    { label: '🎉 Club bar lighting', value: 'Turn this into a handheld iPhone photo in a bar: mixed neon and warm lighting, slight colour shift on skin, grainy dark corners, small motion blur from dancing or moving, no clean studio edges, looks like a social photo from a night out, keeping everything else the exact same' },
+    { label: '📸 Average camera-roll', value: 'Turn this into a simple vertical iPhone portrait: everyday camera-roll quality, medium sharpness but not hyper-detailed, slightly crooked horizon, cluttered background still in focus, no bokeh, no cinematic look, feels like a casual friend photo rather than a photoshoot, keeping everything else the exact same' },
+    { label: '🔍 Over-sharpened phone', value: 'Turn this into a standard iPhone camera processing: light over-sharpening on edges, slight halo around hair and clothing, textures not ultra-fine, small amount of HDR look in sky and shadows, typical modern phone photo rather than professional lens rendering, keeping everything else the exact same' },
+    { label: '👓 Slightly dirty lens', value: 'Turn this into a realistic smartphone photo taken with slightly smudged lens: very subtle hazy glow over bright areas, reduced micro-contrast, softer detail around highlights, no crisp studio lighting, gives impression of a real, imperfect phone camera, keeping everything else the exact same' },
+    { label: '🚶 Quick hallway snap', value: 'Turn this into a quick iPhone hallway snapshot: subject mid-step, little motion blur in hands or legs, uneven indoor lighting, background objects in full focus, mild noise, overall feel of an unplanned photo rather than a staged shoot, keeping everything else the exact same' },
+    { label: '💬 Sent to a mate', value: 'Turn this into a low-effort iPhone photo: casual pose, slightly awkward crop cutting off parts of body, plain indoor lighting with no dramatic shadows, moderate grain, normal phone dynamic range with some clipped whites and crushed blacks, looks like something sent over WhatsApp, not an advert, keeping everything else the exact same' }
   ],
   composition: [
     { label: '📷 Casual snap', value: 'Turn this into a casual snapshot: candid composition with off-center framing, handheld phone camera perspective, flat indoor lighting, avoiding studio polish, keeping everything else the exact same' },
@@ -132,9 +153,60 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
   const { toast } = useToast()
   const router = useRouter()
   const [rows, setRows] = useState(initialRows)
+  
+  // Prompt state management (aligned with model-workspace pattern) - MUST be declared before useEffects that use them
+  const [localPrompts, setLocalPrompts] = useState<Record<string, string>>({})
+  const [dirtyPrompts, setDirtyPrompts] = useState<Set<string>>(new Set())
+  const [savingPrompts, setSavingPrompts] = useState<Set<string>>(new Set())
+  const dirtyPromptsRef = useRef<Set<string>>(new Set())
+  const savingPromptsRef = useRef<Set<string>>(new Set())
+  
+  // Keep rowsRef in sync with rows state (for realtime handlers to access current state)
+  useEffect(() => {
+    rowsRef.current = rows
+  }, [rows])
+  
+  // Keep refs in sync with state for prompt management
+  useEffect(() => {
+    dirtyPromptsRef.current = dirtyPrompts
+  }, [dirtyPrompts])
+  
+  useEffect(() => {
+    savingPromptsRef.current = savingPrompts
+  }, [savingPrompts])
+  
+  // Initialize local prompts from row data (preserve dirty prompts)
+  useEffect(() => {
+    const initialPrompts: Record<string, string> = {}
+    rows.forEach(row => {
+      // Only initialize if this prompt is not dirty (preserve unsaved edits)
+      if (!dirtyPrompts.has(row.id) && !savingPrompts.has(row.id)) {
+        const promptValue = row.prompt || ''
+        initialPrompts[row.id] = promptValue
+      }
+    })
+    // Merge only non-dirty prompts, preserving dirty ones
+    setLocalPrompts(prev => {
+      const merged = { ...prev }
+      Object.keys(initialPrompts).forEach(rowId => {
+        // Only update if not dirty and not currently saving
+        if (!dirtyPrompts.has(rowId) && !savingPrompts.has(rowId)) {
+          merged[rowId] = initialPrompts[rowId]
+        }
+      })
+      return merged
+    })
+  }, [rows, dirtyPrompts, savingPrompts])
+  
+  // Initialize refs on mount
+  useEffect(() => {
+    rowsRef.current = initialRows
+    prevRowsRef.current = initialRows
+  }, []) // Only run once on mount
   const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({})
   const [generatingPromptRowId, setGeneratingPromptRowId] = useState<string | null>(null)
   const [enhancingRowId, setEnhancingRowId] = useState<string | null>(null)
+  const [improvingRowId, setImprovingRowId] = useState<string | null>(null)
   const [enhanceInstructions, setEnhanceInstructions] = useState<Record<string, string>>({})
   const [selectedPresets, setSelectedPresets] = useState<Record<string, string[]>>({})
   const [showCompareView, setShowCompareView] = useState<Record<string, boolean>>({})
@@ -148,12 +220,18 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     imageIndex: number;
     imageType: 'generated' | 'reference'; // Track which type of images we're viewing
   }>({ isOpen: false, rowId: null, imageIndex: 0, imageType: 'generated' })
-  const saveTimeoutRef = useRef<Record<string, NodeJS.Timeout>>({})
+  
   const loadingImagesRef = useRef<Set<string>>(new Set())
   const refreshTimeout = useRef<number | null>(null)
   const prevRowsRef = useRef<VariantRow[]>(initialRows)
   const isInitialMount = useRef(true)
   const deletedRowIdsRef = useRef<Set<string>>(new Set())
+  // Track recently added rows to prevent sync logic from removing them before router.refresh() completes
+  const recentlyAddedRowIdsRef = useRef<Set<string>>(new Set())
+  // Store timeout IDs for recently added rows cleanup
+  const recentlyAddedTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map())
+  // Ref to access current rows state without closure dependency
+  const rowsRef = useRef<VariantRow[]>(initialRows)
   const lastRefreshTimeRef = useRef<number>(0)
   const isRefreshingRef = useRef<boolean>(false)
   // Store jobId -> rowId mapping to avoid closure issues in polling callback
@@ -191,69 +269,83 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
   // Sync initialRows prop changes to local state (aligns with rows tab pattern)
   // This ensures data stays fresh when parent re-renders with new data
   // BUT: Don't overwrite local deletions - if we've deleted a row locally, don't bring it back
+  // FIXED: Removed 'rows' from dependency array to prevent circular updates
+  // Use functional setState to access current rows value without dependency
   useEffect(() => {
     // Skip if this is the initial mount (handled separately)
     if (isInitialMount.current) {
       return
     }
     
-    // Only update if initialRows actually changed (by comparing IDs)
-    const currentIds = new Set(rows.map(r => r.id))
-    const newIds = new Set(initialRows.map(r => r.id))
-    
-    // Check if there are new rows in initialRows that aren't in current state
-    const newRowIds = Array.from(newIds).filter(id => !currentIds.has(id))
-    
-    // Check if there are rows in current state that aren't in initialRows
-    // BUT exclude rows we've explicitly deleted (they should stay deleted)
-    const removedRowIds = Array.from(currentIds).filter(id => {
-      if (!newIds.has(id)) {
-        // This row is in current state but not in initialRows
-        // Only treat as "removed" if we didn't explicitly delete it
-        return !deletedRowIdsRef.current.has(id)
+    // Use functional setState to get current rows without dependency
+    setRows(prev => {
+      // Only update if initialRows actually changed (by comparing IDs)
+      const currentIds = new Set(prev.map(r => r.id))
+      const newIds = new Set(initialRows.map(r => r.id))
+      
+      // Check if there are new rows in initialRows that aren't in current state
+      const newRowIds = Array.from(newIds).filter(id => !currentIds.has(id))
+      
+      // Check if there are rows in current state that aren't in initialRows
+      // BUT exclude rows we've explicitly deleted (they should stay deleted)
+      // AND exclude recently added rows (they haven't been synced from server yet)
+      const removedRowIds = Array.from(currentIds).filter(id => {
+        if (!newIds.has(id)) {
+          // This row is in current state but not in initialRows
+          // Only treat as "removed" if we didn't explicitly delete it AND it's not recently added
+          return !deletedRowIdsRef.current.has(id) && !recentlyAddedRowIdsRef.current.has(id)
+        }
+        return false
+      })
+      
+      // Only sync if there are genuinely new rows to add, or if initialRows has fewer rows
+      // AND we haven't explicitly deleted those rows
+      const hasNewRows = newRowIds.length > 0
+      const hasRemovedRows = removedRowIds.length > 0 && removedRowIds.some(id => !deletedRowIdsRef.current.has(id))
+      
+      // If no changes needed, return previous state
+      if (!hasNewRows && !hasRemovedRows) {
+        return prev
       }
-      return false
+      
+      // If initialRows has new rows that we don't have, merge them in
+      if (hasNewRows) {
+        console.log('[Variants] Syncing new rows from initialRows', {
+          newRowIds,
+          currentCount: prev.length,
+          newCount: initialRows.length
+        })
+        
+        // Merge: keep existing rows, add new ones from initialRows
+        const existingRowMap = new Map(prev.map(r => [r.id, r]))
+        const newRowsFromInitial = initialRows.filter(r => !existingRowMap.has(r.id) && !deletedRowIdsRef.current.has(r.id))
+        
+        if (newRowsFromInitial.length > 0) {
+          return [...prev, ...newRowsFromInitial]
+        }
+      }
+      
+      // If initialRows is missing rows that we have (and we didn't delete them), 
+      // it means they were deleted elsewhere - remove them
+      if (hasRemovedRows) {
+        const rowsToRemove = removedRowIds.filter(id => !deletedRowIdsRef.current.has(id))
+        console.log('[Variants] Removing rows that are missing from initialRows', {
+          removedRowIds: rowsToRemove
+        })
+        return prev.filter(r => newIds.has(r.id) || deletedRowIdsRef.current.has(r.id))
+      }
+      
+      return prev
     })
-    
-    // Only sync if there are genuinely new rows to add, or if initialRows has fewer rows
-    // AND we haven't explicitly deleted those rows
-    const hasNewRows = newRowIds.length > 0
-    const hasRemovedRows = removedRowIds.length > 0 && removedRowIds.some(id => !deletedRowIdsRef.current.has(id))
-    
-    // If initialRows has new rows that we don't have, merge them in
-    if (hasNewRows) {
-      console.log('[Variants] Syncing new rows from initialRows', {
-        newRowIds,
-        currentCount: rows.length,
-        newCount: initialRows.length
-      })
-      
-      // Merge: keep existing rows, add new ones from initialRows
-      const existingRowMap = new Map(rows.map(r => [r.id, r]))
-      const newRowsFromInitial = initialRows.filter(r => !existingRowMap.has(r.id) && !deletedRowIdsRef.current.has(r.id))
-      
-      if (newRowsFromInitial.length > 0) {
-        setRows(prev => [...prev, ...newRowsFromInitial])
-      }
-    }
-    
-    // If initialRows is missing rows that we have (and we didn't delete them), 
-    // it means they were deleted elsewhere - remove them
-    if (hasRemovedRows) {
-      const rowsToRemove = removedRowIds.filter(id => !deletedRowIdsRef.current.has(id))
-      console.log('[Variants] Removing rows that are missing from initialRows', {
-        removedRowIds: rowsToRemove
-      })
-      setRows(prev => prev.filter(r => newIds.has(r.id) || deletedRowIdsRef.current.has(r.id)))
-    }
     
     // Clean up deletedRowIdsRef: if a row is no longer in initialRows and we deleted it,
     // we can remove it from the deleted set (it's been confirmed deleted)
+    const newIds = new Set(initialRows.map(r => r.id))
     const confirmedDeletedIds = Array.from(deletedRowIdsRef.current).filter(id => !newIds.has(id))
     if (confirmedDeletedIds.length > 0) {
       confirmedDeletedIds.forEach(id => deletedRowIdsRef.current.delete(id))
     }
-  }, [initialRows, rows])
+  }, [initialRows]) // FIXED: Removed 'rows' from dependencies to prevent circular updates
   
   // Notify parent of rows changes via useEffect (not during render)
   useEffect(() => {
@@ -280,14 +372,12 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     }
   }, [rows, onRowsChange])
   
-  // Cleanup timeouts on unmount
+  // Cleanup on unmount (no longer needed for saveTimeoutRef, but keeping for future cleanup)
   useEffect(() => {
     return () => {
-      // Clear all pending save timeouts
-      Object.values(saveTimeoutRef.current).forEach(timeout => {
-        if (timeout) clearTimeout(timeout)
-      })
-      saveTimeoutRef.current = {}
+      // Cleanup refs
+      dirtyPromptsRef.current = new Set()
+      savingPromptsRef.current = new Set()
     }
   }, [])
   
@@ -428,7 +518,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       }
       return false
     }
-  }, [onRowsChange])
+  }, [modelId])
 
   // Fetch multiple rows by ID and add them to state immediately
   // Used for optimistic updates when rows are added via events
@@ -515,14 +605,15 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
   }, [])
 
   // Debounce refresh to avoid redundant fetches when many jobs complete together
-  // FIXED: Increased debounce time and added check to prevent unnecessary calls
+  // FIXED: Use standardized debounce time
   const scheduleRefresh = useCallback(() => {
+    if (refreshTimeout.current) {
+      window.clearTimeout(refreshTimeout.current)
+    }
     refreshTimeout.current = window.setTimeout(() => {
       refreshRowData()
       refreshTimeout.current = null
-    }, 1500)
-    if (refreshTimeout.current) window.clearTimeout(refreshTimeout.current)
-    // Increased debounce to 1.5 seconds to reduce rapid successive calls
+    }, DEBOUNCE_TIMES.FULL_REFRESH)
   }, [refreshRowData])
 
   const { startPolling, pollingState } = useJobPolling((jobId, status) => {
@@ -606,11 +697,15 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         delete jobIdToRowIdRef.current[jobId]
       }
       
-      toast({
-        title: status === 'succeeded' ? 'Generation Complete' : 'Generation Failed',
-        description: `Job ${jobId.slice(0, 8)}... has ${status}`,
-        variant: status === 'failed' ? 'destructive' : 'default'
-      })
+      try {
+        toast({
+          title: status === 'succeeded' ? 'Generation Complete' : 'Generation Failed',
+          description: `Job ${jobId.slice(0, 8)}... has ${status}`,
+          variant: status === 'failed' ? 'destructive' : 'default'
+        })
+      } catch (error) {
+        console.error('[Variants] Error showing toast:', error)
+      }
       
       // Schedule a debounced full refresh as backup
       scheduleRefresh()
@@ -764,6 +859,18 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         }
         return row
       }))
+      
+      // Update local prompts and clear dirty flag since this is a fresh generated prompt
+      setLocalPrompts(prev => {
+        const next = { ...prev }
+        delete next[rowId]
+        return next
+      })
+      setDirtyPrompts(prev => {
+        const next = new Set(prev)
+        next.delete(rowId)
+        return next
+      })
 
       toast({
         title: 'Prompt generated',
@@ -791,43 +898,164 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     })
   }, [toast])
 
-  // Handle prompt change for a row with debounced save
+  // Create a Map for O(1) row lookups (optimized for performance)
+  const rowsMap = useMemo(() => {
+    const map = new Map<string, VariantRow>()
+    rows.forEach(row => map.set(row.id, row))
+    return map
+  }, [rows])
+
+  // Get current prompt value for a row (local state takes precedence)
+  // Optimized with Map lookup instead of find() for O(1) performance
+  const getCurrentPrompt = useCallback((rowId: string): string => {
+    return localPrompts[rowId] ?? rowsMap.get(rowId)?.prompt ?? ''
+  }, [localPrompts, rowsMap])
+
+  // Handle prompt change (only local state update - no API calls)
+  // Optimized to avoid unnecessary Set recreations
   const handlePromptChange = useCallback((rowId: string, value: string) => {
-    // Update local state immediately for responsive UI
-    setRows(prev => prev.map(row => {
-      if (row.id === rowId) {
-        return { ...row, prompt: value }
-      }
-      return row
-    }))
-
-    // Clear existing timeout for this row
-    if (saveTimeoutRef.current[rowId]) {
-      clearTimeout(saveTimeoutRef.current[rowId])
+    const row = rowsMap.get(rowId)
+    const currentSavedValue = row?.prompt ?? ''
+    const isDirty = value !== currentSavedValue
+    
+    // Update local prompts immediately
+    setLocalPrompts(prev => ({ ...prev, [rowId]: value }))
+    
+    // Only update dirty state if it actually changed
+    if (isDirty) {
+      setDirtyPrompts(prev => {
+        // Only create new Set if rowId is not already dirty
+        if (prev.has(rowId)) return prev
+        const next = new Set(prev)
+        next.add(rowId)
+        return next
+      })
+    } else {
+      // Only clear dirty flag if it was dirty
+      setDirtyPrompts(prev => {
+        if (!prev.has(rowId)) return prev
+        const next = new Set(prev)
+        next.delete(rowId)
+        return next
+      })
     }
+  }, [rowsMap])
 
-    // Debounce save to database (500ms delay)
-    saveTimeoutRef.current[rowId] = setTimeout(async () => {
-      try {
-        const response = await fetch(`/api/variants/rows/${rowId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: value })
+  // Handle prompt blur (save to API when user is done editing)
+  const handlePromptBlur = useCallback(async (rowId: string, value: string) => {
+    // Check if already saving to prevent concurrent saves
+    if (savingPrompts.has(rowId)) {
+      return
+    }
+    
+    // Check if value actually changed (optimized with Map lookup)
+    const row = rowsMap.get(rowId)
+    const currentSavedValue = row?.prompt ?? ''
+    if (value === currentSavedValue) {
+      // No change, clear dirty flag only if it was dirty
+      setDirtyPrompts(prev => {
+        if (!prev.has(rowId)) return prev
+        const next = new Set(prev)
+        next.delete(rowId)
+        return next
+      })
+      // Clear local prompt if it matches saved value
+      setLocalPrompts(prev => {
+        if (!(rowId in prev)) return prev
+        const next = { ...prev }
+        delete next[rowId]
+        return next
+      })
+      return
+    }
+    
+    // Mark as saving
+    setSavingPrompts(prev => new Set(prev).add(rowId))
+    
+    // Optimistic update: update rows state immediately
+    setRows(prev => prev.map(row => 
+      row.id === rowId 
+        ? { ...row, prompt: value || null }
+        : row
+    ))
+    
+    try {
+      // Add cache-busting timestamp to prevent stale data
+      const url = new URL(`/api/variants/rows/${rowId}`, window.location.origin)
+      url.searchParams.set('_t', Date.now().toString())
+      
+      const response = await fetch(url.toString(), {
+        method: 'PATCH',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache'
+        },
+        cache: 'no-store',
+        body: JSON.stringify({
+          prompt: value || undefined
         })
-
-        if (!response.ok) {
-          const error = await response.json()
-          console.error('[Variants] Failed to save prompt:', error)
-          // Don't show toast for silent saves to avoid noise
-        }
-      } catch (error) {
-        console.error('[Variants] Error saving prompt:', error)
-      } finally {
-        // Clean up timeout reference
-        delete saveTimeoutRef.current[rowId]
+      })
+      
+      if (!response.ok) {
+        throw new Error(`Failed to save prompt: ${response.status}`)
       }
-    }, 500)
-  }, [])
+      
+      const { row } = await response.json()
+      
+      // Update rows state with server response, but preserve existing images and dirty prompts
+      // (in case user typed something new while save was in progress)
+      setRows(prev => prev.map(r => {
+        if (r.id !== rowId) return r
+        const merged = { ...r, ...row }
+        if (dirtyPromptsRef.current.has(rowId)) {
+          merged.prompt = r.prompt
+        }
+        return merged
+      }))
+      
+      // Clear dirty flag on success (but only if no new edits were made during save)
+      if (!dirtyPromptsRef.current.has(rowId)) {
+        setDirtyPrompts(prev => {
+          if (!prev.has(rowId)) return prev
+          const next = new Set(prev)
+          next.delete(rowId)
+          return next
+        })
+        // Clear local prompt since it's now saved (only if it exists)
+        setLocalPrompts(prev => {
+          if (!(rowId in prev)) return prev
+          const next = { ...prev }
+          delete next[rowId]
+          return next
+        })
+      }
+    } catch (error) {
+      console.error('[Variants] Failed to save prompt:', error)
+      
+      // Revert rows state on error (optimized with Map lookup)
+      const row = rowsMap.get(rowId)
+      const savedValue = row?.prompt ?? ''
+      setRows(prev => prev.map(r => 
+        r.id === rowId 
+          ? { ...r, prompt: savedValue || null }
+          : r
+      ))
+      
+      // Keep dirty flag on error so user knows it didn't save
+      toast({
+        title: 'Failed to save prompt',
+        description: error instanceof Error ? error.message : 'Unknown error occurred',
+        variant: 'destructive'
+      })
+    } finally {
+      // Clear saving flag
+      setSavingPrompts(prev => {
+        const next = new Set(prev)
+        next.delete(rowId)
+        return next
+      })
+    }
+  }, [rows, savingPrompts, toast])
 
   // Handle delete row
   const handleDeleteRow = useCallback(async (rowId: string) => {
@@ -845,8 +1073,8 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       // Mark as deleted to prevent sync from bringing it back
       deletedRowIdsRef.current.add(rowId)
 
-      // Get all image IDs from this row to clean up selection
-      const rowToDelete = rows.find(r => r.id === rowId)
+      // Get all image IDs from this row to clean up selection (optimized with Map lookup)
+      const rowToDelete = rowsMap.get(rowId)
       const imageIdsToRemove = new Set<string>()
       if (rowToDelete?.variant_row_images) {
         rowToDelete.variant_row_images.forEach(img => {
@@ -1373,7 +1601,36 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         throw new Error(`Failed to copy image: ${response.status} ${errorText}`)
       }
 
+      // Optimistically update state immediately
+      const responseData = await response.json()
+      if (responseData.images && Array.isArray(responseData.images) && responseData.images.length > 0) {
+        setRows(prev => prev.map(row => {
+          if (row.id === targetRowId) {
+            const existingImages = row.variant_row_images || []
+            const newImages = responseData.images.map((img: any) => ({
+              ...img,
+              is_generated: false
+            }))
+            // Check for duplicates before adding
+            const existingIds = new Set(existingImages.map((img: { id: string }) => img.id))
+            const uniqueNewImages = newImages.filter((img: { id: string }) => !existingIds.has(img.id))
+            if (uniqueNewImages.length > 0) {
+              return {
+                ...row,
+                variant_row_images: [...existingImages, ...uniqueNewImages]
+              }
+            }
+          }
+          return row
+        }))
+      }
+      
+      // Then refresh to get full data
       await refreshSingleRow(targetRowId, 0)
+      // Refresh Server Component to update initialRows prop
+      setTimeout(() => {
+        router.refresh()
+      }, DEBOUNCE_TIMES.ROUTER_REFRESH)
       toast({ 
         title: 'Image copied',
         description: 'Reference image added to variant row'
@@ -1387,7 +1644,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     } finally {
       setUploadingRowId(null)
     }
-  }, [toast, refreshSingleRow])
+  }, [toast, refreshSingleRow, router])
 
   // Upload dropped files as references and add to variant row
   const addRefsFromFiles = useCallback(async (files: File[], rowId: string) => {
@@ -1443,7 +1700,36 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         throw new Error(`Failed to add images: ${response.status} ${errorText}`)
       }
 
+      // Optimistically update state immediately
+      const responseData = await response.json()
+      if (responseData.images && Array.isArray(responseData.images) && responseData.images.length > 0) {
+        setRows(prev => prev.map(row => {
+          if (row.id === rowId) {
+            const existingImages = row.variant_row_images || []
+            const newImages = responseData.images.map((img: any) => ({
+              ...img,
+              is_generated: false
+            }))
+            // Check for duplicates before adding
+            const existingIds = new Set(existingImages.map((img: { id: string }) => img.id))
+            const uniqueNewImages = newImages.filter((img: { id: string }) => !existingIds.has(img.id))
+            if (uniqueNewImages.length > 0) {
+              return {
+                ...row,
+                variant_row_images: [...existingImages, ...uniqueNewImages]
+              }
+            }
+          }
+          return row
+        }))
+      }
+      
+      // Then refresh to get full data
       await refreshSingleRow(rowId, 0)
+      // Refresh Server Component to update initialRows prop
+      setTimeout(() => {
+        router.refresh()
+      }, DEBOUNCE_TIMES.ROUTER_REFRESH)
       toast({ 
         title: `Added ${imagesToAdd.length} reference image${imagesToAdd.length === 1 ? '' : 's'}`,
         description: 'Images added to variant row'
@@ -1457,7 +1743,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     } finally {
       setUploadingRowId(null)
     }
-  }, [toast, refreshSingleRow, retryWithBackoff, refreshAuth])
+  }, [toast, refreshSingleRow, retryWithBackoff, refreshAuth, router])
 
   // Handle reference image drag over
   const handleRefDragOver = useCallback((e: React.DragEvent, rowId: string) => {
@@ -1550,7 +1836,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       } else {
         next.add(rowId)
         // Store original prompt when expanding for comparison
-        const row = rows.find(r => r.id === rowId)
+        const row = rowsMap.get(rowId)
         if (row?.prompt && !originalPrompts[rowId]) {
           setOriginalPrompts(prevPrompts => ({
             ...prevPrompts,
@@ -1857,32 +2143,14 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
 
   // Handle enhance prompt - uses functional state updates to avoid stale closures
   const handleEnhancePrompt = useCallback(async (rowId: string) => {
-    // Use functional state update to get the latest prompt value
-    let currentPrompt: string | null = null
+    // Get the latest prompt value including any local edits
+    const currentPrompt = getCurrentPrompt(rowId) || null
     let currentInstructions: string | undefined
-
-    // Get latest values from state using functional updates
-    setRows(prev => {
-      const row = prev.find(r => r.id === rowId)
-      if (row?.prompt) {
-        currentPrompt = row.prompt
-      }
-      return prev
-    })
 
     setEnhanceInstructions(prev => {
       currentInstructions = prev[rowId]?.trim()
       return prev
     })
-
-    if (!currentPrompt) {
-      toast({
-        title: 'No prompt',
-        description: 'Generate a prompt first before enhancing',
-        variant: 'destructive'
-      })
-      return
-    }
 
     if (!currentInstructions) {
       toast({
@@ -1904,22 +2172,13 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       })
 
       // Ensure any pending saves complete before enhancing
-      if (saveTimeoutRef.current[rowId]) {
-        clearTimeout(saveTimeoutRef.current[rowId])
-        delete saveTimeoutRef.current[rowId]
+      if (savingPrompts.has(rowId)) {
         // Wait a bit for any in-flight saves to complete
         await new Promise(resolve => setTimeout(resolve, 100))
       }
 
-      // Get the absolute latest prompt value right before the API call
-      let latestPrompt: string | null = currentPrompt
-      setRows(prev => {
-        const row = prev.find(r => r.id === rowId)
-        if (row?.prompt) {
-          latestPrompt = row.prompt
-        }
-        return prev
-      })
+      // Use the current prompt value (already includes local edits from getCurrentPrompt)
+      const latestPrompt: string = currentPrompt || ''
 
       const response = await fetch(`/api/variants/rows/${rowId}/prompt/enhance`, {
         method: 'POST',
@@ -1945,6 +2204,18 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         }
         return r
       }))
+      
+      // Update local prompts and clear dirty flag since this is a fresh enhanced prompt
+      setLocalPrompts(prev => {
+        const next = { ...prev }
+        delete next[rowId]
+        return next
+      })
+      setDirtyPrompts(prev => {
+        const next = new Set(prev)
+        next.delete(rowId)
+        return next
+      })
 
       // Save enhanced prompt to database immediately
       try {
@@ -1959,8 +2230,8 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       }
 
       toast({
-        title: 'Prompt enhanced',
-        description: 'Variant prompt enhanced successfully'
+        title: currentPrompt ? 'Prompt enhanced' : 'Prompt generated',
+        description: currentPrompt ? 'Variant prompt enhanced successfully' : 'Variant prompt generated from presets'
       })
     } catch (error) {
       console.error('Enhance prompt error:', error)
@@ -1972,7 +2243,104 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     } finally {
       setEnhancingRowId(null)
     }
-  }, [enhanceInstructions, toast])
+  }, [enhanceInstructions, toast, getCurrentPrompt, savingPrompts])
+
+  // Handle improve prompt - automatically optimizes prompt with Seedream 4.0 guidance
+  const handleImprovePrompt = useCallback(async (rowId: string) => {
+    // Get the latest prompt value including any local edits
+    const currentPrompt = getCurrentPrompt(rowId) || null
+
+    if (!currentPrompt) {
+      toast({
+        title: 'No prompt',
+        description: 'Generate a prompt first before improving',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    setImprovingRowId(rowId)
+    try {
+      // Store original prompt if not already stored
+      setOriginalPrompts(prev => {
+        if (!prev[rowId] && currentPrompt) {
+          return { ...prev, [rowId]: currentPrompt }
+        }
+        return prev
+      })
+
+      // Ensure any pending saves complete before improving
+      if (savingPrompts.has(rowId)) {
+        // Wait a bit for any in-flight saves to complete
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+
+      // Use the current prompt value (already includes local edits from getCurrentPrompt)
+      const latestPrompt: string = currentPrompt
+
+      const response = await fetch(`/api/variants/rows/${rowId}/prompt/improve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          existingPrompt: latestPrompt
+        })
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to improve prompt')
+      }
+
+      const data = await response.json()
+      const improvedPrompt = data.prompt
+
+      // Update the row's prompt in local state and save immediately
+      setRows(prev => prev.map(r => {
+        if (r.id === rowId) {
+          return { ...r, prompt: improvedPrompt }
+        }
+        return r
+      }))
+      
+      // Update local prompts and clear dirty flag since this is a fresh improved prompt
+      setLocalPrompts(prev => {
+        const next = { ...prev }
+        delete next[rowId]
+        return next
+      })
+      setDirtyPrompts(prev => {
+        const next = new Set(prev)
+        next.delete(rowId)
+        return next
+      })
+
+      // Save improved prompt to database immediately
+      try {
+        await fetch(`/api/variants/rows/${rowId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: improvedPrompt })
+        })
+      } catch (saveError) {
+        console.error('[Variants] Failed to save improved prompt:', saveError)
+        // Continue even if save fails - state is already updated
+      }
+
+      toast({
+        title: 'Prompt improved',
+        description: 'Variant prompt improved with Seedream 4.0 guidance'
+      })
+    } catch (error) {
+      console.error('Improve prompt error:', error)
+      toast({
+        title: 'Improvement failed',
+        description: error instanceof Error ? error.message : 'Could not improve prompt',
+        variant: 'destructive'
+      })
+    } finally {
+      setImprovingRowId(null)
+    }
+  }, [toast, getCurrentPrompt, savingPrompts])
 
 
   // Load thumbnail URLs
@@ -2170,18 +2538,54 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
           const existingIds = new Set(prev.map(r => r.id))
           const newRows = rowsToAdd.filter((r: any) => {
             const id = r.id
-            if (!id) return false
-            if (existingIds.has(id)) return false
+            if (!id) {
+              console.warn('[Variants] Event row missing id, skipping:', r)
+              return false
+            }
+            if (existingIds.has(id)) {
+              console.log('[Variants] Row already in state from event, skipping:', { rowId: id })
+              return false
+            }
             // Filter by modelId if provided
-            if (modelId && r.model_id !== modelId) return false
+            if (modelId && r.model_id !== modelId) {
+              console.log('[Variants] Row modelId mismatch in event, skipping:', { 
+                rowId: id,
+                rowModelId: r.model_id, 
+                expectedModelId: modelId 
+              })
+              return false
+            }
             return true
           })
           
-          if (newRows.length === 0) return prev
+          if (newRows.length === 0) {
+            console.log('[Variants] No new rows to add from event (all already exist or filtered)')
+            return prev
+          }
           
           console.log('[Variants] Adding rows optimistically from event', {
             newRowsCount: newRows.length,
-            rowIds: newRows.map((r: any) => r.id)
+            rowIds: newRows.map((r: any) => r.id),
+            currentCount: prev.length,
+            newCount: prev.length + newRows.length
+          })
+          
+          // Mark as recently added to prevent sync logic from removing them
+          newRows.forEach((r: any) => {
+            if (r.id) {
+              recentlyAddedRowIdsRef.current.add(r.id)
+              // Clear any existing timeout for this row
+              const existingTimeout = recentlyAddedTimeoutsRef.current.get(r.id)
+              if (existingTimeout) {
+                clearTimeout(existingTimeout)
+              }
+              // Clear the "recently added" flag after router.refresh() completes (10 seconds to be safe)
+              const timeoutId = setTimeout(() => {
+                recentlyAddedRowIdsRef.current.delete(r.id)
+                recentlyAddedTimeoutsRef.current.delete(r.id)
+              }, 10000)
+              recentlyAddedTimeoutsRef.current.set(r.id, timeoutId)
+            }
           })
           
           return [...newRows, ...prev]
@@ -2238,13 +2642,17 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
           if (variantRowId && !processingJobsRef.current.has(jobId)) {
             // Only handle if polling hasn't already picked it up
             // This is a fallback for edge cases where polling might miss the update
-            console.log('[Variants] Realtime: Job completion detected, but letting polling handle it', {
-              jobId,
-              variantRowId,
-              status: s
-            })
-            // Clean up mapping - polling will handle the rest
-            delete jobIdToRowIdRef.current[jobId]
+            try {
+              console.log('[Variants] Realtime: Job completion detected, but letting polling handle it', {
+                jobId,
+                variantRowId,
+                status: s
+              })
+              // Clean up mapping - polling will handle the rest
+              delete jobIdToRowIdRef.current[jobId]
+            } catch (error) {
+              console.error('[Variants] Error handling job completion in realtime:', error)
+            }
           }
         }
       })
@@ -2262,32 +2670,56 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         schema: 'public',
         table: 'variant_rows'
       }, (payload: any) => {
-        const newRow = payload?.new
-        if (!newRow) return
-        
-        // Filter by model_id if modelId is provided (model-specific tab)
-        if (modelId) {
-          if (newRow.model_id !== modelId) {
-            return // Not for this model, ignore
+        try {
+          const newRow = payload?.new
+          if (!newRow) return
+          
+          // Filter by model_id if modelId is provided (model-specific tab)
+          if (modelId) {
+            if (newRow.model_id !== modelId) {
+              return // Not for this model, ignore
+            }
           }
-        }
-        
-        console.log('[Variants] New variant row inserted via realtime', {
-          rowId: newRow.id,
-          modelId: newRow.model_id,
-          currentModelId: modelId,
-          willFetchImmediately: true
-        })
-        
-        // OPTIMIZED: Immediately fetch and add the new row for instant UI update
-        if (newRow.id) {
-          refreshSingleRow(newRow.id, 0).catch((error) => {
-            console.error('[Variants] Failed to fetch row immediately via realtime, falling back to refresh', error)
-            scheduleRefresh()
+          
+          console.log('[Variants] New variant row inserted via realtime', {
+            rowId: newRow.id,
+            modelId: newRow.model_id,
+            currentModelId: modelId,
+            willFetchImmediately: true
           })
-        } else {
-          // Fallback if row ID is missing
-          scheduleRefresh()
+          
+          // Mark as recently added to prevent sync logic from removing it
+          if (newRow.id) {
+            recentlyAddedRowIdsRef.current.add(newRow.id)
+            const timeoutId = setTimeout(() => {
+              recentlyAddedRowIdsRef.current.delete(newRow.id)
+              recentlyAddedTimeoutsRef.current.delete(newRow.id)
+            }, 10000) // Increased to 10 seconds to account for router.refresh() delay
+            recentlyAddedTimeoutsRef.current.set(newRow.id, timeoutId)
+            
+            // Optimistically add row with minimal data
+            setRows(prev => {
+              const existingIds = new Set(prev.map(r => r.id))
+              if (existingIds.has(newRow.id)) {
+                return prev // Already exists
+              }
+              return [{
+                ...newRow,
+                variant_row_images: []
+              }, ...prev]
+            })
+            
+            // Then fetch full row data
+            refreshSingleRow(newRow.id, 0).catch((error) => {
+              console.error('[Variants] Failed to fetch row immediately via realtime, falling back to refresh', error)
+              scheduleRefresh()
+            })
+          } else {
+            // Fallback if row ID is missing
+            scheduleRefresh()
+          }
+        } catch (error) {
+          console.error('[Variants] Error handling variant row INSERT:', error)
         }
       })
       // Listen for UPDATE events (e.g., name changes, prompt updates)
@@ -2296,26 +2728,44 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         schema: 'public',
         table: 'variant_rows'
       }, (payload: any) => {
-        const updatedRow = payload?.new
-        if (!updatedRow) return
-        
-        // Filter by model_id if modelId is provided
-        if (modelId) {
-          if (updatedRow.model_id !== modelId) {
-            return
+        try {
+          const updatedRow = payload?.new
+          if (!updatedRow) return
+          
+          // Filter by model_id if modelId is provided
+          if (modelId) {
+            if (updatedRow.model_id !== modelId) {
+              return
+            }
           }
-        }
-        
-        console.log('[Variants] Variant row updated via realtime', {
-          rowId: updatedRow.id,
-          modelId: updatedRow.model_id
-        })
-        
-        // FIXED: Use debounced refresh instead of immediate to prevent rapid successive calls
-        if (updatedRow.id) {
-          refreshSingleRow(updatedRow.id, 0).catch(() => {})
-        } else {
-          scheduleRefresh()
+          
+          console.log('[Variants] Variant row updated via realtime', {
+            rowId: updatedRow.id,
+            modelId: updatedRow.model_id
+          })
+          
+          // Use ref to check if row exists
+          const currentRows = rowsRef.current
+          const rowExists = currentRows.some(r => r.id === updatedRow.id)
+          
+          if (!rowExists && modelId) {
+            return // Row doesn't exist and we're filtering by modelId
+          }
+          
+          if (updatedRow.id) {
+            // Debounce to prevent rapid successive calls
+            if (refreshTimeout.current) window.clearTimeout(refreshTimeout.current)
+            refreshTimeout.current = window.setTimeout(() => {
+              refreshSingleRow(updatedRow.id, 0).catch((error) => {
+                console.error('[Variants] Failed to refresh row after update:', error)
+              })
+              refreshTimeout.current = null
+            }, DEBOUNCE_TIMES.ROW_UPDATE)
+          } else {
+            scheduleRefresh()
+          }
+        } catch (error) {
+          console.error('[Variants] Error handling variant row UPDATE:', error)
         }
       })
       // Listen for DELETE events
@@ -2324,118 +2774,266 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         schema: 'public',
         table: 'variant_rows'
       }, (payload: any) => {
-        const deletedRow = payload?.old
-        if (!deletedRow) return
-        
-        // Filter by model_id if modelId is provided
-        if (modelId) {
-          if (deletedRow.model_id !== modelId) {
-            return
+        try {
+          const deletedRow = payload?.old
+          if (!deletedRow) return
+          
+          // Filter by model_id if modelId is provided
+          if (modelId) {
+            if (deletedRow.model_id !== modelId) {
+              return
+            }
           }
+          
+          console.log('[Variants] Variant row deleted via realtime', {
+            rowId: deletedRow.id,
+            modelId: deletedRow.model_id
+          })
+          
+          // Mark as deleted to prevent sync from bringing it back
+          deletedRowIdsRef.current.add(deletedRow.id)
+          
+          // Clear recently added flag if it exists
+          recentlyAddedRowIdsRef.current.delete(deletedRow.id)
+          const timeoutId = recentlyAddedTimeoutsRef.current.get(deletedRow.id)
+          if (timeoutId) {
+            clearTimeout(timeoutId)
+            recentlyAddedTimeoutsRef.current.delete(deletedRow.id)
+          }
+          
+          // Remove from local state immediately and clean up related state
+          setRows(prev => {
+            const filtered = prev.filter(r => r.id !== deletedRow.id)
+            // Clean up related state when row is deleted
+            if (filtered.length !== prev.length) {
+              // Row was actually removed, clean up related state
+              setExpandedRows(prevExpanded => {
+                const next = new Set(prevExpanded)
+                next.delete(deletedRow.id)
+                return next
+              })
+              setOriginalPrompts(prevPrompts => {
+                const next = { ...prevPrompts }
+                delete next[deletedRow.id]
+                return next
+              })
+              setEnhanceInstructions(prevInstructions => {
+                const next = { ...prevInstructions }
+                delete next[deletedRow.id]
+                return next
+              })
+              setSelectedPresets(prevPresets => {
+                const next = { ...prevPresets }
+                delete next[deletedRow.id]
+                return next
+              })
+              setShowCompareView(prevCompare => {
+                const next = { ...prevCompare }
+                delete next[deletedRow.id]
+                return next
+              })
+            }
+            return filtered
+          })
+        } catch (error) {
+          console.error('[Variants] Error handling variant row DELETE:', error)
         }
-        
-        console.log('[Variants] Variant row deleted via realtime', {
-          rowId: deletedRow.id,
-          modelId: deletedRow.model_id
-        })
-        
-        // Mark as deleted to prevent sync from bringing it back
-        deletedRowIdsRef.current.add(deletedRow.id)
-        
-        // Remove from local state immediately and clean up related state
-        setRows(prev => {
-          const filtered = prev.filter(r => r.id !== deletedRow.id)
-          // Clean up related state when row is deleted
-          if (filtered.length !== prev.length) {
-            // Row was actually removed, clean up related state
-            setExpandedRows(prevExpanded => {
-              const next = new Set(prevExpanded)
-              next.delete(deletedRow.id)
-              return next
-            })
-            setOriginalPrompts(prevPrompts => {
-              const next = { ...prevPrompts }
-              delete next[deletedRow.id]
-              return next
-            })
-            setEnhanceInstructions(prevInstructions => {
-              const next = { ...prevInstructions }
-              delete next[deletedRow.id]
-              return next
-            })
-            setSelectedPresets(prevPresets => {
-              const next = { ...prevPresets }
-              delete next[deletedRow.id]
-              return next
-            })
-            setShowCompareView(prevCompare => {
-              const next = { ...prevCompare }
-              delete next[deletedRow.id]
-              return next
-            })
-          }
-          return filtered
-        })
       })
       .subscribe()
       ;(window as any).__variantRowsRealtime = variantRowsChannel
 
       // Realtime subscription to variant_row_images updates
-      // This ensures UI updates immediately when new generated images are inserted
+      // This ensures UI updates immediately when new images (both reference and generated) are inserted
       const imagesChannel = supabase.channel('variant-row-images')
+      
+      // Listen for generated image INSERTs
       imagesChannel.on('postgres_changes', {
         event: 'INSERT',
         schema: 'public',
         table: 'variant_row_images',
         filter: `is_generated=eq.true`
       }, (payload: any) => {
-        const newImage = payload?.new
-        if (!newImage || !newImage.variant_row_id) return
-        
-        console.log('[Variants] New generated image inserted via realtime', {
-          imageId: newImage.id,
-          variantRowId: newImage.variant_row_id,
-          isGenerated: newImage.is_generated
-        })
-        
-        // Refresh the specific row to show new image
-        // FIXED: Use debounced refresh instead of immediate to prevent rapid successive calls
-        const variantRowId = String(newImage.variant_row_id)
-        // Only refresh if the row exists in our current state (avoids unnecessary API calls for other models)
-        const rowExists = rows.some(r => r.id === variantRowId)
-        if (!rowExists && modelId) {
-          // Row doesn't exist in current state and we're filtering by modelId, skip refresh
-          return
-        }
-        if (variantRowId) {
-          // Debounce to batch multiple image inserts
-          if (refreshTimeout.current) window.clearTimeout(refreshTimeout.current)
-          refreshTimeout.current = window.setTimeout(() => {
-            refreshSingleRow(variantRowId, 0).catch(() => {})
-            refreshTimeout.current = null
-          }, 500)
+        try {
+          const newImage = payload?.new
+          if (!newImage || !newImage.variant_row_id) return
+          
+          console.log('[Variants] New generated image inserted via realtime', {
+            imageId: newImage.id,
+            variantRowId: newImage.variant_row_id,
+            isGenerated: newImage.is_generated
+          })
+          
+          // Use ref to access current state without closure dependency
+          const variantRowId = String(newImage.variant_row_id)
+          const currentRows = rowsRef.current
+          const rowExists = currentRows.some(r => r.id === variantRowId)
+          
+          if (!rowExists && modelId) {
+            // Row doesn't exist in current state and we're filtering by modelId, skip refresh
+            return
+          }
+          
+          if (variantRowId) {
+            // Debounce to batch multiple image inserts
+            if (refreshTimeout.current) window.clearTimeout(refreshTimeout.current)
+            refreshTimeout.current = window.setTimeout(() => {
+              refreshSingleRow(variantRowId, 0).catch((error) => {
+                console.error('[Variants] Failed to refresh row after generated image insert:', error)
+                scheduleRefresh()
+              })
+              refreshTimeout.current = null
+            }, DEBOUNCE_TIMES.IMAGE_INSERT)
+          }
+        } catch (error) {
+          console.error('[Variants] Error handling generated image INSERT:', error)
         }
       })
+      
+      // Listen for reference image INSERTs (FIXED: was missing)
+      imagesChannel.on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'variant_row_images',
+        filter: `is_generated=eq.false`
+      }, (payload: any) => {
+        try {
+          const newImage = payload?.new
+          if (!newImage || !newImage.variant_row_id) return
+          
+          console.log('[Variants] New reference image inserted via realtime', {
+            imageId: newImage.id,
+            variantRowId: newImage.variant_row_id,
+            isGenerated: newImage.is_generated
+          })
+          
+          // Use ref to access current state without closure dependency
+          const variantRowId = String(newImage.variant_row_id)
+          const currentRows = rowsRef.current
+          const rowExists = currentRows.some(r => r.id === variantRowId)
+          
+          if (!rowExists && modelId) {
+            return
+          }
+          
+          if (variantRowId) {
+            // Optimistically update state immediately
+            setRows(prev => prev.map(row => {
+              if (row.id === variantRowId) {
+                const existingImages = row.variant_row_images || []
+                // Check if image already exists (avoid duplicates)
+                if (existingImages.some(img => img.id === newImage.id)) {
+                  return row
+                }
+                return {
+                  ...row,
+                  variant_row_images: [...existingImages, {
+                    ...newImage,
+                    is_generated: false
+                  }]
+                }
+              }
+              return row
+            }))
+            
+            // Then refresh to get full data
+            if (refreshTimeout.current) window.clearTimeout(refreshTimeout.current)
+            refreshTimeout.current = window.setTimeout(() => {
+              refreshSingleRow(variantRowId, 0).catch((error) => {
+                console.error('[Variants] Failed to refresh row after reference image insert:', error)
+                scheduleRefresh()
+              })
+              refreshTimeout.current = null
+            }, DEBOUNCE_TIMES.IMAGE_INSERT)
+          }
+        } catch (error) {
+          console.error('[Variants] Error handling reference image INSERT:', error)
+        }
+      })
+      // Listen for generated image UPDATEs
       .on('postgres_changes', {
         event: 'UPDATE',
         schema: 'public',
         table: 'variant_row_images',
         filter: `is_generated=eq.true`
       }, (payload: any) => {
-        const updatedImage = payload?.new
-        if (!updatedImage || !updatedImage.variant_row_id) return
-        
-        console.log('[Variants] Generated image updated via realtime', {
-          imageId: updatedImage.id,
-          variantRowId: updatedImage.variant_row_id
-        })
-        
-        // Refresh the specific row to show updated image
-        const variantRowId = String(updatedImage.variant_row_id)
-        if (variantRowId) {
-          setTimeout(() => {
-            refreshSingleRow(variantRowId, 0).catch(() => {})
-          }, 200)
+        try {
+          const updatedImage = payload?.new
+          if (!updatedImage || !updatedImage.variant_row_id) return
+          
+          console.log('[Variants] Generated image updated via realtime', {
+            imageId: updatedImage.id,
+            variantRowId: updatedImage.variant_row_id
+          })
+          
+          const variantRowId = String(updatedImage.variant_row_id)
+          if (variantRowId) {
+            // Optimistically update state
+            setRows(prev => prev.map(row => {
+              if (row.id === variantRowId) {
+                const existingImages = row.variant_row_images || []
+                return {
+                  ...row,
+                  variant_row_images: existingImages.map(img => 
+                    img.id === updatedImage.id ? { ...updatedImage, is_generated: true } : img
+                  )
+                }
+              }
+              return row
+            }))
+            
+            // Then refresh to get full data
+            setTimeout(() => {
+              refreshSingleRow(variantRowId, 0).catch((error) => {
+                console.error('[Variants] Failed to refresh row after generated image update:', error)
+              })
+            }, DEBOUNCE_TIMES.IMAGE_UPDATE)
+          }
+        } catch (error) {
+          console.error('[Variants] Error handling generated image UPDATE:', error)
+        }
+      })
+      
+      // Listen for reference image UPDATEs (FIXED: was missing)
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'variant_row_images',
+        filter: `is_generated=eq.false`
+      }, (payload: any) => {
+        try {
+          const updatedImage = payload?.new
+          if (!updatedImage || !updatedImage.variant_row_id) return
+          
+          console.log('[Variants] Reference image updated via realtime', {
+            imageId: updatedImage.id,
+            variantRowId: updatedImage.variant_row_id
+          })
+          
+          const variantRowId = String(updatedImage.variant_row_id)
+          if (variantRowId) {
+            // Optimistically update state
+            setRows(prev => prev.map(row => {
+              if (row.id === variantRowId) {
+                const existingImages = row.variant_row_images || []
+                return {
+                  ...row,
+                  variant_row_images: existingImages.map(img => 
+                    img.id === updatedImage.id ? { ...updatedImage, is_generated: false } : img
+                  )
+                }
+              }
+              return row
+            }))
+            
+            // Then refresh to get full data
+            setTimeout(() => {
+              refreshSingleRow(variantRowId, 0).catch((error) => {
+                console.error('[Variants] Failed to refresh row after reference image update:', error)
+              })
+            }, DEBOUNCE_TIMES.IMAGE_UPDATE)
+          }
+        } catch (error) {
+          console.error('[Variants] Error handling reference image UPDATE:', error)
         }
       })
       .on('postgres_changes', {
@@ -2443,34 +3041,39 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         schema: 'public',
         table: 'variant_row_images'
       }, (payload: any) => {
-        const deletedImage = payload?.old
-        if (!deletedImage || !deletedImage.variant_row_id) return
-        
-        console.log('[Variants] Image deleted via realtime', {
-          imageId: deletedImage.id,
-          variantRowId: deletedImage.variant_row_id
-        })
-        
-        // Update state immediately to remove the deleted image
-        setRows(prev => prev.map(row => {
-          if (row.id === deletedImage.variant_row_id) {
-            return {
-              ...row,
-              variant_row_images: row.variant_row_images?.filter(img => img.id !== deletedImage.id) || []
+        try {
+          const deletedImage = payload?.old
+          if (!deletedImage || !deletedImage.variant_row_id) return
+          
+          console.log('[Variants] Image deleted via realtime', {
+            imageId: deletedImage.id,
+            variantRowId: deletedImage.variant_row_id,
+            isGenerated: deletedImage.is_generated
+          })
+          
+          // Update state immediately to remove the deleted image (works for both reference and generated)
+          setRows(prev => prev.map(row => {
+            if (row.id === deletedImage.variant_row_id) {
+              return {
+                ...row,
+                variant_row_images: row.variant_row_images?.filter(img => img.id !== deletedImage.id) || []
+              }
             }
-          }
-          return row
-        }))
+            return row
+          }))
 
-        // Clean up selection if this image was selected
-        setSelectedImageIds(prev => {
-          if (prev.has(deletedImage.id)) {
-            const next = new Set(prev)
-            next.delete(deletedImage.id)
-            return next
-          }
-          return prev
-        })
+          // Clean up selection if this image was selected
+          setSelectedImageIds(prev => {
+            if (prev.has(deletedImage.id)) {
+              const next = new Set(prev)
+              next.delete(deletedImage.id)
+              return next
+            }
+            return prev
+          })
+        } catch (error) {
+          console.error('[Variants] Error handling image DELETE:', error)
+        }
       })
       .subscribe()
       ;(window as any).__variantImagesRealtime = imagesChannel
@@ -2496,6 +3099,10 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       jobIdToRowIdRef.current = {}
       // Clear processing jobs ref
       processingJobsRef.current.clear()
+      // Clear recently added row timeouts
+      recentlyAddedTimeoutsRef.current.forEach(timeout => clearTimeout(timeout))
+      recentlyAddedTimeoutsRef.current.clear()
+      recentlyAddedRowIdsRef.current.clear()
       // Remove custom event listener
       window.removeEventListener('variants:rows-added', handleVariantsAdded as EventListener)
       
@@ -2590,6 +3197,57 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       case 'succeeded': return 100
       case 'failed': return 0
       default: return 0
+    }
+  }
+
+  // Check if a job appears stuck (no update for extended period or marked as stuck)
+  const isJobStuck = (rowId: string): boolean => {
+    const live = Object.values(pollingState).find(s => s.rowId === rowId && s.polling)
+    if (!live) return false
+    
+    // Check if explicitly marked as stuck
+    if ((live as any).isStuck) return true
+    
+    // Check if job has been in active status for too long without updates
+    const timeSinceLastUpdate = Date.now() - live.lastUpdate
+    const timeSinceCreated = Date.now() - ((live as any).createdAt || live.lastUpdate)
+    
+    // Consider stuck if:
+    // - No update for 2+ minutes AND job is at least 90 seconds old
+    // - OR job has been active for 5+ minutes
+    return (timeSinceLastUpdate > 2 * 60 * 1000 && timeSinceCreated > 90 * 1000) ||
+           (timeSinceCreated > 5 * 60 * 1000 && ['queued', 'submitted', 'running', 'saving'].includes(live.status))
+  }
+
+  // Retry stuck job by triggering cleanup and re-dispatch
+  const retryStuckJob = async (rowId: string) => {
+    try {
+      // Trigger cleanup to potentially recover the job
+      await fetch('/api/jobs/cleanup', { method: 'POST', cache: 'no-store' })
+      
+      // Trigger dispatch to pick up any recovered jobs
+      await fetch('/api/dispatch', { method: 'POST', cache: 'no-store' })
+      
+      // Restart polling for this row's jobs
+      const rowJobs = Object.values(pollingState).filter(s => s.rowId === rowId)
+      for (const jobState of rowJobs) {
+        const jobId = Object.keys(pollingState).find(id => pollingState[id] === jobState)
+        if (jobId) {
+          startPolling(jobId, jobState.status, rowId)
+        }
+      }
+      
+      toast({
+        title: 'Retry initiated',
+        description: 'Attempting to recover stuck job...'
+      })
+    } catch (error) {
+      console.error('Failed to retry stuck job:', error)
+      toast({
+        title: 'Retry failed',
+        description: 'Could not recover stuck job. Please try again.',
+        variant: 'destructive'
+      })
     }
   }
 
@@ -3065,6 +3723,10 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
           description: `Successfully uploaded ${successCount} image${successCount === 1 ? '' : 's'}${errorCount > 0 ? `, ${errorCount} failed` : ''}`,
           variant: errorCount > 0 ? 'destructive' : 'default'
         })
+        // Refresh Server Component to update initialRows prop
+        setTimeout(() => {
+          router.refresh()
+        }, DEBOUNCE_TIMES.ROUTER_REFRESH)
       }
 
       // Clear bulk upload state after a delay
@@ -3103,7 +3765,12 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
 
   // Add a row directly to state (exposed to parent components)
   const addRowToState = useCallback((row: VariantRow) => {
-    console.log('[VariantsRowsWorkspace] addRowToState called:', { rowId: row.id, hasImages: !!row.variant_row_images })
+    console.log('[VariantsRowsWorkspace] addRowToState called:', { 
+      rowId: row.id, 
+      hasImages: !!row.variant_row_images,
+      modelId: row.model_id,
+      expectedModelId: modelId
+    })
     
     // Normalize the row to ensure it has the expected structure
     const normalizedRow: VariantRow = {
@@ -3131,8 +3798,23 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       }
       console.log('[VariantsRowsWorkspace] Adding row to state:', { 
         rowId: normalizedRow.id, 
-        totalRows: prev.length + 1 
+        currentCount: prev.length,
+        newCount: prev.length + 1 
       })
+      // Mark as recently added to prevent sync logic from removing it
+      recentlyAddedRowIdsRef.current.add(normalizedRow.id)
+      // Clear any existing timeout for this row
+      const existingTimeout = recentlyAddedTimeoutsRef.current.get(normalizedRow.id)
+      if (existingTimeout) {
+        clearTimeout(existingTimeout)
+      }
+      // Clear the "recently added" flag after router.refresh() completes (10 seconds to be safe)
+      const timeoutId = setTimeout(() => {
+        recentlyAddedRowIdsRef.current.delete(normalizedRow.id)
+        recentlyAddedTimeoutsRef.current.delete(normalizedRow.id)
+      }, 10000)
+      recentlyAddedTimeoutsRef.current.set(normalizedRow.id, timeoutId)
+      // Add to the beginning (newest first) to match the order from the server
       return [normalizedRow, ...prev]
     })
   }, [modelId])
@@ -3784,14 +4466,29 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                               )}
                             </Button>
                             {row.prompt && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => handleCopyPrompt(row.prompt!)}
-                                title="Copy prompt to clipboard"
-                              >
-                                <Copy className="h-3 w-3" />
-                              </Button>
+                              <>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleImprovePrompt(row.id)}
+                                  disabled={isGenerating || improvingRowId === row.id}
+                                  title="Improve prompt with Seedream 4.0 guidance"
+                                >
+                                  {improvingRowId === row.id ? (
+                                    <Spinner size="sm" />
+                                  ) : (
+                                    <TrendingUp className="h-3 w-3" />
+                                  )}
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleCopyPrompt(row.prompt!)}
+                                  title="Copy prompt to clipboard"
+                                >
+                                  <Copy className="h-3 w-3" />
+                                </Button>
+                              </>
                             )}
                           </div>
 
@@ -3822,11 +4519,18 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                             )}
                             
                             <Textarea
-                              value={row.prompt || ''}
+                              value={getCurrentPrompt(row.id)}
                               onChange={(e) => handlePromptChange(row.id, e.target.value)}
+                              onBlur={(e) => handlePromptBlur(row.id, e.target.value)}
                               placeholder="Type your variant prompt here, or click Sparkles to generate one from reference images..."
                               rows={isExpanded ? 8 : 4}
-                              className={`resize-y text-[11px] font-mono w-[20rem] md:w-[24rem] lg:w-[28rem] xl:w-[32rem] shrink-0 border-2 border-border/50 bg-background hover:border-border focus-visible:border-primary focus-visible:ring-primary/20 shadow-sm hover:shadow-md focus-visible:shadow-lg transition-all duration-300 overflow-y-auto ${
+                              className={`resize-y text-[11px] font-mono w-[20rem] md:w-[24rem] lg:w-[28rem] xl:w-[32rem] shrink-0 border-2 transition-all duration-200 overflow-y-auto ${
+                                dirtyPrompts.has(row.id)
+                                  ? 'border-amber-400/50 bg-amber-50/30 dark:bg-amber-950/20 focus-visible:border-amber-500 focus-visible:ring-amber-500/20'
+                                  : savingPrompts.has(row.id)
+                                  ? 'border-blue-400/50 bg-blue-50/30 dark:bg-blue-950/20 focus-visible:border-blue-500 focus-visible:ring-blue-500/20'
+                                  : 'border-border/50 bg-background hover:border-border focus-visible:border-primary focus-visible:ring-primary/20'
+                              } shadow-sm hover:shadow-md focus-visible:shadow-lg ${
                                 !isExpanded ? 'max-h-[120px]' : 'max-h-[300px]'
                               }`}
                             />
@@ -3850,9 +4554,51 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                             const displayStatus = liveStatus || (isGeneratingImages ? 'queued' : null)
                             const displayProgress = statusToProgress(displayStatus)
                             const isActive = isActiveStatus(displayStatus) || isGeneratingImages
+                            const currentModel = (row as any).generation_model || DEFAULT_MODEL_ID
+                            const availableModels = getAvailableModels()
                             
                             return (
                               <>
+                                {/* Model Selection Dropdown */}
+                                <Select
+                                  value={currentModel}
+                                  onValueChange={async (value) => {
+                                    try {
+                                      const response = await fetch(`/api/variants/rows/${row.id}/generation-model`, {
+                                        method: 'PATCH',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ generation_model: value })
+                                      })
+                                      if (!response.ok) {
+                                        throw new Error('Failed to update model')
+                                      }
+                                      // Update local state
+                                      setRows(prev => prev.map(r => r.id === row.id ? { ...r, generation_model: value } : r))
+                                      toast({
+                                        title: 'Model updated',
+                                        description: `Switched to ${getWaveSpeedModel(value).name}`
+                                      })
+                                    } catch (error) {
+                                      toast({
+                                        title: 'Failed to update model',
+                                        description: error instanceof Error ? error.message : 'Unknown error',
+                                        variant: 'destructive'
+                                      })
+                                    }
+                                  }}
+                                  disabled={isActive}
+                                >
+                                  <SelectTrigger className="h-7 text-xs w-full">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {availableModels.map((model) => (
+                                      <SelectItem key={model.id} value={model.id}>
+                                        {model.name}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
                                 <Button
                                   onClick={() => handleGenerateImages(row.id)}
                                   disabled={!row.prompt || referenceImages.length < 1 || isActive}
@@ -3895,31 +4641,65 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                                 
                                 {displayStatus && (
                                   <div className="flex flex-col gap-1.5 min-w-[6rem]" aria-live="polite">
-                                    <Badge 
-                                      variant={getStatusColor(displayStatus) as any} 
-                                      className={`w-fit shadow-sm ${
-                                        isActive 
-                                          ? 'ring-2 ring-primary/20' 
-                                          : ''
-                                      }`}
-                                    >
-                                      <span className="inline-flex items-center gap-1.5">
-                                        {isActive && (
-                                          <span className="h-2 w-2 rounded-full bg-current animate-pulse shadow-sm" />
-                                        )}
-                                        <span className="font-medium text-xs">{getStatusLabel(displayStatus)}</span>
-                                      </span>
-                                    </Badge>
+                                    {(() => {
+                                      const stuck = isJobStuck(row.id)
+                                      return (
+                                        <>
+                                          <Badge 
+                                            variant={stuck ? 'destructive' : (getStatusColor(displayStatus) as any)} 
+                                            className={`w-fit shadow-sm ${
+                                              isActive 
+                                                ? stuck
+                                                  ? 'ring-2 ring-destructive/30'
+                                                  : 'ring-2 ring-primary/20'
+                                                : ''
+                                            }`}
+                                          >
+                                            <span className="inline-flex items-center gap-1.5">
+                                              {stuck && (
+                                                <AlertCircle className="h-3 w-3" />
+                                              )}
+                                              {isActive && !stuck && (
+                                                <span className="h-2 w-2 rounded-full bg-current animate-pulse shadow-sm" />
+                                              )}
+                                              <span className="font-medium text-xs">
+                                                {stuck ? 'Stuck' : getStatusLabel(displayStatus)}
+                                              </span>
+                                            </span>
+                                          </Badge>
+                                          {stuck && (
+                                            <Tooltip>
+                                              <TooltipTrigger asChild>
+                                                <Button
+                                                  variant="outline"
+                                                  size="sm"
+                                                  className="h-6 text-xs"
+                                                  onClick={() => retryStuckJob(row.id)}
+                                                >
+                                                  <RefreshCw className="h-3 w-3 mr-1" />
+                                                  Retry
+                                                </Button>
+                                              </TooltipTrigger>
+                                              <TooltipContent>
+                                                <p>Attempt to recover this stuck job</p>
+                                              </TooltipContent>
+                                            </Tooltip>
+                                          )}
+                                        </>
+                                      )
+                                    })()}
                                     <div className="relative">
                                       <Progress 
                                         value={displayProgress} 
                                         className={`h-2 rounded-full ${
                                           isActive
-                                            ? 'bg-primary/10'
+                                            ? isJobStuck(row.id)
+                                              ? 'bg-destructive/10'
+                                              : 'bg-primary/10'
                                             : 'bg-muted'
                                         }`}
                                       />
-                                      {isActive && displayProgress > 0 && (
+                                      {isActive && displayProgress > 0 && !isJobStuck(row.id) && (
                                         <div className="absolute inset-0 bg-gradient-to-r from-primary/20 via-primary/40 to-primary/20 rounded-full animate-pulse" />
                                       )}
                                     </div>
@@ -4421,7 +5201,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                     </TableRow>
                   )
 
-                  const enhancementRow = isExpanded && row.prompt ? (
+                  const enhancementRow = isExpanded ? (
                     <TableRow key={`enhancement-${row.id}`} className="bg-muted/20 border-t-2 border-t-primary/30">
                       <TableCell colSpan={6} className="p-4">
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 transition-all duration-300">
@@ -4484,17 +5264,17 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                                 onClick={() => handleEnhancePrompt(row.id)}
                                 disabled={isEnhancing || !enhanceInstructions[row.id]?.trim()}
                                 className="self-end"
-                                title="Enhance current prompt with AI"
+                                title={row.prompt ? "Enhance current prompt with AI" : "Generate prompt from presets"}
                               >
                                 {isEnhancing ? (
                                   <>
                                     <Spinner size="sm" className="mr-2" />
-                                    Enhancing...
+                                    {row.prompt ? 'Enhancing...' : 'Generating...'}
                                   </>
                                 ) : (
                                   <>
                                     <Wand2 className="h-3 w-3 mr-2" />
-                                    Enhance Prompt
+                                    {row.prompt ? 'Enhance Prompt' : 'Generate Prompt'}
                                   </>
                                 )}
                               </Button>
@@ -4637,6 +5417,27 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                     </Button>
                   )}
                 </div>
+                
+                {/* Prompt Display - Only show for generated images */}
+                {dialogState.imageType === 'generated' && currentImage.prompt_text && (
+                  <div className="border border-border/50 rounded-xl p-5 bg-gradient-to-br from-muted/50 to-muted/30 shadow-sm mt-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-sm font-semibold text-foreground">Prompt Used</h4>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleCopyPrompt(currentImage.prompt_text!)}
+                        className="h-8 px-3 text-xs"
+                      >
+                        <Copy className="h-3 w-3 mr-1.5" />
+                        Copy
+                      </Button>
+                    </div>
+                    <p className="text-sm text-muted-foreground max-h-32 overflow-y-auto whitespace-pre-wrap leading-relaxed font-mono bg-background/50 p-3 rounded-md border border-border/30">
+                      {currentImage.prompt_text}
+                    </p>
+                  </div>
+                )}
               </>
             )
           })()}

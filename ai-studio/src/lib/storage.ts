@@ -4,6 +4,56 @@ import { randomUUID } from 'crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 /**
+ * Normalize storage path to consistent format: "bucket/user_id/filename"
+ * Handles paths with/without leading slashes, with/without bucket prefix
+ * @param path Storage path in various formats
+ * @returns Normalized path in format "bucket/user_id/filename" or null if invalid
+ */
+export function normalizeStoragePath(path: string | null | undefined): string | null {
+  if (!path) return null
+  
+  // Remove leading/trailing slashes and normalize
+  let normalized = path.trim().replace(/^\/+/, '').replace(/\/+$/, '')
+  
+  if (!normalized) return null
+  
+  // Split into parts
+  const parts = normalized.split('/').filter(p => p.length > 0)
+  
+  if (parts.length < 2) {
+    // Path is too short - might be missing bucket or user_id
+    // If it looks like just a filename, we can't normalize it without context
+    console.warn('[Storage] Path too short to normalize:', path)
+    return null
+  }
+  
+  // Check if first part is a known bucket name
+  const knownBuckets = ['outputs', 'refs', 'targets', 'thumbnails']
+  const firstPart = parts[0]
+  
+  // If first part is not a known bucket, assume it's missing and try to infer
+  // This handles cases where path is just "user_id/filename"
+  if (!knownBuckets.includes(firstPart)) {
+    // Check if first part looks like a UUID (user_id)
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    if (uuidRegex.test(firstPart)) {
+      // Path is "user_id/filename" - we need to infer bucket
+      // For variant rows, reference images are typically in 'refs' or 'outputs'
+      // We'll default to 'outputs' as it's most common
+      console.warn('[Storage] Path missing bucket prefix, inferring "outputs":', path)
+      return `outputs/${normalized}`
+    }
+    
+    // Can't normalize - return null
+    console.warn('[Storage] Cannot normalize path - unknown format:', path)
+    return null
+  }
+  
+  // Path already has bucket - return as-is (already normalized)
+  return normalized
+}
+
+/**
  * Extract user_id from storage path
  * Path format: "bucket/user_id/filename.ext"
  * Returns null if path doesn't match expected format

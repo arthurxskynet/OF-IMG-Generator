@@ -1,14 +1,28 @@
 import probe from 'probe-image-size'
 
-// Probe remote image dimensions using a signed URL
-export async function getRemoteImageDimensions(inputUrl: string): Promise<{ width: number; height: number }> {
-  const result = await probe(inputUrl)
-  const width = Number(result?.width) || 0
-  const height = Number(result?.height) || 0
-  if (!width || !height) {
-    throw new Error('Could not determine remote image dimensions')
+// Probe remote image dimensions using a signed URL with timeout
+export async function getRemoteImageDimensions(inputUrl: string, timeoutMs: number = 5000): Promise<{ width: number; height: number }> {
+  // Use Promise.race to add timeout protection
+  const probePromise = probe(inputUrl)
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Image dimension probe timeout')), timeoutMs)
+  })
+  
+  try {
+    const result = await Promise.race([probePromise, timeoutPromise])
+    const width = Number(result?.width) || 0
+    const height = Number(result?.height) || 0
+    if (!width || !height) {
+      throw new Error('Could not determine remote image dimensions')
+    }
+    return { width, height }
+  } catch (error) {
+    // Re-throw with context
+    if (error instanceof Error && error.message.includes('timeout')) {
+      throw new Error(`Image dimension probe timed out after ${timeoutMs}ms`)
+    }
+    throw error
   }
-  return { width, height }
 }
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
