@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
 
     // Get the row details (including generation_model)
     const { data: row, error: er1 } = await supabase
-      .from('model_rows').select('*, generation_model').eq('id', rowId).single()
+      .from('model_rows').select('*').eq('id', rowId).single()
     if (er1 || !row) return NextResponse.json({ error: 'Row not found' }, { status: 404 })
 
     // Get the model details

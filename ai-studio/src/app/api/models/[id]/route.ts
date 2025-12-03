@@ -58,6 +58,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
           match_target_ratio,
           status,
           created_at,
+          generation_model,
           generated_images (
             id,
             output_url,

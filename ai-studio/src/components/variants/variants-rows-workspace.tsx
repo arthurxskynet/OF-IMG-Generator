@@ -38,6 +38,11 @@ interface VariantsRowsWorkspaceProps {
 
 const INTERNAL_IMAGE_MIME = 'application/x-ai-studio-image'
 
+// Auto-scroll constants for drag and drop
+const SCROLL_THRESHOLD = 100 // pixels from edge
+const MAX_SCROLL_SPEED = 20 // pixels per frame
+const MIN_SCROLL_SPEED = 5
+
 // Preset enhancement chips for quick access - organized by category
 const PRESET_ENHANCEMENTS = {
   quality: [
@@ -252,6 +257,9 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
   const [draggedImageId, setDraggedImageId] = useState<string | null>(null)
   const [draggedImageSourceRowId, setDraggedImageSourceRowId] = useState<string | null>(null)
   const zipFileInputRef = useRef<HTMLInputElement>(null)
+  // Auto-scroll state for drag and drop
+  const scrollAnimationFrameRef = useRef<number | null>(null)
+  const isAutoScrollingRef = useRef<boolean>(false)
   const fileInputRefs = useRef<Map<string, HTMLInputElement>>(new Map())
   const [uploadingRowId, setUploadingRowId] = useState<string | null>(null)
   const [isGlobalDragActive, setIsGlobalDragActive] = useState(false)
@@ -1531,11 +1539,55 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     e.dataTransfer.effectAllowed = 'copy'
   }, [])
 
+  // Auto-scroll helper functions
+  const startAutoScroll = useCallback((direction: 'up' | 'down', distanceFromEdge: number) => {
+    // If already scrolling in the same direction, don't restart
+    if (isAutoScrollingRef.current && scrollAnimationFrameRef.current !== null) {
+      return
+    }
+
+    isAutoScrollingRef.current = true
+    
+    // Calculate scroll speed based on distance from edge (closer = faster)
+    const normalizedDistance = Math.max(0, Math.min(SCROLL_THRESHOLD, distanceFromEdge))
+    const speedFactor = 1 - (normalizedDistance / SCROLL_THRESHOLD) // 0 at edge, 1 at threshold
+    const scrollSpeed = MIN_SCROLL_SPEED + (MAX_SCROLL_SPEED - MIN_SCROLL_SPEED) * (1 - speedFactor)
+    
+    const scrollDelta = direction === 'up' ? -scrollSpeed : scrollSpeed
+    
+    const scroll = () => {
+      if (!isAutoScrollingRef.current) {
+        return
+      }
+      
+      window.scrollBy({ top: scrollDelta, behavior: 'auto' })
+      scrollAnimationFrameRef.current = requestAnimationFrame(scroll)
+    }
+    
+    scrollAnimationFrameRef.current = requestAnimationFrame(scroll)
+  }, [])
+
+  const stopAutoScroll = useCallback(() => {
+    if (scrollAnimationFrameRef.current !== null) {
+      cancelAnimationFrame(scrollAnimationFrameRef.current)
+      scrollAnimationFrameRef.current = null
+    }
+    isAutoScrollingRef.current = false
+  }, [])
+
+  // Cleanup auto-scroll on unmount
+  useEffect(() => {
+    return () => {
+      stopAutoScroll()
+    }
+  }, [stopAutoScroll])
+
   // Handle reference image drag end
   const handleImageDragEnd = useCallback(() => {
     setDraggedImageId(null)
     setDraggedImageSourceRowId(null)
-  }, [])
+    stopAutoScroll()
+  }, [stopAutoScroll])
 
   // Helper function to retry operations with exponential backoff
   const retryWithBackoff = useCallback(async (
@@ -1762,7 +1814,24 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     }
     
     setDragOverRefRowId(rowId)
-  }, [draggedImageSourceRowId])
+    
+    // Auto-scroll detection: check if mouse is near viewport edges
+    const mouseY = e.clientY
+    const viewportHeight = window.innerHeight
+    const distanceFromTop = mouseY
+    const distanceFromBottom = viewportHeight - mouseY
+    
+    if (distanceFromTop < SCROLL_THRESHOLD) {
+      // Near top edge - scroll up
+      startAutoScroll('up', distanceFromTop)
+    } else if (distanceFromBottom < SCROLL_THRESHOLD) {
+      // Near bottom edge - scroll down
+      startAutoScroll('down', distanceFromBottom)
+    } else {
+      // Outside threshold zone - stop scrolling
+      stopAutoScroll()
+    }
+  }, [draggedImageSourceRowId, startAutoScroll, stopAutoScroll])
 
   // Handle reference image drag leave
   const handleRefDragLeave = useCallback((e: React.DragEvent, rowId: string) => {
@@ -1771,14 +1840,17 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     // Only clear if we're leaving the drop zone entirely
     if (!e.currentTarget.contains(e.relatedTarget as Node)) {
       setDragOverRefRowId(null)
+      // Stop auto-scrolling when leaving the drop zone
+      stopAutoScroll()
     }
-  }, [])
+  }, [stopAutoScroll])
 
   // Handle reference image drop
   const handleRefDrop = useCallback(async (e: React.DragEvent, rowId: string) => {
     e.preventDefault()
     e.stopPropagation()
     setDragOverRefRowId(null)
+    stopAutoScroll()
 
     // Check if this is an internal image drag (not a file)
     const imageDataString = e.dataTransfer.getData('application/x-variant-image')
@@ -1825,7 +1897,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
 
     // Use the existing addRefsFromFiles logic
     await addRefsFromFiles(imageFiles, rowId)
-  }, [toast, draggedImageSourceRowId, copyImageToRow, addRefsFromFiles])
+  }, [toast, draggedImageSourceRowId, copyImageToRow, addRefsFromFiles, stopAutoScroll])
 
   // Toggle row expansion
   const toggleRowExpansion = useCallback((rowId: string) => {
