@@ -2544,3 +2544,361 @@ async function enhanceVariantPromptWithModel(
 
   return enhancedPrompt
 }
+
+// ============================================================================
+// STRUCTURED PROMPT GENERATION FROM IMAGE
+// ============================================================================
+
+/**
+ * Build system prompt for structured prompt generation from image
+ * Instructs Grok to create a structured text prompt that references the uploaded image for character features
+ */
+function buildStructuredPromptSystemPrompt(): string {
+  return `You are an expert prompt generator for image recreation. Your task is to analyze an uploaded image and create a detailed, structured text prompt that can be used to recreate the image using a reference image for character features.
+
+CRITICAL REQUIREMENTS:
+
+1. CHARACTER FEATURES REFERENCE (MANDATORY):
+   - You MUST reference the uploaded image for ALL character features (face, facial structure, appearance)
+   - DO NOT describe actual character features (nose shape, eye color, face structure, facial features, etc.)
+   - DO describe facial expressions, emotions, and gaze direction (smile, playful, looking at camera, etc.)
+   - The face section MUST state: "face: { preserve_original: true }" 
+   - Include makeup and skin appearance details if visible, but NEVER describe facial structure
+   - The prompt will be used WITH a reference image, so keep character feature references vague and generic
+   - Use phrasing like "refer to the provided reference image for character features" or "use reference image for face"
+
+2. PROMPT STRUCTURE (Follow this EXACT format - match the example structure precisely):
+   
+   SUBJECT:
+   - description: Brief overall description of the subject and scene (e.g., "A young woman taking a mirror selfie, playfully biting the straw of an iced green drink")
+   - mirror_rules: (ONLY if applicable - for mirror selfies) Instructions about mirror physics and text display (e.g., "ignore mirror physics for text on clothing, display text forward and legible to viewer, no extra characters")
+   - age: Age description (e.g., "young adult", "teenager", "adult")
+   - expression: Facial expression and emotions ONLY - NOT face features (e.g., "playful, nose scrunched, biting straw", "smiling", "looking directly at camera")
+   - hair: { color: "specific color", style: "detailed style description" }
+     Example: { "color": "brown", "style": "long straight hair falling over shoulders" }
+   - clothing: { 
+       top: { type: "specific type", color: "color", details: "detailed description" },
+       bottom: { type: "specific type", color: "color", details: "detailed description" }
+     }
+     Example: { 
+       "top": { "type": "ribbed knit cami top", "color": "white", "details": "cropped fit, thin straps, small dainty bow at neckline" },
+       "bottom": { "type": "denim jeans", "color": "light wash blue", "details": "relaxed fit, visible button fly" }
+     }
+   - face: { preserve_original: true, makeup: "makeup details if visible" }
+     Example: { "preserve_original": true, "makeup": "natural sunkissed look, glowing skin, nude glossy lips" }
+     CRITICAL: Do NOT describe facial features - only expressions and makeup
+   
+   ACCESSORIES:
+   - headwear: { type: "type", details: "detailed description" }
+     Example: { "type": "olive green baseball cap", "details": "white NY logo embroidery, silver over-ear headphones worn over the cap" }
+   - jewelry: { earrings: "description", necklace: "description", wrist: "description", rings: "description" }
+     Example: { "earrings": "large gold hoop earrings", "necklace": "thin gold chain with cross pendant", "wrist": "gold bangles and bracelets mixed", "rings": "multiple gold rings" }
+   - device: { type: "type", details: "detailed description" }
+     Example: { "type": "smartphone", "details": "white case with pink floral pattern" }
+   - prop: { type: "type", details: "detailed description" }
+     Example: { "type": "iced beverage", "details": "plastic cup with iced matcha latte and green straw" }
+   
+   PHOTOGRAPHY:
+   - camera_style: Description of camera/device aesthetic (e.g., "smartphone mirror selfie aesthetic")
+   - angle: Camera angle and perspective (e.g., "eye-level mirror reflection")
+   - shot_type: Composition and framing (e.g., "waist-up composition, subject positioned on the right side of the frame")
+   - aspect_ratio: Image aspect ratio if discernible (e.g., "9:16 vertical")
+   - texture: Focus, lighting quality, realism level (e.g., "sharp focus, natural indoor lighting, social media realism, clean details")
+   
+   BACKGROUND:
+   - setting: Location description (e.g., "bright casual bedroom")
+   - wall_color: Background wall color if applicable (e.g., "plain white")
+   - elements: Array/list of background elements (e.g., ["bed with white textured duvet", "black woven shoulder bag lying on bed", "leopard print throw pillow"])
+   - atmosphere: Mood and feel (e.g., "casual lifestyle, cozy, spontaneous")
+   - lighting: Lighting description (e.g., "soft natural daylight")
+
+3. OUTPUT FORMAT:
+   - Output as readable, structured TEXT (not JSON)
+   - Use clear section headers: SUBJECT:, ACCESSORIES:, PHOTOGRAPHY:, BACKGROUND:
+   - Use bullet points and nested structure to match the example format
+   - Be extremely detailed and specific about all elements EXCEPT character features
+   - For character features, always use "preserve_original: true" and reference the provided image
+
+4. WHAT TO DESCRIBE IN DETAIL:
+   ✓ Expressions and emotions (playful, smiling, serious, etc.)
+   ✓ Gaze direction (looking at camera, looking left, etc.)
+   ✓ Hair color, style, length, texture
+   ✓ Clothing details (type, color, fit, fabric, patterns, details)
+   ✓ Accessories (jewelry, devices, props, headwear) - be very specific
+   ✓ Photography style and technical details
+   ✓ Background elements - list all visible items
+   ✓ Lighting conditions and quality
+   ✓ Makeup and skin appearance (if visible)
+   ✓ Mirror rules (if applicable)
+
+5. WHAT NOT TO DESCRIBE (Reference Image Instead - Keep Generic):
+   ✗ Facial structure and features
+   ✗ Exact face shape
+   ✗ Eye shape, color, or structure
+   ✗ Nose structure or shape
+   ✗ Lip shape or structure (unless describing expression)
+   ✗ Any physical character features
+   ✗ Use generic reference: "refer to provided reference image for character features"
+
+6. DETAIL LEVEL REQUIREMENTS:
+   - Be extremely specific about clothing (fabric types, fit, colors, patterns, details)
+   - List ALL visible accessories with specific details
+   - Describe background elements comprehensively
+   - Include all photography technical details
+   - Note all lighting characteristics
+
+Generate a comprehensive, detailed prompt following the exact structure above. The prompt will be used with a reference image, so keep character feature references generic and vague.`
+}
+
+/**
+ * Build user prompt text for structured prompt generation
+ */
+function buildStructuredPromptUserText(): string {
+  return `Analyze the uploaded image and create a detailed structured text prompt to recreate it. This prompt will be used WITH a reference image for character features, so keep character feature descriptions generic.
+
+CRITICAL INSTRUCTIONS:
+
+1. CHARACTER FEATURES HANDLING (MOST IMPORTANT):
+   - You MUST include: "face: { preserve_original: true }"
+   - DO NOT describe ANY facial features (nose, eyes shape, face structure, facial characteristics)
+   - DO describe expressions, emotions, and gaze direction (e.g., "playful, nose scrunched, biting straw")
+   - Include makeup and skin appearance details if visible (e.g., "natural sunkissed look, glowing skin, nude glossy lips")
+   - Keep character feature references vague - the prompt will be used with a reference image
+   - Use generic phrasing like "refer to provided reference image for character features"
+
+2. STRUCTURE (Follow EXACTLY as shown in example):
+   Follow the exact structure with these sections:
+   
+   SUBJECT:
+   - description: Overall scene description
+   - mirror_rules: (only if mirror selfie) Mirror physics instructions
+   - age: Age description
+   - expression: Expression and emotions (NOT features)
+   - hair: { color: "color", style: "detailed style" }
+   - clothing: { 
+       top: { type: "type", color: "color", details: "very detailed" },
+       bottom: { type: "type", color: "color", details: "very detailed" }
+     }
+   - face: { preserve_original: true, makeup: "makeup details if visible" }
+   
+   ACCESSORIES:
+   - headwear: { type: "type", details: "very detailed description" }
+   - jewelry: { earrings: "description", necklace: "description", wrist: "description", rings: "description" }
+   - device: { type: "type", details: "very detailed description" }
+   - prop: { type: "type", details: "very detailed description" }
+   
+   PHOTOGRAPHY:
+   - camera_style: Camera/device aesthetic
+   - angle: Camera angle and perspective
+   - shot_type: Composition and framing details
+   - aspect_ratio: Aspect ratio if discernible
+   - texture: Focus, lighting quality, realism
+   
+   BACKGROUND:
+   - setting: Location description
+   - wall_color: Wall color if applicable
+   - elements: Array/list of all background elements
+   - atmosphere: Mood and feel
+   - lighting: Lighting description
+
+3. DETAIL LEVEL (Be Extremely Specific):
+   - Clothing: Describe fabric type, fit, colors, patterns, all visible details
+   - Accessories: List every item with specific details (colors, materials, patterns)
+   - Background: List ALL visible elements in the background
+   - Photography: Include all technical details (camera style, angle, composition, aspect ratio, texture)
+   - Lighting: Describe lighting conditions, quality, and characteristics
+
+4. OUTPUT FORMAT:
+   - Output as structured, readable TEXT (not JSON)
+   - Use clear section headers: SUBJECT:, ACCESSORIES:, PHOTOGRAPHY:, BACKGROUND:
+   - Use bullet points and nested structure matching the example format
+   - Be comprehensive and detailed about everything EXCEPT character features
+   - For character features, use "preserve_original: true" and keep references generic
+
+5. REMEMBER:
+   - The prompt will be used WITH a reference image
+   - Keep character feature descriptions generic and vague
+   - Be extremely detailed about everything else
+   - Follow the exact structure from the example`
+}
+
+/**
+ * Generate structured prompt from image using a specific Grok model
+ */
+async function generateStructuredPromptWithModel(
+  model: string,
+  imageUrl: string,
+  apiKey: string
+): Promise<string> {
+  const isVisionModel = model.includes('vision') || 
+                       ['grok-4-fast-reasoning', 'grok-4', 'grok-3-mini'].includes(model)
+
+  if (!isVisionModel) {
+    throw new Error(`Model ${model} does not support vision capabilities`)
+  }
+
+  const systemPrompt = buildStructuredPromptSystemPrompt()
+  const userText = buildStructuredPromptUserText()
+
+  // Build user message content with image
+  const userContent: GrokVisionContent[] = [
+    {
+      type: 'text',
+      text: userText
+    },
+    {
+      type: 'image_url',
+      image_url: { url: imageUrl }
+    }
+  ]
+
+  // Get adaptive sampling parameters
+  // Use higher max tokens for structured prompt generation (needs more detail)
+  const baseSamplingParams = buildAdaptiveSamplingParams({
+    scenario: 'variant-generate',
+    imagesCount: 1
+  })
+  // Increase max tokens for detailed structured prompts
+  const samplingParams = {
+    ...baseSamplingParams,
+    maxTokens: Math.max(baseSamplingParams.maxTokens, 2000) // Ensure enough tokens for detailed structured output
+  }
+
+  const isNewerModel = ['grok-4-fast-reasoning', 'grok-4', 'grok-3-mini'].includes(model)
+  
+  const requestBody: GrokVisionRequest = {
+    model: model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userContent }
+    ],
+    temperature: samplingParams.temperature,
+    max_tokens: samplingParams.maxTokens,
+    top_p: samplingParams.topP
+  }
+
+  // Only add penalty parameters for older models that support them
+  if (!isNewerModel) {
+    requestBody.frequency_penalty = samplingParams.frequencyPenalty
+    requestBody.presence_penalty = samplingParams.presencePenalty
+  }
+
+  console.log(`${model} sending structured prompt generation request to Grok:`, {
+    promptStyle: 'structured-image-to-prompt',
+    adaptiveParams: {
+      temperature: samplingParams.temperature,
+      maxTokens: samplingParams.maxTokens,
+      topP: samplingParams.topP
+    }
+  })
+
+  const response = await fetch(`${XAI_API_BASE}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(requestBody)
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    const errorContext = {
+      model,
+      status: response.status,
+      statusText: response.statusText,
+      promptStyle: 'structured-image-to-prompt',
+      error: errorText
+    }
+    console.error(`${model} structured prompt generation API error:`, errorContext)
+    throw new Error(`Structured prompt generation failed with ${model}: ${response.status} ${response.statusText} - ${errorText}`)
+  }
+
+  const data: GrokVisionResponse = await response.json()
+  
+  if (!data.choices || data.choices.length === 0) {
+    const errorContext = {
+      model,
+      promptStyle: 'structured-image-to-prompt',
+      responseData: data
+    }
+    console.error(`${model} structured prompt generation: no choices in response`, errorContext)
+    throw new Error(`Structured prompt generation failed: ${model} returned no response choices`)
+  }
+
+  const generatedPrompt = data.choices[0].message.content.trim()
+  
+  if (!generatedPrompt) {
+    const errorContext = {
+      model,
+      promptStyle: 'structured-image-to-prompt'
+    }
+    console.error(`${model} structured prompt generation: empty prompt`, errorContext)
+    throw new Error(`Structured prompt generation failed: ${model} returned empty prompt`)
+  }
+
+  // Validate that the prompt references preserve_original for character features
+  const promptLower = generatedPrompt.toLowerCase()
+  if (!promptLower.includes('preserve_original') && 
+      !promptLower.includes('preserve original') &&
+      !promptLower.includes('reference image') &&
+      !promptLower.includes('refer to')) {
+    console.warn(`${model} structured prompt generation: prompt may not reference image for character features`, {
+      model,
+      promptPreview: generatedPrompt.substring(0, 200),
+      note: 'Expected "preserve_original: true" or reference to provided image for character features'
+    })
+  }
+
+  console.log(`${model} structured prompt generated:`, {
+    promptStyle: 'structured-image-to-prompt',
+    promptLength: generatedPrompt.length,
+    wordCount: generatedPrompt.split(/\s+/).length
+  })
+
+  return generatedPrompt
+}
+
+/**
+ * Generate structured prompt from uploaded image
+ * Tries each Grok model in order until one succeeds
+ */
+export async function generateStructuredPromptFromImage(imageUrl: string): Promise<string> {
+  console.log('[generateStructuredPromptFromImage] Entry point:', {
+    hasImage: !!imageUrl
+  })
+
+  if (!imageUrl) {
+    throw new Error('Image URL is required for structured prompt generation')
+  }
+
+  const apiKey = process.env.XAI_API_KEY
+  if (!apiKey) {
+    throw new Error('XAI_API_KEY environment variable is not set')
+  }
+
+  // Try each model in order until one works
+  const errors: Array<{ model: string; error: string }> = []
+  for (const model of GROK_MODELS) {
+    try {
+      return await generateStructuredPromptWithModel(model, imageUrl, apiKey)
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      errors.push({ model, error: errorMessage })
+      console.warn(`Model ${model} failed for structured prompt generation, trying next model:`, {
+        model,
+        promptStyle: 'structured-image-to-prompt',
+        error: errorMessage
+      })
+      if (model === GROK_MODELS[GROK_MODELS.length - 1]) {
+        console.error('All models failed for structured prompt generation', {
+          promptStyle: 'structured-image-to-prompt',
+          errors: errors.map(e => `${e.model}: ${e.error}`)
+        })
+        throw new Error(`All Grok models failed to generate structured prompt. Errors: ${errors.map(e => `${e.model}: ${e.error}`).join('; ')}`)
+      }
+    }
+  }
+  
+  throw new Error('All Grok models failed')
+}

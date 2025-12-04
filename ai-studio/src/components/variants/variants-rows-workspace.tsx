@@ -245,6 +245,9 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
   const processingJobsRef = useRef<Set<string>>(new Set())
   // Bulk upload state
   const [isFolderDropActive, setIsFolderDropActive] = useState(false)
+  // Prompt card drag and drop state
+  const [isPromptCardDragActive, setIsPromptCardDragActive] = useState(false)
+  const [isPreviewDragActive, setIsPreviewDragActive] = useState(false)
   const [bulkUploadState, setBulkUploadState] = useState<Array<{
     rowId: string
     filename: string
@@ -273,6 +276,14 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
   const [isDownloading, setIsDownloading] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  
+  // Image-to-prompt generation state
+  const [uploadedImagePath, setUploadedImagePath] = useState<string | null>(null)
+  const [uploadedImagePreview, setUploadedImagePreview] = useState<string | null>(null)
+  const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false)
+  const [generatedPrompt, setGeneratedPrompt] = useState<string | null>(null)
+  const [promptDialogOpen, setPromptDialogOpen] = useState(false)
+  const imageUploadInputRef = useRef<HTMLInputElement>(null)
   
   // Sync initialRows prop changes to local state (aligns with rows tab pattern)
   // This ensures data stays fresh when parent re-renders with new data
@@ -3535,6 +3546,144 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     }
   }
 
+  // Handle prompt card drag and drop
+  const handlePromptCardDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    
+    // Check if dragging image files
+    const hasImageFiles = Array.from(e.dataTransfer.items).some(item => 
+      item.kind === 'file' && item.type.startsWith('image/')
+    )
+    
+    if (hasImageFiles) {
+      setIsPromptCardDragActive(true)
+      e.dataTransfer.dropEffect = 'copy'
+    } else {
+      e.dataTransfer.dropEffect = 'none'
+    }
+  }
+
+  const handlePromptCardDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    // Only deactivate if we're leaving the drop zone entirely
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsPromptCardDragActive(false)
+      setIsPreviewDragActive(false)
+    }
+  }
+
+  const handlePromptCardDrop = async (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsPromptCardDragActive(false)
+    setIsPreviewDragActive(false)
+    setIsGlobalDragActive(false)
+
+    if (isGeneratingPrompt) {
+      toast({
+        title: 'Generation in progress',
+        description: 'Please wait for the current generation to complete',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    try {
+      const files = Array.from(e.dataTransfer.files)
+      const imageFiles = files.filter(file => file.type.startsWith('image/'))
+
+      if (imageFiles.length === 0) {
+        toast({
+          title: 'No images found',
+          description: 'Please drop an image file (JPEG, PNG, WebP)',
+          variant: 'destructive'
+        })
+        return
+      }
+
+      // Take the first valid image file
+      const firstImage = imageFiles[0]
+      await handleImageUploadForPrompt(firstImage)
+    } catch (error) {
+      console.error('Error processing dropped image:', error)
+      toast({
+        title: 'Upload failed',
+        description: error instanceof Error ? error.message : 'Failed to process dropped image',
+        variant: 'destructive'
+      })
+    }
+  }
+
+  // Handle preview area drag and drop (for replacing existing image)
+  const handlePreviewDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    
+    const hasImageFiles = Array.from(e.dataTransfer.items).some(item => 
+      item.kind === 'file' && item.type.startsWith('image/')
+    )
+    
+    if (hasImageFiles) {
+      setIsPreviewDragActive(true)
+      // Clear card drag state since preview takes precedence
+      setIsPromptCardDragActive(false)
+      e.dataTransfer.dropEffect = 'copy'
+    } else {
+      e.dataTransfer.dropEffect = 'none'
+    }
+  }
+
+  const handlePreviewDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsPreviewDragActive(false)
+    }
+  }
+
+  const handlePreviewDrop = async (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsPreviewDragActive(false)
+    setIsPromptCardDragActive(false)
+
+    if (isGeneratingPrompt) {
+      toast({
+        title: 'Generation in progress',
+        description: 'Please wait for the current generation to complete',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    try {
+      const files = Array.from(e.dataTransfer.files)
+      const imageFiles = files.filter(file => file.type.startsWith('image/'))
+
+      if (imageFiles.length === 0) {
+        toast({
+          title: 'No images found',
+          description: 'Please drop an image file (JPEG, PNG, WebP)',
+          variant: 'destructive'
+        })
+        return
+      }
+
+      // Replace existing image with the first valid image file
+      const firstImage = imageFiles[0]
+      await handleImageUploadForPrompt(firstImage)
+    } catch (error) {
+      console.error('Error processing dropped image:', error)
+      toast({
+        title: 'Upload failed',
+        description: error instanceof Error ? error.message : 'Failed to process dropped image',
+        variant: 'destructive'
+      })
+    }
+  }
+
 
   // Handle add images button click
   const handleAddImagesClick = (rowId: string) => {
@@ -3898,6 +4047,117 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     }
   }, [onAddRow, addRowToState])
 
+  // Handle image upload for prompt generation
+  const handleImageUploadForPrompt = useCallback(async (file: File) => {
+    try {
+      validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 50)
+      
+      const supabaseClient = createClient()
+      const { data: { user } } = await supabaseClient.auth.getUser()
+      if (!user) {
+        throw new Error('Not authenticated')
+      }
+
+      // Create preview URL
+      const previewUrl = URL.createObjectURL(file)
+      setUploadedImagePreview(previewUrl)
+
+      // Upload image to refs bucket
+      const result = await uploadImage(file, 'refs', user.id)
+      setUploadedImagePath(result.objectPath)
+
+      toast({
+        title: 'Image uploaded',
+        description: 'Image ready for prompt generation'
+      })
+    } catch (error) {
+      console.error('Image upload error:', error)
+      toast({
+        title: 'Upload failed',
+        description: error instanceof Error ? error.message : 'Failed to upload image',
+        variant: 'destructive'
+      })
+      setUploadedImagePreview(null)
+      setUploadedImagePath(null)
+    }
+  }, [toast])
+
+  // Handle file input change for prompt generation
+  const handleFileInputChangeForPrompt = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      await handleImageUploadForPrompt(file)
+      // Reset input to allow selecting same file again
+      e.target.value = ''
+    }
+  }, [handleImageUploadForPrompt])
+
+  // Handle generate prompt from uploaded image
+  const handleGeneratePromptFromImage = useCallback(async () => {
+    if (!uploadedImagePath) {
+      toast({
+        title: 'No image',
+        description: 'Please upload an image first',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    setIsGeneratingPrompt(true)
+    try {
+      const response = await fetch('/api/variants/prompt/generate-from-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imagePath: uploadedImagePath
+        })
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to generate prompt')
+      }
+
+      const data = await response.json()
+      setGeneratedPrompt(data.prompt)
+      setPromptDialogOpen(true)
+
+      toast({
+        title: 'Prompt generated',
+        description: 'Structured prompt created successfully'
+      })
+    } catch (error) {
+      console.error('Generate prompt error:', error)
+      toast({
+        title: 'Generation failed',
+        description: error instanceof Error ? error.message : 'Could not generate prompt',
+        variant: 'destructive'
+      })
+    } finally {
+      setIsGeneratingPrompt(false)
+    }
+  }, [uploadedImagePath, toast])
+
+  // Handle copy generated prompt to clipboard
+  const handleCopyGeneratedPrompt = useCallback(() => {
+    if (!generatedPrompt) return
+    navigator.clipboard.writeText(generatedPrompt)
+    toast({
+      title: 'Copied',
+      description: 'Prompt copied to clipboard'
+    })
+  }, [generatedPrompt, toast])
+
+  // Handle clear uploaded image
+  const handleClearUploadedImage = useCallback(() => {
+    if (uploadedImagePreview) {
+      URL.revokeObjectURL(uploadedImagePreview)
+    }
+    setUploadedImagePath(null)
+    setUploadedImagePreview(null)
+    setGeneratedPrompt(null)
+  }, [uploadedImagePreview])
+
   // Add new variant row
   const handleAddRow = async () => {
     try {
@@ -3945,6 +4205,115 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
           // Dimensions updated - state is already set
         }} 
       />
+
+      {/* Image-to-Prompt Generator */}
+      <Card
+        className={`transition-all duration-200 ${
+          isPromptCardDragActive 
+            ? 'border-primary ring-2 ring-primary ring-offset-2 bg-primary/5' 
+            : ''
+        }`}
+        onDragOver={handlePromptCardDragOver}
+        onDragLeave={handlePromptCardDragLeave}
+        onDrop={handlePromptCardDrop}
+      >
+        <CardContent className="p-4">
+          {isPromptCardDragActive && (
+            <div className="mb-3 p-3 bg-primary/20 border-2 border-dashed border-primary rounded text-center text-sm font-medium text-primary">
+              Drop image here to generate prompt
+            </div>
+          )}
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Wand2 className="h-4 w-4 text-muted-foreground" />
+              <div>
+                <div className="text-sm font-medium">Generate Prompt from Image</div>
+                <div className="text-xs text-muted-foreground">
+                  {isPromptCardDragActive 
+                    ? 'Drop an image to generate a structured prompt' 
+                    : 'Upload an image to generate a structured prompt'}
+                </div>
+              </div>
+            </div>
+            
+            <div className="flex items-center gap-2">
+              {/* Image Upload */}
+              <input
+                ref={imageUploadInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleFileInputChangeForPrompt}
+                className="hidden"
+              />
+              
+              {uploadedImagePath ? (
+                <div className="flex items-center gap-2">
+                  {uploadedImagePreview && (
+                    <div 
+                      className={`relative w-10 h-10 rounded overflow-hidden border transition-all duration-200 ${
+                        isPreviewDragActive 
+                          ? 'border-primary ring-2 ring-primary ring-offset-1 bg-primary/10' 
+                          : 'border-border'
+                      }`}
+                      onDragOver={handlePreviewDragOver}
+                      onDragLeave={handlePreviewDragLeave}
+                      onDrop={handlePreviewDrop}
+                    >
+                      <Image
+                        src={uploadedImagePreview}
+                        alt="Uploaded preview"
+                        fill
+                        className="object-cover"
+                      />
+                      {isPreviewDragActive && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-primary/20 text-primary text-xs font-medium">
+                          Drop to replace
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleClearUploadedImage}
+                    disabled={isGeneratingPrompt}
+                  >
+                    <X className="h-3 w-3 mr-1" />
+                    Clear
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={handleGeneratePromptFromImage}
+                    disabled={isGeneratingPrompt}
+                  >
+                    {isGeneratingPrompt ? (
+                      <>
+                        <Spinner size="sm" className="mr-2" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="h-3 w-3 mr-1" />
+                        Generate Prompt
+                      </>
+                    )}
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => imageUploadInputRef.current?.click()}
+                  disabled={isGeneratingPrompt}
+                >
+                  <Upload className="h-3 w-3 mr-1" />
+                  Upload Image
+                </Button>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Add Row Button */}
       <div className="flex justify-between items-center">
@@ -5550,6 +5919,60 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                 'Delete'
               )}
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Generated Prompt Dialog */}
+      <Dialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Generated Prompt</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {/* Image Preview */}
+            {uploadedImagePreview && (
+              <div className="relative w-full h-48 rounded-lg overflow-hidden border border-border">
+                <Image
+                  src={uploadedImagePreview}
+                  alt="Uploaded image"
+                  fill
+                  className="object-contain"
+                />
+              </div>
+            )}
+            
+            {/* Generated Prompt */}
+            {generatedPrompt && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label>Generated Prompt</Label>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCopyGeneratedPrompt}
+                  >
+                    <Copy className="h-3 w-3 mr-1" />
+                    Copy
+                  </Button>
+                </div>
+                <Textarea
+                  value={generatedPrompt}
+                  readOnly
+                  className="min-h-[300px] font-mono text-sm"
+                  onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+                />
+              </div>
+            )}
+            
+            {!generatedPrompt && (
+              <Alert>
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  No prompt generated yet. Please generate a prompt first.
+                </AlertDescription>
+              </Alert>
+            )}
           </div>
         </DialogContent>
       </Dialog>
