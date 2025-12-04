@@ -3551,12 +3551,11 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     e.preventDefault()
     e.stopPropagation()
     
-    // Check if dragging image files (same pattern as handleTableDragOver)
-    const hasImageFiles = Array.from(e.dataTransfer.items || []).some(item => 
-      item.kind === 'file' && item.type.startsWith('image/')
-    )
+    // Check if dragging files (simplified check like folder drop)
+    const hasFiles = e.dataTransfer.types.includes('Files') || 
+                     Array.from(e.dataTransfer.items || []).some(item => item.kind === 'file')
     
-    if (hasImageFiles) {
+    if (hasFiles) {
       setIsPromptCardDragActive(true)
     }
   }
@@ -3565,12 +3564,11 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     e.preventDefault()
     e.stopPropagation()
     
-    // Check if dragging image files (same pattern as handleTableDragOver)
-    const hasImageFiles = Array.from(e.dataTransfer.items || []).some(item => 
-      item.kind === 'file' && item.type.startsWith('image/')
-    )
+    // Check if dragging files (simplified check like folder drop - don't check type until drop)
+    const hasFiles = e.dataTransfer.types.includes('Files') || 
+                     Array.from(e.dataTransfer.items || []).some(item => item.kind === 'file')
     
-    if (hasImageFiles) {
+    if (hasFiles) {
       setIsPromptCardDragActive(true)
       e.dataTransfer.dropEffect = 'copy'
     } else {
@@ -3651,12 +3649,11 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     e.preventDefault()
     e.stopPropagation()
     
-    // Check if dragging image files (same pattern as handleTableDragOver)
-    const hasImageFiles = Array.from(e.dataTransfer.items || []).some(item => 
-      item.kind === 'file' && item.type.startsWith('image/')
-    )
+    // Check if dragging files (simplified check like folder drop)
+    const hasFiles = e.dataTransfer.types.includes('Files') || 
+                     Array.from(e.dataTransfer.items || []).some(item => item.kind === 'file')
     
-    if (hasImageFiles) {
+    if (hasFiles) {
       setIsPreviewDragActive(true)
       // Clear card drag state since preview takes precedence
       setIsPromptCardDragActive(false)
@@ -4265,10 +4262,19 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         onDragLeave={handlePromptCardDragLeave}
         onDrop={handlePromptCardDrop}
       >
-        <CardContent className="p-4">
+        <CardContent 
+          className="p-4 relative"
+          onDragEnter={handlePromptCardDragEnter}
+          onDragOver={handlePromptCardDragOver}
+          onDragLeave={handlePromptCardDragLeave}
+          onDrop={handlePromptCardDrop}
+        >
+          {/* Drop zone overlay when dragging */}
           {isPromptCardDragActive && (
-            <div className="mb-3 p-3 bg-primary/20 border-2 border-dashed border-primary rounded text-center text-sm font-medium text-primary">
-              Drop image here to generate prompt
+            <div className="absolute inset-0 z-10 bg-primary/5 border-2 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none" style={{ margin: '-1rem' }}>
+              <div className="p-4 bg-primary/20 border-2 border-primary rounded text-center text-sm font-medium text-primary">
+                Drop image here to generate prompt
+              </div>
             </div>
           )}
           <div className="flex items-center justify-between gap-4 flex-wrap">
