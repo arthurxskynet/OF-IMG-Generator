@@ -3547,12 +3547,26 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
   }
 
   // Handle prompt card drag and drop
+  const handlePromptCardDragEnter = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    
+    // Check if dragging image files (same pattern as handleTableDragOver)
+    const hasImageFiles = Array.from(e.dataTransfer.items || []).some(item => 
+      item.kind === 'file' && item.type.startsWith('image/')
+    )
+    
+    if (hasImageFiles) {
+      setIsPromptCardDragActive(true)
+    }
+  }
+
   const handlePromptCardDragOver = (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
     
-    // Check if dragging image files
-    const hasImageFiles = Array.from(e.dataTransfer.items).some(item => 
+    // Check if dragging image files (same pattern as handleTableDragOver)
+    const hasImageFiles = Array.from(e.dataTransfer.items || []).some(item => 
       item.kind === 'file' && item.type.startsWith('image/')
     )
     
@@ -3561,6 +3575,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       e.dataTransfer.dropEffect = 'copy'
     } else {
       e.dataTransfer.dropEffect = 'none'
+      setIsPromptCardDragActive(false)
     }
   }
 
@@ -3591,8 +3606,23 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     }
 
     try {
-      const files = Array.from(e.dataTransfer.files)
-      const imageFiles = files.filter(file => file.type.startsWith('image/'))
+      // Get files from dataTransfer
+      const files = e.dataTransfer.files
+      
+      if (!files || files.length === 0) {
+        toast({
+          title: 'No files found',
+          description: 'Please drop an image file',
+          variant: 'destructive'
+        })
+        return
+      }
+
+      const fileArray = Array.from(files)
+      const imageFiles = fileArray.filter(file => {
+        const type = file.type || ''
+        return type.startsWith('image/')
+      })
 
       if (imageFiles.length === 0) {
         toast({
@@ -3621,7 +3651,8 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     e.preventDefault()
     e.stopPropagation()
     
-    const hasImageFiles = Array.from(e.dataTransfer.items).some(item => 
+    // Check if dragging image files (same pattern as handleTableDragOver)
+    const hasImageFiles = Array.from(e.dataTransfer.items || []).some(item => 
       item.kind === 'file' && item.type.startsWith('image/')
     )
     
@@ -3632,6 +3663,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       e.dataTransfer.dropEffect = 'copy'
     } else {
       e.dataTransfer.dropEffect = 'none'
+      setIsPreviewDragActive(false)
     }
   }
 
@@ -3659,8 +3691,23 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     }
 
     try {
-      const files = Array.from(e.dataTransfer.files)
-      const imageFiles = files.filter(file => file.type.startsWith('image/'))
+      // Get files from dataTransfer
+      const files = e.dataTransfer.files
+      
+      if (!files || files.length === 0) {
+        toast({
+          title: 'No files found',
+          description: 'Please drop an image file',
+          variant: 'destructive'
+        })
+        return
+      }
+
+      const fileArray = Array.from(files)
+      const imageFiles = fileArray.filter(file => {
+        const type = file.type || ''
+        return type.startsWith('image/')
+      })
 
       if (imageFiles.length === 0) {
         toast({
@@ -4213,6 +4260,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
             ? 'border-primary ring-2 ring-primary ring-offset-2 bg-primary/5' 
             : ''
         }`}
+        onDragEnter={handlePromptCardDragEnter}
         onDragOver={handlePromptCardDragOver}
         onDragLeave={handlePromptCardDragLeave}
         onDrop={handlePromptCardDrop}
