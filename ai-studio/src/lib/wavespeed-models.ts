@@ -23,7 +23,7 @@ export interface WaveSpeedModel {
 export const WAVESPEED_MODELS: Record<string, WaveSpeedModel> = {
   'nano-banana-pro-edit': {
     id: 'nano-banana-pro-edit',
-    name: 'Google Nano Banana Pro Edit',
+    name: 'Nano Banana',
     endpoint: '/api/v3/google/nano-banana-pro/edit',
     supportedResolutions: ['1k', '2k', '4k'],
     supportedAspectRatios: ['1:1', '3:2', '2:3', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'],
@@ -38,7 +38,7 @@ export const WAVESPEED_MODELS: Record<string, WaveSpeedModel> = {
   },
   'seedream-v4-edit': {
     id: 'seedream-v4-edit',
-    name: 'ByteDance Seedream V4 Edit',
+    name: 'SeaDream',
     endpoint: '/api/v3/bytedance/seedream-v4/edit',
     supportedResolutions: [], // Uses size parameter instead
     supportedAspectRatios: [], // Uses size parameter instead
@@ -52,7 +52,7 @@ export const WAVESPEED_MODELS: Record<string, WaveSpeedModel> = {
 /**
  * Default model ID
  */
-export const DEFAULT_MODEL_ID = 'nano-banana-pro-edit'
+export const DEFAULT_MODEL_ID = 'seedream-v4-edit'
 
 /**
  * Get model configuration by ID
