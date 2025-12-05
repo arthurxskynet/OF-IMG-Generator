@@ -3,6 +3,7 @@ import axios from 'axios'
 import { supabaseAdmin } from '@/lib/supabase-admin'
 import { signPath, normalizeStoragePath } from '@/lib/storage'
 import { getWaveSpeedModel, dimensionsToAspectRatio, dimensionsToResolution, DEFAULT_MODEL_ID } from '@/lib/wavespeed-models'
+import { categorizeError, categorizeWaveSpeedError, validateDimensions, ErrorCategory } from '@/lib/error-categorization'
 // import { getRemoteImageSizeAsSeedream } from '@/lib/server-utils'
 // import { normalizeSizeOrDefault } from '@/lib/utils'
 import type { Job } from '@/types/jobs'
@@ -274,6 +275,29 @@ export async function POST(req: NextRequest) {
         const height = payload.height || 4096
         
         // Validate dimensions are within WaveSpeed API limits
+        const dimValidation = validateDimensions(width, height)
+        if (!dimValidation.valid) {
+          const categorizedError = {
+            category: dimValidation.category || ErrorCategory.DIMENSIONS_OUT_OF_RANGE,
+            message: dimValidation.message || 'Invalid dimensions',
+            details: { width, height }
+          }
+          console.error(`[Dispatch] Invalid dimensions for job ${job.id}:`, categorizedError)
+          await supabase.from('jobs').update({
+            status: 'failed',
+            error: `${categorizedError.category}: ${categorizedError.message}`,
+            updated_at: new Date().toISOString()
+          }).eq('id', job.id)
+          
+          // Update row status
+          if (job.row_id) {
+            await supabase.from('model_rows').update({ status: 'error' }).eq('id', job.row_id)
+          } else if (job.variant_row_id) {
+            await supabase.rpc('update_variant_row_status', { p_variant_row_id: job.variant_row_id })
+          }
+          return // Skip processing this job
+        }
+        
         const clampedWidth = Math.max(1024, Math.min(4096, width))
         const clampedHeight = Math.max(1024, Math.min(4096, height))
         
@@ -424,7 +448,18 @@ export async function POST(req: NextRequest) {
 
         // If we got a successful response but no provider ID, mark as failed
         if (!providerId) {
-          console.error(`[WaveSpeed] No provider ID returned for job ${job.id}`, {
+          const errorResponse = {
+            code: resp?.data?.code,
+            message: resp?.data?.message,
+            data: responseData
+          }
+          const categorizedError = categorizeWaveSpeedError(errorResponse, {
+            message: `No provider request ID returned from WaveSpeed API. Response code: ${resp?.data?.code || 'unknown'}, Message: ${resp?.data?.message || 'none'}`
+          })
+          
+          console.error(`[WaveSpeed] No provider ID returned for job ${job.id}:`, {
+            category: categorizedError.category,
+            message: categorizedError.message,
             responseCode: resp?.data?.code,
             responseMessage: resp?.data?.message,
             responseDataStructure: {
@@ -438,10 +473,10 @@ export async function POST(req: NextRequest) {
             endpoint: modelConfig.endpoint
           })
           
-          // Update job status to failed with detailed error
+          // Update job status to failed with categorized error
           await supabase.from('jobs').update({
             status: 'failed',
-            error: `No provider request ID returned from WaveSpeed API. Response code: ${resp?.data?.code || 'unknown'}, Message: ${resp?.data?.message || 'none'}`,
+            error: `${categorizedError.category}: ${categorizedError.message}`,
             updated_at: new Date().toISOString()
           }).eq('id', job.id)
 
@@ -493,28 +528,32 @@ export async function POST(req: NextRequest) {
           }
         }
       } catch (e: any) {
-        const providerMessage = e?.response?.data?.error
-          ?? e?.response?.data?.message
-          ?? e?.response?.data?.detail
-          ?? null
-        const errMessage = providerMessage || (e?.message ?? 'submit error')
-
         // Safely extract generation_model from job payload (payload may not be defined if error occurred early)
         const jobPayload = job.request_payload as { generation_model?: string } | null
         const generationModel = jobPayload?.generation_model || DEFAULT_MODEL_ID
         const modelConfig = getWaveSpeedModel(generationModel)
         
+        // Categorize the error
+        const categorizedError = categorizeError(e, {
+          httpStatus: e?.response?.status,
+          errorMessage: e?.response?.data?.error || e?.response?.data?.message || e?.response?.data?.detail || e?.message,
+          responseData: e?.response?.data
+        })
+        
         console.error(`Failed to submit job ${job.id}:`, {
+          category: categorizedError.category,
           status: e?.response?.status,
           statusText: e?.response?.statusText,
-          error: errMessage,
+          error: categorizedError.message,
           fullResponseData: e?.response?.data,
           endpoint: modelConfig.endpoint,
-          generationModel
+          generationModel,
+          details: categorizedError.details
         })
+        
         await supabase.from('jobs').update({
           status: 'failed',
-          error: errMessage,
+          error: `${categorizedError.category}: ${categorizedError.message}`,
           updated_at: new Date().toISOString()
         }).eq('id', job.id)
 

@@ -17,7 +17,7 @@ interface UseToastReturn {
 
 // Global toast state - shared across all components
 let globalToasts: Toast[] = []
-let globalListeners: Set<() => void> = new Set()
+const globalListeners: Set<() => void> = new Set()
 let toastCount = 0
 
 // Function to notify all listeners of state changes

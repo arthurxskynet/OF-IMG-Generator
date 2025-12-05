@@ -12,6 +12,7 @@ import { Thumb } from '@/components/ui/thumb'
 import { createJobs, getSignedUrl, getStatusColor, getStatusLabel, fetchActiveJobs } from '@/lib/jobs'
 import { Model, ModelRow, GeneratedImage } from '@/types/jobs'
 import { useToast } from '@/hooks/use-toast'
+import { useErrorNotification } from '@/hooks/use-error-notification'
 import { useJobPolling } from '@/hooks/use-job-polling'
 import { useThumbnailLoader } from '@/hooks/use-thumbnail-loader'
 import { uploadImage, validateFile } from '@/lib/client-upload'
@@ -64,6 +65,7 @@ const INTERNAL_IMAGE_MIME = 'application/x-ai-studio-image'
 
 export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelWorkspaceProps) {
   const { toast } = useToast()
+  const { showError } = useErrorNotification()
   const router = useRouter()
   const supabase = createClient()
   const [enhanceOpenRowId, setEnhanceOpenRowId] = useState<string | null>(null)
@@ -429,11 +431,17 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
         }))
         refreshSingleRow(rowId).catch(() => {})
       }
-      toast({
-        title: status === 'succeeded' ? 'Generation Complete' : 'Generation Failed',
-        description: `Job ${jobId} has ${status}`,
-        variant: status === 'failed' ? 'destructive' : 'default'
-      })
+      if (status === 'succeeded') {
+        toast({
+          title: 'Generation Complete',
+          description: `Job ${jobId} completed successfully`,
+          variant: 'default'
+        })
+      } else {
+        // For failed status, we'll get the error from the job and show categorized notification
+        // The error will be shown when we fetch the job details
+        showError(`Job ${jobId} failed`)
+      }
       scheduleRefresh()
     }
   })
@@ -495,8 +503,10 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
     const originalPath = target.getAttribute('data-image-path') || ''
     if (!originalPath) return
     try {
-      const { url } = await getSignedUrl(originalPath)
-      target.src = url
+      const response = await getSignedUrl(originalPath)
+      if (response) {
+        target.src = response.url
+      }
     } catch {
       // leave as-is
     }
@@ -2102,9 +2112,15 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
 
       // Convert storage paths to signed URLs for Grok API access
       const refSignedUrls = await Promise.all(
-        refImages.map(path => getSignedUrl(path).then(r => r.url))
+        refImages.map(async path => {
+          const response = await getSignedUrl(path)
+          if (!response) throw new Error(`Failed to get signed URL for ref image: ${path}`)
+          return response.url
+        })
       )
-      const targetSignedUrl = await getSignedUrl(row.target_image_url).then(r => r.url)
+      const targetResponse = await getSignedUrl(row.target_image_url)
+      if (!targetResponse) throw new Error(`Failed to get signed URL for target image: ${row.target_image_url}`)
+      const targetSignedUrl = targetResponse.url
 
       // Enqueue prompt generation request with swapMode
       const response = await fetch('/api/prompt/queue', {
@@ -2263,11 +2279,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
       // Revert optimistic status on error
       setRows(prev => prev.map(r => r.id === rowId ? { ...r, status: 'idle' as any } : r))
       const errorMessage = error instanceof Error ? error.message : 'Failed to create generation job'
-      toast({
-        title: 'Generation failed',
-        description: errorMessage,
-        variant: 'destructive'
-      })
+      showError(errorMessage)
     } finally {
       setRowStates(prev => ({
         ...prev,

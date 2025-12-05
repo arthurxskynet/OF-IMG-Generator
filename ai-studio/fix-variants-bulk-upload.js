@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 const fs = require('fs');
 const path = './src/components/variants/variants-rows-workspace.tsx';
 let content = fs.readFileSync(path, 'utf8');
@@ -9,6 +10,7 @@ content = content.replace(
 );
 
 // Fix 2: Add cleanup logic for orphaned rows
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const errorHandlerPattern = /} catch \(error\) \{\s*console\.error\(`Error uploading \$\{file\.name\}`: error\)/;
 const cleanupCode = `} catch (error) {
             console.error(\`Error uploading \${file.name}:\`, error)

@@ -56,7 +56,7 @@ export class PromptQueueService {
       swap_mode: swapMode
     }
     
-    let { data, error } = await supabaseAdmin
+    const { data, error } = await supabaseAdmin
       .from('prompt_generation_jobs')
       .insert(insertData)
       .select('id')

@@ -1,15 +1,15 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useRef, useLayoutEffect } from 'react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ModelWorkspaceWrapper } from '@/components/model-workspace-wrapper'
 import { ModelVariantsTabContent } from '@/components/model-variants-tab'
-import { Model } from '@/types/jobs'
+import { Model, ModelRow } from '@/types/jobs'
 import { VariantRow } from '@/types/variants'
 
 interface ModelTabsContentProps {
   model: Model
-  rows: any[]
+  rows: ModelRow[]
   sort?: string
   variantRows: VariantRow[]
   defaultTab?: string
@@ -19,10 +19,15 @@ interface ModelTabsContentProps {
 export function ModelTabsContent({ model, rows, sort, variantRows: initialVariantRows, defaultTab = 'rows', rowId }: ModelTabsContentProps) {
   // Track variant count dynamically so it updates when new variants are added
   const [variantCount, setVariantCount] = useState(initialVariantRows.length)
+  const prevLengthRef = useRef(initialVariantRows.length)
 
   // Update count when initial rows change (e.g., after page refresh)
-  useEffect(() => {
-    setVariantCount(initialVariantRows.length)
+  // Use useLayoutEffect to sync state when prop changes, avoiding render-time setState
+  useLayoutEffect(() => {
+    if (prevLengthRef.current !== initialVariantRows.length) {
+      prevLengthRef.current = initialVariantRows.length
+      setVariantCount(initialVariantRows.length)
+    }
   }, [initialVariantRows.length])
 
   return (

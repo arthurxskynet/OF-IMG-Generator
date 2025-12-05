@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 /**
  * Create Admin User using Supabase Admin API
  * Run with: node scripts/create-admin-user.js

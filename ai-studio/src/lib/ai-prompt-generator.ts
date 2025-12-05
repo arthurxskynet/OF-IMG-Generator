@@ -38,7 +38,7 @@ function buildAdaptiveSamplingParams(options: AdaptiveSamplingOptions): Adaptive
   
   let baseTemperature = 0.5
   let baseMaxTokens = 500
-  let topP = 0.9
+  const topP = 0.9
   
   // Scenario-specific baselines
   switch (scenario) {
@@ -434,11 +434,14 @@ function buildEnhanceUserText(existingPrompt: string, userInstructions: string, 
     ? '\n- CRITICAL: Preserve target\'s head pose/angle and face scale; do not rotate, mirror, reframe, zoom, or crop'
     : ''
 
+  // Escape prompts to prevent string injection issues
+  const escapedPrompt = JSON.stringify(existingPrompt)
+  const escapedInstructions = JSON.stringify(userInstructions)
   return `EXISTING PROMPT:
-"${existingPrompt}"
+${escapedPrompt}
 
 USER'S REQUESTED CHANGES:
-"${userInstructions}"
+${escapedInstructions}
 
 YOUR TASK:
 Refine the existing prompt by applying the user's requested changes. Keep the output concise (20-60 words) and action-focused.
@@ -1569,8 +1572,10 @@ function buildVariantEnhanceUserText(existingPrompt: string, userInstructions: s
   
   if (!hasExistingPrompt) {
     // Generate new prompt from instructions
+    // Escape user instructions to prevent string injection issues
+    const escapedInstructions = JSON.stringify(userInstructions)
     return `USER'S REQUEST:
-"${userInstructions}"
+${escapedInstructions}
 
 TASK: Generate a new variant prompt based on the user's request using Seedream 4.0 principles.
 ${isDegradation ? '\nIMPORTANT: This is a degradation/low-quality request. Use degradation patterns from iPhone snapshot examples.' : ''}
@@ -1638,11 +1643,14 @@ OUTPUT: One sentence only.`
   }
   
   // Enhance existing prompt
+  // Escape both prompts to prevent string injection issues
+  const escapedPrompt = JSON.stringify(existingPrompt)
+  const escapedInstructions = JSON.stringify(userInstructions)
   return `EXISTING PROMPT:
-"${existingPrompt}"
+${escapedPrompt}
 
 USER'S REQUEST:
-"${userInstructions}"
+${escapedInstructions}
 
 TASK: Add the user's request to the existing prompt using Seedream 4.0 editing strategies.
 ${isDegradation ? '\nIMPORTANT: This is a degradation/low-quality request. The existing prompt has been cleaned of quality-enhancing terms. Use degradation patterns from iPhone snapshot examples.' : ''}
@@ -2350,8 +2358,10 @@ OUTPUT: Improved variant prompt only. No markdown, no explanations, just the opt
  * Includes current prompt and instructions to analyze and improve
  */
 function buildVariantImproveUserText(existingPrompt: string): string {
+  // Escape prompt to prevent string injection issues
+  const escapedPrompt = JSON.stringify(existingPrompt)
   return `EXISTING PROMPT:
-"${existingPrompt}"
+${escapedPrompt}
 
 YOUR TASK:
 Analyze this prompt and improve it to better align with Seedream 4.0 best practices. Optimize both the structure and content.

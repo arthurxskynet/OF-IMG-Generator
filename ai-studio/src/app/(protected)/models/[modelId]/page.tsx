@@ -1,5 +1,4 @@
 import { createServer } from "@/lib/supabase-server";
-import { ModelWorkspaceWrapper } from "@/components/model-workspace-wrapper";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { SortFilter } from "@/components/sort-filter";

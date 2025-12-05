@@ -1,7 +1,6 @@
 export const dynamic = "force-dynamic";
 import { ReactNode } from "react";
 import { redirect } from "next/navigation";
-import type { User } from "@supabase/supabase-js";
 import { createServer } from "@/lib/supabase-server";
 import { AuthHeader } from "@/components/navigation/auth-header";
 import { TutorialProvider } from "@/components/tutorial/tutorial-provider";

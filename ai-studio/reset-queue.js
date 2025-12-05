@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 // Simple script to reset stuck queue
 const fetch = require('node-fetch');
 

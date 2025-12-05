@@ -37,15 +37,35 @@ export async function pollJob(jobId: string): Promise<PollJobResponse> {
   return res.json()
 }
 
-export async function getSignedUrl(path: string): Promise<{ url: string }> {
+export async function getSignedUrl(path: string): Promise<{ url: string } | null> {
   const res = await fetch(`/api/storage/sign?path=${encodeURIComponent(path)}`, {
     method: 'GET',
     cache: 'no-store'
   })
   
   if (!res.ok) {
-    const error = await res.text()
-    throw new Error(error)
+    // Handle 404 (file not found) gracefully - this is expected for missing thumbnails/files
+    if (res.status === 404) {
+      return null
+    }
+    
+    // For other errors, try to parse error message
+    let errorMessage = `${res.status} ${res.statusText}`
+    try {
+      const errorText = await res.text()
+      if (errorText) {
+        try {
+          const errorData = JSON.parse(errorText)
+          errorMessage = errorData.error || errorText
+        } catch {
+          errorMessage = errorText
+        }
+      }
+    } catch {
+      // If we can't parse the error, use the status text
+    }
+    
+    throw new Error(errorMessage)
   }
   
   return res.json()

@@ -13,7 +13,7 @@ export function normalizeStoragePath(path: string | null | undefined): string | 
   if (!path) return null
   
   // Remove leading/trailing slashes and normalize
-  let normalized = path.trim().replace(/^\/+/, '').replace(/\/+$/, '')
+  const normalized = path.trim().replace(/^\/+/, '').replace(/\/+$/, '')
   
   if (!normalized) return null
   

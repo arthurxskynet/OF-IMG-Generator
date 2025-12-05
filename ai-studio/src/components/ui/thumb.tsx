@@ -24,9 +24,11 @@ const Thumb = ({ src, alt, size = 96, className, dataImagePath, dataRowId }: Thu
     const path = dataImagePath
     if (!path) return
     try {
-      const { url } = await getSignedUrl(path)
-      // Switch to direct signed URL
-      setFallbackSrc(url)
+      const response = await getSignedUrl(path)
+      if (response) {
+        // Switch to direct signed URL
+        setFallbackSrc(response.url)
+      }
     } catch {
       // ignore; leave as empty fallback
     }

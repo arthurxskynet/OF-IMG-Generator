@@ -4,6 +4,7 @@ import { signPath, normalizeStoragePath } from '@/lib/storage'
 import { getRemoteImageDimensions, computeMaxQualityDimensionsForRatio } from '@/lib/server-utils'
 import { isAdminUser } from '@/lib/admin'
 import { DEFAULT_MODEL_ID } from '@/lib/wavespeed-models'
+import { categorizeError, validatePrompt, validateDimensions, ErrorCategory } from '@/lib/error-categorization'
 
 export async function POST(
   req: NextRequest,
@@ -96,16 +97,28 @@ export async function POST(
       }, { status: 403 })
     }
 
-    if (!row.prompt) {
+    // Validate prompt
+    const promptValidation = validatePrompt(row.prompt)
+    if (!promptValidation.valid) {
+      const categorizedError = categorizeError(
+        { message: promptValidation.message || 'No prompt in this variant row' },
+        { errorMessage: promptValidation.message || 'No prompt in this variant row' }
+      )
       return NextResponse.json({ 
-        error: 'No prompt in this variant row. Generate a prompt first.' 
+        error: `${categorizedError.category}: ${categorizedError.message}`,
+        category: categorizedError.category
       }, { status: 400 })
     }
 
     const images = (row as any).variant_row_images || []
     if (images.length === 0) {
+      const categorizedError = categorizeError(
+        { message: 'No images in this variant row' },
+        { errorMessage: 'No images in this variant row' }
+      )
       return NextResponse.json({ 
-        error: 'No images in this variant row' 
+        error: `${categorizedError.category}: ${categorizedError.message}`,
+        category: categorizedError.category
       }, { status: 400 })
     }
 
@@ -119,8 +132,13 @@ export async function POST(
     
     // Require at least 1 reference image (target-only allowed for Seedream edit)
     if (referenceImages.length === 0) {
+      const categorizedError = categorizeError(
+        { message: 'Need at least 1 reference image in the variant row to generate a new variant' },
+        { errorMessage: 'Need at least 1 reference image in the variant row to generate a new variant' }
+      )
       return NextResponse.json({ 
-        error: 'Need at least 1 reference image in the variant row to generate a new variant' 
+        error: `${categorizedError.category}: ${categorizedError.message}`,
+        category: categorizedError.category
       }, { status: 400 })
     }
 
@@ -138,22 +156,34 @@ export async function POST(
     
     // Validate that we have at least one valid reference path and a valid target path
     if (refPaths.length === 0 && rawRefPaths.length > 0) {
+      const categorizedError = categorizeError(
+        { message: 'Invalid reference image paths. Please re-upload the images.' },
+        { errorMessage: 'Invalid reference image paths' }
+      )
       console.error('[VariantGenerate] All reference paths failed to normalize', {
         rowId,
-        rawPaths: rawRefPaths
+        rawPaths: rawRefPaths,
+        category: categorizedError.category
       })
       return NextResponse.json({ 
-        error: 'Invalid reference image paths. Please re-upload the images.' 
+        error: `${categorizedError.category}: ${categorizedError.message}`,
+        category: categorizedError.category
       }, { status: 400 })
     }
     
     if (!targetPath) {
+      const categorizedError = categorizeError(
+        { message: 'Invalid target image path. Please re-upload the image.' },
+        { errorMessage: 'Invalid target image path' }
+      )
       console.error('[VariantGenerate] Target path failed to normalize', {
         rowId,
-        rawTargetPath
+        rawTargetPath,
+        category: categorizedError.category
       })
       return NextResponse.json({ 
-        error: 'Invalid target image path. Please re-upload the image.' 
+        error: `${categorizedError.category}: ${categorizedError.message}`,
+        category: categorizedError.category
       }, { status: 400 })
     }
 
@@ -277,8 +307,13 @@ export async function POST(
     if (row.match_target_ratio) {
       // Validate that we have at least one reference image
       if (referenceImages.length === 0) {
+        const categorizedError = categorizeError(
+          { message: 'Match target ratio is enabled but no reference images found. Add reference images first.' },
+          { errorMessage: 'No reference images found for dimension matching' }
+        )
         return NextResponse.json({ 
-          error: 'Match target ratio is enabled but no reference images found. Add reference images first.' 
+          error: `${categorizedError.category}: ${categorizedError.message}`,
+          category: categorizedError.category
         }, { status: 400 })
       }
       
@@ -366,8 +401,28 @@ export async function POST(
     }
 
     if (!modelId) {
+      const categorizedError = categorizeError(
+        { message: 'No available model found to attach job. Create a model first.' },
+        { errorMessage: 'No available model found' }
+      )
       return NextResponse.json({
-        error: 'No available model found to attach job. Create a model first.'
+        error: `${categorizedError.category}: ${categorizedError.message}`,
+        category: categorizedError.category
+      }, { status: 400 })
+    }
+    
+    // Validate dimensions before creating job
+    const dimValidation = validateDimensions(width, height)
+    if (!dimValidation.valid) {
+      const categorizedError = {
+        category: dimValidation.category || ErrorCategory.DIMENSIONS_OUT_OF_RANGE,
+        message: dimValidation.message || 'Invalid dimensions',
+        details: { width, height }
+      }
+      return NextResponse.json({
+        error: `${categorizedError.category}: ${categorizedError.message}`,
+        category: categorizedError.category,
+        details: categorizedError.details
       }, { status: 400 })
     }
 

@@ -5,6 +5,7 @@ import { signPath, normalizeStoragePath } from '@/lib/storage'
 import { getRemoteImageDimensions, computeMaxQualityDimensionsForRatio } from '@/lib/server-utils'
 import { isAdminUser } from '@/lib/admin'
 import { DEFAULT_MODEL_ID } from '@/lib/wavespeed-models'
+import { categorizeError, validatePrompt, validateDimensions, ErrorCategory } from '@/lib/error-categorization'
 
 export async function POST(req: NextRequest) {
   const supabase = await createServer()
@@ -76,8 +77,13 @@ export async function POST(req: NextRequest) {
     
     // Validate we have required images (only target image is required)
     if (!row.target_image_url) {
+      const categorizedError = categorizeError(
+        { message: 'No target image found. Please upload a target image first.' },
+        { errorMessage: 'No target image found' }
+      )
       return NextResponse.json({ 
-        error: 'No target image found. Please upload a target image first.' 
+        error: `${categorizedError.category}: ${categorizedError.message}`,
+        category: categorizedError.category
       }, { status: 400 })
     }
 
@@ -101,7 +107,11 @@ export async function POST(req: NextRequest) {
         
         // Validate target URL exists
         if (!targetUrl) {
-          throw new Error('Target image not found or cannot be accessed')
+          const categorizedError = categorizeError(
+            { message: 'Target image not found or cannot be accessed' },
+            { errorMessage: 'Target image not found or cannot be accessed' }
+          )
+          throw new Error(`${categorizedError.category}: ${categorizedError.message}`)
         }
         
         console.log('[JobCreate] Reference images logic:', {
@@ -134,7 +144,14 @@ export async function POST(req: NextRequest) {
         })
 
       } catch (error) {
-        console.error('[JobCreate] Failed to enqueue prompt generation:', error)
+        const categorizedError = categorizeError(error, {
+          errorMessage: error instanceof Error ? error.message : String(error)
+        })
+        console.error('[JobCreate] Failed to enqueue prompt generation:', {
+          category: categorizedError.category,
+          message: categorizedError.message,
+          error
+        })
         // Continue with manual prompt if AI generation fails to enqueue
         promptStatus = 'failed'
       }
@@ -184,13 +201,49 @@ export async function POST(req: NextRequest) {
     
     // Validate paths
     if (!normalizedTargetPath) {
+      const categorizedError = categorizeError(
+        { message: 'Invalid target image path. Please re-upload the image.' },
+        { errorMessage: 'Invalid target image path' }
+      )
       console.error('[JobCreate] Target path failed to normalize', {
         rowId,
-        rawTargetPath: row.target_image_url
+        rawTargetPath: row.target_image_url,
+        category: categorizedError.category
       })
       return NextResponse.json({ 
-        error: 'Invalid target image path. Please re-upload the image.' 
+        error: `${categorizedError.category}: ${categorizedError.message}`,
+        category: categorizedError.category
       }, { status: 400 })
+    }
+    
+    // Validate dimensions
+    const dimValidation = validateDimensions(outputWidth, outputHeight)
+    if (!dimValidation.valid) {
+      const categorizedError = {
+        category: dimValidation.category || ErrorCategory.DIMENSIONS_OUT_OF_RANGE,
+        message: dimValidation.message || 'Invalid dimensions',
+        details: { width: outputWidth, height: outputHeight }
+      }
+      return NextResponse.json({
+        error: `${categorizedError.category}: ${categorizedError.message}`,
+        category: categorizedError.category,
+        details: categorizedError.details
+      }, { status: 400 })
+    }
+    
+    // Validate prompt if not using AI generation
+    if (!useAiPrompt) {
+      const promptValidation = validatePrompt(finalPrompt)
+      if (!promptValidation.valid) {
+        const categorizedError = categorizeError(
+          { message: promptValidation.message || 'Prompt is empty' },
+          { errorMessage: promptValidation.message || 'Prompt is empty' }
+        )
+        return NextResponse.json({
+          error: `${categorizedError.category}: ${categorizedError.message}`,
+          category: categorizedError.category
+        }, { status: 400 })
+      }
     }
     
     if (normalizedRefPaths.length < refImages.length) {

@@ -30,7 +30,9 @@ export function ImageGallery({ images }: ImageGalleryProps) {
       
       try {
         const response = await getSignedUrl(image.output_url)
-        url = response.url
+        if (response) {
+          url = response.url
+        }
       } catch (error) {
         console.error('Failed to get signed URL for copying:', error)
         toast({
@@ -141,8 +143,10 @@ export function ImageGallery({ images }: ImageGalleryProps) {
                       if (!path) return
                       try {
                         const response = await getSignedUrl(path)
-                        const el = e.currentTarget as HTMLImageElement
-                        el.src = response.url
+                        if (response) {
+                          const el = e.currentTarget as HTMLImageElement
+                          el.src = response.url
+                        }
                       } catch {}
                     }}
                     data-image-path={image.thumbnail_url || image.output_url}
@@ -200,8 +204,10 @@ export function ImageGallery({ images }: ImageGalleryProps) {
                               if (!path) return
                               try {
                                 const response = await getSignedUrl(path)
-                                const el = e.currentTarget as HTMLImageElement
-                                el.src = response.url
+                                if (response) {
+                                  const el = e.currentTarget as HTMLImageElement
+                                  el.src = response.url
+                                }
                               } catch {}
                             }}
                             data-image-path={image.output_url || image.thumbnail_url || ''}

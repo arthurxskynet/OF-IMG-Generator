@@ -29,7 +29,9 @@ export function VariantsWorkspace() {
   const loadThumbnail = useCallback(async (imageId: string, path: string) => {
     try {
       const response = await getSignedUrl(path)
-      setThumbnailUrls(prev => ({ ...prev, [imageId]: response.url }))
+      if (response) {
+        setThumbnailUrls(prev => ({ ...prev, [imageId]: response.url }))
+      }
     } catch (error) {
       console.error('Failed to load thumbnail:', error)
     }
@@ -185,7 +187,7 @@ export function VariantsWorkspace() {
             <AlertCircle className="h-4 w-4" />
             <AlertDescription>
               Add up to {MAX_IMAGES} images from the Models workspace to create variant prompts. 
-              Drag images here or use the "Add to Variants" button in the Models page.
+              Drag images here or use the &quot;Add to Variants&quot; button in the Models page.
             </AlertDescription>
           </Alert>
         </CardContent>
@@ -227,7 +229,7 @@ export function VariantsWorkspace() {
                 <Upload className="h-12 w-12 text-muted-foreground mb-4" />
                 <p className="text-sm font-medium mb-1">No images added yet</p>
                 <p className="text-xs text-muted-foreground">
-                  Drag images from Models workspace or use "Add to Variants"
+                  Drag images from Models workspace or use &quot;Add to Variants&quot;
                 </p>
               </div>
             ) : (
@@ -333,7 +335,7 @@ export function VariantsWorkspace() {
               </div>
             ) : (
               <div className="rounded-md border bg-muted/50 p-4 text-sm text-muted-foreground text-center">
-                No prompt generated yet. Add images and click "Create Variant Prompt" to generate.
+                No prompt generated yet. Add images and click &quot;Create Variant Prompt&quot; to generate.
               </div>
             )}
           </div>

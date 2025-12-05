@@ -4,6 +4,7 @@ import { createServer } from '@/lib/supabase-server'
 import { supabaseAdmin } from '@/lib/supabase-admin'
 import { fetchAndSaveToOutputs } from '@/lib/storage'
 import { isAdminUser } from '@/lib/admin'
+import { categorizeError, categorizeWaveSpeedError, ErrorCategory } from '@/lib/error-categorization'
 
 interface VariantImageInsert {
   variant_row_id: string
@@ -123,10 +124,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
       // Aggressive cleanup: fail submitted jobs without provider_request_id after 30 seconds
       // This prevents jobs from getting stuck in submitted status for too long
       if (job.status === 'submitted' && ageSec > 30) {
+        const categorizedError = categorizeError(
+          { message: 'timeout: submitted without provider request id' },
+          { errorMessage: 'timeout: submitted without provider request id' }
+        )
+        
         console.error('[Poll] Job stuck in submitted status without provider_request_id, failing', {
           jobId: job.id,
           status: job.status,
           ageSec,
+          category: categorizedError.category,
           variantRowId: job.variant_row_id,
           rowId: job.row_id,
           requestPayload: job.request_payload
@@ -134,7 +141,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         
         await admin.from('jobs').update({
           status: 'failed',
-          error: 'timeout: submitted without provider request id',
+          error: `${categorizedError.category}: ${categorizedError.message}`,
           updated_at: new Date().toISOString()
         }).eq('id', job.id)
 
@@ -173,10 +180,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
 
       // Hard timeout: fail the job after 60 seconds (reduced from 90) without a provider id
       if (['queued', 'saving'].includes(job.status) && ageSec > 60) {
+        const categorizedError = categorizeError(
+          { message: 'timeout: no provider request id' },
+          { errorMessage: 'timeout: no provider request id' }
+        )
+        
         console.error('[Poll] Job stuck without provider_request_id, failing', {
           jobId: job.id,
           status: job.status,
           ageSec,
+          category: categorizedError.category,
           variantRowId: job.variant_row_id,
           rowId: job.row_id,
           requestPayload: job.request_payload
@@ -184,7 +197,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         
         await admin.from('jobs').update({
           status: 'failed',
-          error: 'timeout: no provider request id',
+          error: `${categorizedError.category}: ${categorizedError.message}`,
           updated_at: new Date().toISOString()
         }).eq('id', job.id)
 
@@ -223,17 +236,23 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
 
       // Additional cleanup: fail very old queued jobs (2+ minutes) immediately
       if (job.status === 'queued' && ageSec > 120) {
+        const categorizedError = categorizeError(
+          { message: 'timeout: stuck in queue too long' },
+          { errorMessage: 'timeout: stuck in queue too long' }
+        )
+        
         console.error('[Poll] Job stuck in queue too long, failing', {
           jobId: job.id,
           status: job.status,
           ageSec,
+          category: categorizedError.category,
           variantRowId: job.variant_row_id,
           rowId: job.row_id
         })
         
         await admin.from('jobs').update({
           status: 'failed',
-          error: 'timeout: stuck in queue too long',
+          error: `${categorizedError.category}: ${categorizedError.message}`,
           updated_at: new Date().toISOString()
         }).eq('id', job.id)
 
@@ -269,10 +288,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
       const updatedAtMs = job.updated_at ? Date.parse(job.updated_at) : Date.now()
       const timeSinceUpdateSec = Math.max(0, Math.floor((Date.now() - updatedAtMs) / 1000))
       if (job.status === 'saving' && timeSinceUpdateSec > 600) {
+        const categorizedError = categorizeError(
+          { message: 'timeout: stuck in saving' },
+          { errorMessage: 'timeout: stuck in saving' }
+        )
+        
         console.error('[Poll] Job stuck in saving status too long, failing', {
           jobId: job.id,
           status: job.status,
           timeSinceUpdateSec,
+          category: categorizedError.category,
           variantRowId: job.variant_row_id,
           rowId: job.row_id,
           providerRequestId: job.provider_request_id
@@ -280,7 +305,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         
         await admin.from('jobs').update({
           status: 'failed',
-          error: 'timeout: stuck in saving',
+          error: `${categorizedError.category}: ${categorizedError.message}`,
           updated_at: new Date().toISOString()
         }).eq('id', job.id)
 
@@ -704,18 +729,25 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
 
     // Failed
     const failureError = responseData?.error ?? resp?.data?.message ?? 'provider failed'
+    const categorizedError = categorizeWaveSpeedError(resp?.data || responseData, {
+      message: failureError,
+      response: resp
+    })
+    
     console.error('[Poll] Job failed at provider', {
       jobId: job.id,
       providerRequestId: job.provider_request_id,
-      error: failureError,
+      category: categorizedError.category,
+      error: categorizedError.message,
       responseStatus: responseData?.status,
       variantRowId: job.variant_row_id,
-      rowId: job.row_id
+      rowId: job.row_id,
+      details: categorizedError.details
     })
     
     await admin.from('jobs').update({
       status: 'failed',
-      error: failureError,
+      error: `${categorizedError.category}: ${categorizedError.message}`,
       updated_at: new Date().toISOString()
     }).eq('id', job.id)
 
@@ -753,8 +785,21 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
     return NextResponse.json({ status: 'failed', error: responseData?.error ?? 'failed', step: 'failed' })
 
   } catch (e: any) {
+    // Categorize the error for logging
+    const categorizedError = categorizeError(e, {
+      httpStatus: e?.response?.status,
+      errorMessage: e?.message,
+      responseData: e?.response?.data
+    })
+    
     // Transient errors -> keep as running, don't change status
-    console.error('Job polling error:', { message: e?.message, status: e?.response?.status, data: e?.response?.data })
+    console.error('Job polling error:', { 
+      category: categorizedError.category,
+      message: categorizedError.message, 
+      status: e?.response?.status, 
+      data: e?.response?.data,
+      details: categorizedError.details
+    })
     return NextResponse.json({ status: 'running', step: 'running' })
   }
 }

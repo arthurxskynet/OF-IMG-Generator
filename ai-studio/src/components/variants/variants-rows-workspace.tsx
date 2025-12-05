@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import { useToast } from '@/hooks/use-toast'
+import { useErrorNotification } from '@/hooks/use-error-notification'
 import { Spinner } from '@/components/ui/spinner'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -27,7 +28,7 @@ import { uploadImage, validateFile } from '@/lib/client-upload'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { getAvailableModels, getWaveSpeedModel, DEFAULT_MODEL_ID } from '@/lib/wavespeed-models'
-import { DEBOUNCE_TIMES } from '@/lib/debounce'
+import { DEBOUNCE_TIMES, debounce } from '@/lib/debounce'
 
 interface VariantsRowsWorkspaceProps {
   initialRows: VariantRow[]
@@ -156,6 +157,7 @@ const PRESET_ENHANCEMENTS = {
 
 export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAddRow }: VariantsRowsWorkspaceProps) {
   const { toast } = useToast()
+  const { showError } = useErrorNotification()
   const router = useRouter()
   const [rows, setRows] = useState(initialRows)
   
@@ -165,6 +167,10 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
   const [savingPrompts, setSavingPrompts] = useState<Set<string>>(new Set())
   const dirtyPromptsRef = useRef<Set<string>>(new Set())
   const savingPromptsRef = useRef<Set<string>>(new Set())
+  
+  // Ref-based input state for immediate updates without re-renders
+  const inputRefs = useRef<Record<string, string>>({})
+  const focusedInputRef = useRef<string | null>(null)
   
   // Keep rowsRef in sync with rows state (for realtime handlers to access current state)
   useEffect(() => {
@@ -717,11 +723,16 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       }
       
       try {
-        toast({
-          title: status === 'succeeded' ? 'Generation Complete' : 'Generation Failed',
-          description: `Job ${jobId.slice(0, 8)}... has ${status}`,
-          variant: status === 'failed' ? 'destructive' : 'default'
-        })
+        if (status === 'succeeded') {
+          toast({
+            title: 'Generation Complete',
+            description: `Job ${jobId.slice(0, 8)}... completed successfully`,
+            variant: 'default'
+          })
+        } else {
+          // For failed status, show categorized error notification
+          showError(`Job ${jobId.slice(0, 8)}... failed`)
+        }
       } catch (error) {
         console.error('[Variants] Error showing toast:', error)
       }
@@ -924,44 +935,90 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     return map
   }, [rows])
 
-  // Get current prompt value for a row (local state takes precedence)
+  // Debounced function to update localPrompts state (reduces re-renders)
+  // Note: Debounce utility handles its own timeout cleanup internally
+  const debouncedUpdateLocalPrompt = useMemo(
+    () => debounce((rowId: string, value: string) => {
+      const row = rowsMap.get(rowId)
+      // Skip if row no longer exists (was deleted) - prevents stale updates
+      if (!row) return
+      
+      const currentSavedValue = row?.prompt ?? ''
+      const isDirty = value !== currentSavedValue
+      
+      // Update local prompts state
+      setLocalPrompts(prev => ({ ...prev, [rowId]: value }))
+      
+      // Update dirty state if it actually changed
+      if (isDirty) {
+        setDirtyPrompts(prev => {
+          if (prev.has(rowId)) return prev
+          const next = new Set(prev)
+          next.add(rowId)
+          return next
+        })
+      } else {
+        setDirtyPrompts(prev => {
+          if (!prev.has(rowId)) return prev
+          const next = new Set(prev)
+          next.delete(rowId)
+          return next
+        })
+      }
+    }, DEBOUNCE_TIMES.ROW_UPDATE),
+    [rowsMap]
+  )
+
+  // Get current prompt value for a row (ref takes precedence for focused inputs, then local state)
   // Optimized with Map lookup instead of find() for O(1) performance
   const getCurrentPrompt = useCallback((rowId: string): string => {
+    // If this input is focused, use ref value for immediate feedback
+    if (focusedInputRef.current === rowId && inputRefs.current[rowId] !== undefined) {
+      return inputRefs.current[rowId]
+    }
+    // Otherwise use state (which is debounced)
     return localPrompts[rowId] ?? rowsMap.get(rowId)?.prompt ?? ''
   }, [localPrompts, rowsMap])
 
-  // Handle prompt change (only local state update - no API calls)
-  // Optimized to avoid unnecessary Set recreations
+  // Handle prompt change (ref-based for immediate updates, debounced state updates)
+  // Optimized to avoid re-renders on every keystroke
   const handlePromptChange = useCallback((rowId: string, value: string) => {
-    const row = rowsMap.get(rowId)
-    const currentSavedValue = row?.prompt ?? ''
-    const isDirty = value !== currentSavedValue
+    // Update ref immediately (no re-render, immediate visual feedback)
+    inputRefs.current[rowId] = value
     
-    // Update local prompts immediately
-    setLocalPrompts(prev => ({ ...prev, [rowId]: value }))
-    
-    // Only update dirty state if it actually changed
-    if (isDirty) {
-      setDirtyPrompts(prev => {
-        // Only create new Set if rowId is not already dirty
-        if (prev.has(rowId)) return prev
-        const next = new Set(prev)
-        next.add(rowId)
-        return next
-      })
-    } else {
-      // Only clear dirty flag if it was dirty
-      setDirtyPrompts(prev => {
-        if (!prev.has(rowId)) return prev
-        const next = new Set(prev)
-        next.delete(rowId)
-        return next
-      })
+    // Debounce state update (triggers re-render after typing pause)
+    debouncedUpdateLocalPrompt(rowId, value)
+  }, [debouncedUpdateLocalPrompt])
+  
+  // Handle prompt focus (track which input is active)
+  const handlePromptFocus = useCallback((rowId: string) => {
+    focusedInputRef.current = rowId
+    // Initialize ref with current value if not set
+    if (inputRefs.current[rowId] === undefined) {
+      const currentValue = localPrompts[rowId] ?? rowsMap.get(rowId)?.prompt ?? ''
+      inputRefs.current[rowId] = currentValue
     }
-  }, [rowsMap])
+  }, [localPrompts, rowsMap])
+  
+  // Handle prompt blur (clear focus tracking)
+  const handlePromptBlurInternal = useCallback((rowId: string) => {
+    if (focusedInputRef.current === rowId) {
+      focusedInputRef.current = null
+    }
+  }, [])
 
   // Handle prompt blur (save to API when user is done editing)
   const handlePromptBlur = useCallback(async (rowId: string, value: string) => {
+    // Clear focus tracking
+    handlePromptBlurInternal(rowId)
+    
+    // Ensure ref value is synced (use ref value if available, otherwise use passed value)
+    const finalValue = inputRefs.current[rowId] ?? value
+    
+    // Sync ref value to state immediately (before save) to ensure consistency
+    // This ensures any pending debounced updates don't overwrite the blur value
+    setLocalPrompts(prev => ({ ...prev, [rowId]: finalValue }))
+    
     // Check if already saving to prevent concurrent saves
     if (savingPrompts.has(rowId)) {
       return
@@ -970,7 +1027,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     // Check if value actually changed (optimized with Map lookup)
     const row = rowsMap.get(rowId)
     const currentSavedValue = row?.prompt ?? ''
-    if (value === currentSavedValue) {
+    if (finalValue === currentSavedValue) {
       // No change, clear dirty flag only if it was dirty
       setDirtyPrompts(prev => {
         if (!prev.has(rowId)) return prev
@@ -985,6 +1042,8 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         delete next[rowId]
         return next
       })
+      // Clear ref
+      delete inputRefs.current[rowId]
       return
     }
     
@@ -994,7 +1053,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     // Optimistic update: update rows state immediately
     setRows(prev => prev.map(row => 
       row.id === rowId 
-        ? { ...row, prompt: value || null }
+        ? { ...row, prompt: finalValue || null }
         : row
     ))
     
@@ -1011,7 +1070,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         },
         cache: 'no-store',
         body: JSON.stringify({
-          prompt: value || undefined
+          prompt: finalValue || undefined
         })
       })
       
@@ -1074,7 +1133,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         return next
       })
     }
-  }, [rows, savingPrompts, toast])
+  }, [rowsMap, savingPrompts, handlePromptBlurInternal, toast])
 
   // Handle delete row
   const handleDeleteRow = useCallback(async (rowId: string) => {
@@ -1133,6 +1192,12 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
             delete next[rowId]
             return next
           })
+          // Clean up input refs for deleted row
+          delete inputRefs.current[rowId]
+          // Clear focus if this row was focused
+          if (focusedInputRef.current === rowId) {
+            focusedInputRef.current = null
+          }
         }
         return filtered
       })
@@ -1291,10 +1356,12 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
             continue
           }
 
-          let signedUrl: string
+          let signedUrl: string | null = null
           try {
             const response = await getSignedUrl(imagePath)
-            signedUrl = response.url
+            if (response) {
+              signedUrl = response.url
+            }
           } catch (error) {
             console.error(`Failed to get signed URL for image ${imageId}:`, error)
             failCount++
@@ -1524,11 +1591,8 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       console.error('Generate images error:', error)
       // Clear generating state on error
       setGeneratingImageRowId(null)
-      toast({
-        title: 'Generation failed',
-        description: error instanceof Error ? error.message : 'Could not generate images',
-        variant: 'destructive'
-      })
+      const errorMessage = error instanceof Error ? error.message : 'Could not generate images'
+      showError(errorMessage)
     }
     // Removed finally block - generating state is cleared by polling callback on completion
   }, [toast, startPolling])
@@ -2915,6 +2979,12 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                 delete next[deletedRow.id]
                 return next
               })
+              // Clean up input refs for deleted row
+              delete inputRefs.current[deletedRow.id]
+              // Clear focus if this row was focused
+              if (focusedInputRef.current === deletedRow.id) {
+                focusedInputRef.current = null
+              }
             }
             return filtered
           })
@@ -3186,6 +3256,10 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       recentlyAddedTimeoutsRef.current.forEach(timeout => clearTimeout(timeout))
       recentlyAddedTimeoutsRef.current.clear()
       recentlyAddedRowIdsRef.current.clear()
+      // Clean up input refs on unmount
+      inputRefs.current = {}
+      focusedInputRef.current = null
+      // Note: debounced function cleanup is handled by debounce utility's internal timeout clearing
       // Remove custom event listener
       window.removeEventListener('variants:rows-added', handleVariantsAdded as EventListener)
       
@@ -4164,11 +4238,10 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
 
       const data = await response.json()
       setGeneratedPrompt(data.prompt)
-      setPromptDialogOpen(true)
 
       toast({
         title: 'Prompt generated',
-        description: 'Structured prompt created successfully'
+        description: 'Structured prompt displayed below'
       })
     } catch (error) {
       console.error('Generate prompt error:', error)
@@ -4263,7 +4336,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         onDrop={handlePromptCardDrop}
       >
         <CardContent 
-          className="p-4 relative"
+          className="p-6 relative"
           onDragEnter={handlePromptCardDragEnter}
           onDragOver={handlePromptCardDragOver}
           onDragLeave={handlePromptCardDragLeave}
@@ -4271,101 +4344,146 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         >
           {/* Drop zone overlay when dragging */}
           {isPromptCardDragActive && (
-            <div className="absolute inset-0 z-10 bg-primary/5 border-2 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none" style={{ margin: '-1rem' }}>
+            <div className="absolute inset-0 z-10 bg-primary/5 border-2 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none" style={{ margin: '-1.5rem' }}>
               <div className="p-4 bg-primary/20 border-2 border-primary rounded text-center text-sm font-medium text-primary">
                 Drop image here to generate prompt
               </div>
             </div>
           )}
-          <div className="flex items-center justify-between gap-4 flex-wrap">
-            <div className="flex items-center gap-2">
-              <Wand2 className="h-4 w-4 text-muted-foreground" />
-              <div>
-                <div className="text-sm font-medium">Generate Prompt from Image</div>
-                <div className="text-xs text-muted-foreground">
-                  {isPromptCardDragActive 
-                    ? 'Drop an image to generate a structured prompt' 
-                    : 'Upload an image to generate a structured prompt'}
+          
+          {/* Header Section */}
+          <div className="flex items-center gap-2 mb-6">
+            <Wand2 className="h-5 w-5 text-muted-foreground" />
+            <div>
+              <div className="text-base font-medium">Generate Prompt from Image</div>
+              <div className="text-sm text-muted-foreground">
+                {isPromptCardDragActive 
+                  ? 'Drop an image to generate a structured prompt' 
+                  : 'Upload an image to generate a structured prompt'}
+              </div>
+            </div>
+          </div>
+
+          {/* Image Upload Input */}
+          <input
+            ref={imageUploadInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleFileInputChangeForPrompt}
+            className="hidden"
+          />
+
+          {/* Image Preview Section */}
+          {uploadedImagePath && uploadedImagePreview ? (
+            <div className="flex flex-col items-center gap-4 mb-6">
+              <div 
+                className={`relative w-64 h-64 rounded-lg overflow-hidden border-2 transition-all duration-200 shadow-md ${
+                  isPreviewDragActive 
+                    ? 'border-primary ring-2 ring-primary ring-offset-2 bg-primary/10' 
+                    : 'border-border'
+                }`}
+                onDragOver={handlePreviewDragOver}
+                onDragLeave={handlePreviewDragLeave}
+                onDrop={handlePreviewDrop}
+              >
+                {isGeneratingPrompt ? (
+                  <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
+                    <div className="flex flex-col items-center gap-2">
+                      <Spinner size="sm" />
+                      <span className="text-sm text-muted-foreground">Generating prompt...</span>
+                    </div>
+                  </div>
+                ) : null}
+                <Image
+                  src={uploadedImagePreview}
+                  alt="Uploaded preview"
+                  fill
+                  className="object-cover"
+                />
+                {isPreviewDragActive && !isGeneratingPrompt && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-primary/20 text-primary text-sm font-medium z-10">
+                    Drop to replace
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="mb-6 flex justify-center">
+              <div className="w-64 h-64 rounded-lg border-2 border-dashed border-muted-foreground/25 flex items-center justify-center bg-muted/30">
+                <div className="text-center text-muted-foreground">
+                  <Upload className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                  <p className="text-sm">No image uploaded</p>
                 </div>
               </div>
             </div>
-            
-            <div className="flex items-center gap-2">
-              {/* Image Upload */}
-              <input
-                ref={imageUploadInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleFileInputChangeForPrompt}
-                className="hidden"
-              />
-              
-              {uploadedImagePath ? (
-                <div className="flex items-center gap-2">
-                  {uploadedImagePreview && (
-                    <div 
-                      className={`relative w-10 h-10 rounded overflow-hidden border transition-all duration-200 ${
-                        isPreviewDragActive 
-                          ? 'border-primary ring-2 ring-primary ring-offset-1 bg-primary/10' 
-                          : 'border-border'
-                      }`}
-                      onDragOver={handlePreviewDragOver}
-                      onDragLeave={handlePreviewDragLeave}
-                      onDrop={handlePreviewDrop}
-                    >
-                      <Image
-                        src={uploadedImagePreview}
-                        alt="Uploaded preview"
-                        fill
-                        className="object-cover"
-                      />
-                      {isPreviewDragActive && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-primary/20 text-primary text-xs font-medium">
-                          Drop to replace
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleClearUploadedImage}
-                    disabled={isGeneratingPrompt}
-                  >
-                    <X className="h-3 w-3 mr-1" />
-                    Clear
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={handleGeneratePromptFromImage}
-                    disabled={isGeneratingPrompt}
-                  >
-                    {isGeneratingPrompt ? (
-                      <>
-                        <Spinner size="sm" className="mr-2" />
-                        Generating...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="h-3 w-3 mr-1" />
-                        Generate Prompt
-                      </>
-                    )}
-                  </Button>
-                </div>
-              ) : (
+          )}
+
+          {/* Actions Section */}
+          <div className="flex items-center justify-center gap-3 mb-6">
+            {uploadedImagePath ? (
+              <>
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => imageUploadInputRef.current?.click()}
+                  onClick={handleClearUploadedImage}
                   disabled={isGeneratingPrompt}
                 >
-                  <Upload className="h-3 w-3 mr-1" />
-                  Upload Image
+                  <X className="h-4 w-4 mr-2" />
+                  Clear
                 </Button>
-              )}
-            </div>
+                <Button
+                  size="sm"
+                  onClick={handleGeneratePromptFromImage}
+                  disabled={isGeneratingPrompt}
+                >
+                  {isGeneratingPrompt ? (
+                    <>
+                      <Spinner size="sm" className="mr-2" />
+                      Generating...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="h-4 w-4 mr-2" />
+                      Generate Prompt
+                    </>
+                  )}
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => imageUploadInputRef.current?.click()}
+                disabled={isGeneratingPrompt}
+              >
+                <Upload className="h-4 w-4 mr-2" />
+                Upload Image
+              </Button>
+            )}
           </div>
+
+          {/* Generated Prompt Section - Inline Display */}
+          {generatedPrompt && (
+            <div className="mt-6 pt-6 border-t border-border space-y-3 transition-all duration-300">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm font-semibold">Generated Prompt</Label>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCopyGeneratedPrompt}
+                >
+                  <Copy className="h-4 w-4 mr-2" />
+                  Copy
+                </Button>
+              </div>
+              <Textarea
+                value={generatedPrompt}
+                readOnly
+                className="min-h-[200px] font-mono text-sm resize-y border-2 border-border/50 bg-background hover:border-border focus-visible:border-primary focus-visible:ring-primary/20 shadow-sm"
+                onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+              />
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -4466,7 +4584,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
             <Alert>
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>
-                No variant rows yet. Add images from the Models workspace using "Add to Variants" or create an empty row to get started.
+                No variant rows yet. Add images from the Models workspace using &quot;Add to Variants&quot; or create an empty row to get started.
               </AlertDescription>
             </Alert>
           </CardContent>
@@ -5016,6 +5134,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                             <Textarea
                               value={getCurrentPrompt(row.id)}
                               onChange={(e) => handlePromptChange(row.id, e.target.value)}
+                              onFocus={() => handlePromptFocus(row.id)}
                               onBlur={(e) => handlePromptBlur(row.id, e.target.value)}
                               placeholder="Type your variant prompt here, or click Sparkles to generate one from reference images..."
                               rows={isExpanded ? 8 : 4}
@@ -5030,12 +5149,16 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                               }`}
                             />
                             
-                            {row.prompt && row.prompt.split(/\s+/).length >= 50 && (
-                              <div className="flex items-center gap-1 text-xs text-green-600">
-                                <span className="font-medium">✓ Seedream v4 ready</span>
-                                <span className="text-muted-foreground">({row.prompt.split(/\s+/).length} words)</span>
-                              </div>
-                            )}
+                            {(() => {
+                              const prompt = getCurrentPrompt(row.id)
+                              const wordCount = prompt ? prompt.split(/\s+/).length : 0
+                              return prompt && wordCount >= 50 ? (
+                                <div className="flex items-center gap-1 text-xs text-green-600">
+                                  <span className="font-medium">✓ Seedream v4 ready</span>
+                                  <span className="text-muted-foreground">({wordCount} words)</span>
+                                </div>
+                              ) : null
+                            })()}
                           </div>
                         </div>
                       </TableCell>
@@ -5977,59 +6100,6 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         </DialogContent>
       </Dialog>
 
-      {/* Generated Prompt Dialog */}
-      <Dialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Generated Prompt</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            {/* Image Preview */}
-            {uploadedImagePreview && (
-              <div className="relative w-full h-48 rounded-lg overflow-hidden border border-border">
-                <Image
-                  src={uploadedImagePreview}
-                  alt="Uploaded image"
-                  fill
-                  className="object-contain"
-                />
-              </div>
-            )}
-            
-            {/* Generated Prompt */}
-            {generatedPrompt && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label>Generated Prompt</Label>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleCopyGeneratedPrompt}
-                  >
-                    <Copy className="h-3 w-3 mr-1" />
-                    Copy
-                  </Button>
-                </div>
-                <Textarea
-                  value={generatedPrompt}
-                  readOnly
-                  className="min-h-[300px] font-mono text-sm"
-                  onClick={(e) => (e.target as HTMLTextAreaElement).select()}
-                />
-              </div>
-            )}
-            
-            {!generatedPrompt && (
-              <Alert>
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>
-                  No prompt generated yet. Please generate a prompt first.
-                </AlertDescription>
-              </Alert>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }
