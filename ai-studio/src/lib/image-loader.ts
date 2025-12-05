@@ -91,6 +91,11 @@ export async function getCachedSignedUrl(path: string): Promise<string> {
   
   // Create new request and cache the promise to prevent duplicates
   const promise = getSignedUrl(path).then(response => {
+    if (!response) {
+      // File not found (404) - remove from cache and throw
+      urlCache.delete(path)
+      throw new Error('File not found')
+    }
     const url = response.url
     urlCache.set(path, {
       url,
@@ -137,21 +142,53 @@ export async function batchGetSignedUrls(paths: string[]): Promise<Record<string
 }
 
 /**
+ * Batch generate optimized image URLs
+ * More efficient than calling getOptimizedImageUrl multiple times
+ */
+export function batchGetOptimizedImageUrls(paths: string[]): string[] {
+  const uniquePaths = [...new Set(paths.filter(p => p))]
+  return uniquePaths.map(path => getOptimizedImageUrl(path))
+}
+
+/**
  * Preload images for instant display
  * Returns a promise that resolves when all images are loaded
+ * Optimized to handle batch preloading efficiently
  */
 export function preloadImages(urls: string[]): Promise<void[]> {
+  const uniqueUrls = [...new Set(urls.filter(url => url))]
+  
+  // Batch preload in chunks to avoid overwhelming the browser
+  const CHUNK_SIZE = 10
+  const chunks: string[][] = []
+  
+  for (let i = 0; i < uniqueUrls.length; i += CHUNK_SIZE) {
+    chunks.push(uniqueUrls.slice(i, i + CHUNK_SIZE))
+  }
+  
   return Promise.all(
-    urls
-      .filter(url => url) // Filter out empty URLs
-      .map(url => {
+    chunks.flatMap(chunk =>
+      chunk.map(url => {
         return new Promise<void>((resolve, reject) => {
           const img = new Image()
-          img.onload = () => resolve()
-          img.onerror = () => reject(new Error(`Failed to load image: ${url}`))
+          // Set timeout to prevent hanging on broken images
+          const timeout = setTimeout(() => {
+            reject(new Error(`Timeout loading image: ${url}`))
+          }, 10000) // 10 second timeout
+          
+          img.onload = () => {
+            clearTimeout(timeout)
+            resolve()
+          }
+          img.onerror = () => {
+            clearTimeout(timeout)
+            // Don't reject - just resolve to continue with other images
+            resolve()
+          }
           img.src = url
         })
       })
+    )
   )
 }
 

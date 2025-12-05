@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, memo } from 'react';
 import Image from 'next/image';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { BulkDownload } from './bulk-download';
 import { Search, Filter, CheckSquare, Square, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { getOptimizedImageUrl } from '@/lib/image-loader';
+import { getOptimizedImageUrl, preloadImages, batchGetOptimizedImageUrls } from '@/lib/image-loader';
 
 interface StorageFile {
   name: string;
@@ -23,11 +23,97 @@ interface StorageFile {
   fullPath: string;
 }
 
+interface ImageCardProps {
+  file: StorageFile;
+  isSelected: boolean;
+  onToggleSelect: (path: string) => void;
+}
+
+// Memoized image card component to prevent unnecessary re-renders
+const ImageCard = memo(function ImageCard({ file, isSelected, onToggleSelect }: ImageCardProps) {
+  const imageRef = useRef<HTMLDivElement>(null);
+  const [isInView, setIsInView] = useState(false);
+  const imageUrl = useMemo(() => getOptimizedImageUrl(file.fullPath), [file.fullPath]);
+
+  useEffect(() => {
+    if (!imageRef.current) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsInView(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '50px' } // Start loading 50px before entering viewport
+    );
+
+    observer.observe(imageRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div
+      ref={imageRef}
+      className={`relative group cursor-pointer border-2 rounded-lg overflow-hidden transition-all ${
+        isSelected
+          ? 'border-primary ring-2 ring-primary'
+          : 'border-border hover:border-primary/50'
+      }`}
+      onClick={() => onToggleSelect(file.fullPath)}
+    >
+      <div className="aspect-square relative bg-muted">
+        {isInView ? (
+          <Image
+            src={imageUrl}
+            alt={file.name}
+            fill
+            className="object-cover"
+            sizes="(max-width: 640px) 50vw, (max-width: 1024px) 25vw, 16vw"
+            loading="lazy"
+            onError={(e) => {
+              // Fallback to signed URL if optimized fails
+              const img = e.currentTarget;
+              img.src = `/api/images/proxy?path=${encodeURIComponent(file.fullPath)}`;
+            }}
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        )}
+        <div className="absolute top-2 left-2">
+          <Checkbox
+            checked={isSelected}
+            onCheckedChange={() => onToggleSelect(file.fullPath)}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-background/80 backdrop-blur-sm"
+          />
+        </div>
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2 opacity-0 group-hover:opacity-100 transition-opacity">
+          <p className="text-xs text-white truncate">{file.name}</p>
+          <div className="flex gap-1 mt-1">
+            <Badge variant="secondary" className="text-xs">
+              {file.bucket_id}
+            </Badge>
+            <Badge variant="outline" className="text-xs text-white border-white/20">
+              {(file.size / 1024 / 1024).toFixed(2)} MB
+            </Badge>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+ImageCard.displayName = 'ImageCard';
+
 export function StorageGallery() {
   const [files, setFiles] = useState<StorageFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [bucketFilter, setBucketFilter] = useState<string>('all');
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -36,10 +122,20 @@ export function StorageGallery() {
 
   const pageSize = 50;
 
-  const fetchFiles = async (reset = false) => {
+  // Debounce search query (300ms delay)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+      setPage(0); // Reset to first page on search change
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  const fetchFiles = useCallback(async (reset = false, pageOverride?: number) => {
     try {
       setLoading(true);
-      const currentPage = reset ? 0 : page;
+      const currentPage = reset ? 0 : (pageOverride ?? page);
       const params = new URLSearchParams({
         limit: pageSize.toString(),
         offset: (currentPage * pageSize).toString(),
@@ -49,8 +145,8 @@ export function StorageGallery() {
         params.append('bucket', bucketFilter);
       }
 
-      if (searchQuery) {
-        params.append('search', searchQuery);
+      if (debouncedSearchQuery) {
+        params.append('search', debouncedSearchQuery);
       }
 
       const response = await fetch(`/api/admin/storage/list?${params}`);
@@ -68,6 +164,23 @@ export function StorageGallery() {
 
       setHasMore(data.hasMore || false);
       setTotal(data.total || 0);
+
+      // Preload next page images in background if there are more
+      if (data.files && data.files.length > 0) {
+        // Preload images for current page using batch generation
+        const imageFiles = data.files.filter((f: StorageFile) => {
+          const ext = f.name.toLowerCase().split('.').pop();
+          return ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext || '');
+        });
+        
+        const imagePaths = imageFiles.map((f: StorageFile) => f.fullPath);
+        const imageUrls = batchGetOptimizedImageUrls(imagePaths);
+        
+        // Preload in background (don't await)
+        preloadImages(imageUrls).catch(() => {
+          // Silently fail - preloading is best effort
+        });
+      }
     } catch (error: any) {
       console.error('Error fetching files:', error);
       toast({
@@ -78,23 +191,24 @@ export function StorageGallery() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [bucketFilter, debouncedSearchQuery, page, pageSize, toast]);
 
   useEffect(() => {
     fetchFiles(true);
-  }, [bucketFilter, searchQuery]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bucketFilter, debouncedSearchQuery]);
 
-  const handleSearch = (query: string) => {
+  const handleSearch = useCallback((query: string) => {
     setSearchQuery(query);
     setPage(0);
-  };
+  }, []);
 
-  const handleBucketChange = (bucket: string) => {
+  const handleBucketChange = useCallback((bucket: string) => {
     setBucketFilter(bucket);
     setPage(0);
-  };
+  }, []);
 
-  const toggleSelect = (path: string) => {
+  const toggleSelect = useCallback((path: string) => {
     setSelectedPaths(prev => {
       const next = new Set(prev);
       if (next.has(path)) {
@@ -104,42 +218,33 @@ export function StorageGallery() {
       }
       return next;
     });
-  };
+  }, []);
 
-  const toggleSelectAll = () => {
-    if (selectedPaths.size === filteredFiles.length) {
-      setSelectedPaths(new Set());
-    } else {
-      setSelectedPaths(new Set(filteredFiles.map(f => f.fullPath)));
-    }
-  };
-
-  const filteredFiles = useMemo(() => {
-    return files.filter(file => {
-      if (bucketFilter !== 'all' && file.bucket_id !== bucketFilter) {
-        return false;
-      }
-      if (searchQuery && !file.name.toLowerCase().includes(searchQuery.toLowerCase())) {
-        return false;
-      }
-      return true;
-    });
-  }, [files, bucketFilter, searchQuery]);
-
+  // Optimized: Filtering is now done server-side, but we still filter client-side
+  // for any edge cases and to filter by image type
   const imageFiles = useMemo(() => {
-    return filteredFiles.filter(file => {
+    return files.filter(file => {
       const ext = file.name.toLowerCase().split('.').pop();
       return ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext || '');
     });
-  }, [filteredFiles]);
+  }, [files]);
 
-  const handleLoadMore = () => {
-    setPage(prev => {
-      const next = prev + 1;
-      fetchFiles(false);
-      return next;
+  const toggleSelectAll = useCallback(() => {
+    setSelectedPaths(prev => {
+      if (prev.size === imageFiles.length && imageFiles.length > 0) {
+        return new Set();
+      } else {
+        return new Set(imageFiles.map(f => f.fullPath));
+      }
     });
-  };
+  }, [imageFiles]);
+
+  const handleLoadMore = useCallback(() => {
+    const nextPage = page + 1;
+    setPage(nextPage);
+    // Fetch with the new page number explicitly
+    fetchFiles(false, nextPage);
+  }, [page, fetchFiles]);
 
   return (
     <div className="space-y-6">
@@ -186,7 +291,7 @@ export function StorageGallery() {
               onClick={toggleSelectAll}
               className="gap-2"
             >
-              {selectedPaths.size === filteredFiles.length ? (
+              {selectedPaths.size === imageFiles.length && imageFiles.length > 0 ? (
                 <>
                   <Square className="h-4 w-4" />
                   Deselect All
@@ -202,7 +307,7 @@ export function StorageGallery() {
 
           <div className="flex items-center justify-between">
             <div className="text-sm text-muted-foreground">
-              Showing {filteredFiles.length} of {total} files
+              Showing {imageFiles.length} of {total} files
               {selectedPaths.size > 0 && ` • ${selectedPaths.size} selected`}
             </div>
             <BulkDownload
@@ -227,56 +332,14 @@ export function StorageGallery() {
       ) : (
         <>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
-            {imageFiles.map((file) => {
-              const isSelected = selectedPaths.has(file.fullPath);
-              const imageUrl = getOptimizedImageUrl(file.fullPath);
-
-              return (
-                <div
-                  key={file.fullPath}
-                  className={`relative group cursor-pointer border-2 rounded-lg overflow-hidden transition-all ${
-                    isSelected
-                      ? 'border-primary ring-2 ring-primary'
-                      : 'border-border hover:border-primary/50'
-                  }`}
-                  onClick={() => toggleSelect(file.fullPath)}
-                >
-                  <div className="aspect-square relative bg-muted">
-                    <Image
-                      src={imageUrl}
-                      alt={file.name}
-                      fill
-                      className="object-cover"
-                      sizes="(max-width: 640px) 50vw, (max-width: 1024px) 25vw, 16vw"
-                      onError={(e) => {
-                        // Fallback to signed URL if optimized fails
-                        const img = e.currentTarget;
-                        img.src = `/api/images/proxy?path=${encodeURIComponent(file.fullPath)}`;
-                      }}
-                    />
-                    <div className="absolute top-2 left-2">
-                      <Checkbox
-                        checked={isSelected}
-                        onCheckedChange={() => toggleSelect(file.fullPath)}
-                        onClick={(e) => e.stopPropagation()}
-                        className="bg-background/80 backdrop-blur-sm"
-                      />
-                    </div>
-                    <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <p className="text-xs text-white truncate">{file.name}</p>
-                      <div className="flex gap-1 mt-1">
-                        <Badge variant="secondary" className="text-xs">
-                          {file.bucket_id}
-                        </Badge>
-                        <Badge variant="outline" className="text-xs text-white border-white/20">
-                          {(file.size / 1024 / 1024).toFixed(2)} MB
-                        </Badge>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+            {imageFiles.map((file) => (
+              <ImageCard
+                key={file.fullPath}
+                file={file}
+                isSelected={selectedPaths.has(file.fullPath)}
+                onToggleSelect={toggleSelect}
+              />
+            ))}
           </div>
 
           {hasMore && (
