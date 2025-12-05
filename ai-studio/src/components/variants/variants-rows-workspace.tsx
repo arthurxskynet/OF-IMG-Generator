@@ -28,7 +28,7 @@ import { uploadImage, validateFile } from '@/lib/client-upload'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { getAvailableModels, getWaveSpeedModel, DEFAULT_MODEL_ID } from '@/lib/wavespeed-models'
-import { DEBOUNCE_TIMES, debounce } from '@/lib/debounce'
+import { DEBOUNCE_TIMES, debounce, debounceAsync } from '@/lib/debounce'
 
 interface VariantsRowsWorkspaceProps {
   initialRows: VariantRow[]
@@ -161,53 +161,17 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
   const router = useRouter()
   const [rows, setRows] = useState(initialRows)
   
-  // Prompt state management (aligned with model-workspace pattern) - MUST be declared before useEffects that use them
-  const [localPrompts, setLocalPrompts] = useState<Record<string, string>>({})
+  // Prompt state management - simplified to single source of truth
   const [dirtyPrompts, setDirtyPrompts] = useState<Set<string>>(new Set())
   const [savingPrompts, setSavingPrompts] = useState<Set<string>>(new Set())
-  const dirtyPromptsRef = useRef<Set<string>>(new Set())
-  const savingPromptsRef = useRef<Set<string>>(new Set())
   
-  // Ref-based input state for immediate updates without re-renders
-  const inputRefs = useRef<Record<string, string>>({})
-  const focusedInputRef = useRef<string | null>(null)
+  // Ref to store debounce timeouts for each row (allows cancellation)
+  const saveTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map())
   
   // Keep rowsRef in sync with rows state (for realtime handlers to access current state)
   useEffect(() => {
     rowsRef.current = rows
   }, [rows])
-  
-  // Keep refs in sync with state for prompt management
-  useEffect(() => {
-    dirtyPromptsRef.current = dirtyPrompts
-  }, [dirtyPrompts])
-  
-  useEffect(() => {
-    savingPromptsRef.current = savingPrompts
-  }, [savingPrompts])
-  
-  // Initialize local prompts from row data (preserve dirty prompts)
-  useEffect(() => {
-    const initialPrompts: Record<string, string> = {}
-    rows.forEach(row => {
-      // Only initialize if this prompt is not dirty (preserve unsaved edits)
-      if (!dirtyPrompts.has(row.id) && !savingPrompts.has(row.id)) {
-        const promptValue = row.prompt || ''
-        initialPrompts[row.id] = promptValue
-      }
-    })
-    // Merge only non-dirty prompts, preserving dirty ones
-    setLocalPrompts(prev => {
-      const merged = { ...prev }
-      Object.keys(initialPrompts).forEach(rowId => {
-        // Only update if not dirty and not currently saving
-        if (!dirtyPrompts.has(rowId) && !savingPrompts.has(rowId)) {
-          merged[rowId] = initialPrompts[rowId]
-        }
-      })
-      return merged
-    })
-  }, [rows, dirtyPrompts, savingPrompts])
   
   // Initialize refs on mount
   useEffect(() => {
@@ -397,12 +361,12 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     }
   }, [rows, onRowsChange])
   
-  // Cleanup on unmount (no longer needed for saveTimeoutRef, but keeping for future cleanup)
+  // Cleanup on unmount - clear any pending save timeouts
   useEffect(() => {
     return () => {
-      // Cleanup refs
-      dirtyPromptsRef.current = new Set()
-      savingPromptsRef.current = new Set()
+      // Clear all pending save timeouts
+      saveTimeoutsRef.current.forEach(timeout => clearTimeout(timeout))
+      saveTimeoutsRef.current.clear()
     }
   }, [])
   
@@ -890,12 +854,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         return row
       }))
       
-      // Update local prompts and clear dirty flag since this is a fresh generated prompt
-      setLocalPrompts(prev => {
-        const next = { ...prev }
-        delete next[rowId]
-        return next
-      })
+      // Clear dirty flag since this is a fresh generated prompt
       setDirtyPrompts(prev => {
         const next = new Set(prev)
         next.delete(rowId)
@@ -935,128 +894,40 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     return map
   }, [rows])
 
-  // Debounced function to update localPrompts state (reduces re-renders)
-  // Note: Debounce utility handles its own timeout cleanup internally
-  const debouncedUpdateLocalPrompt = useMemo(
-    () => debounce((rowId: string, value: string) => {
-      const row = rowsMap.get(rowId)
-      // Skip if row no longer exists (was deleted) - prevents stale updates
-      if (!row) return
-      
-      const currentSavedValue = row?.prompt ?? ''
-      const isDirty = value !== currentSavedValue
-      
-      // Update local prompts state
-      setLocalPrompts(prev => ({ ...prev, [rowId]: value }))
-      
-      // Update dirty state if it actually changed
-      if (isDirty) {
-        setDirtyPrompts(prev => {
-          if (prev.has(rowId)) return prev
-          const next = new Set(prev)
-          next.add(rowId)
-          return next
-        })
-      } else {
-        setDirtyPrompts(prev => {
-          if (!prev.has(rowId)) return prev
-          const next = new Set(prev)
-          next.delete(rowId)
-          return next
-        })
-      }
-    }, DEBOUNCE_TIMES.ROW_UPDATE),
-    [rowsMap]
-  )
-
-  // Get current prompt value for a row (ref takes precedence for focused inputs, then local state)
-  // Optimized with Map lookup instead of find() for O(1) performance
+  // Get current prompt value for a row - single source of truth
   const getCurrentPrompt = useCallback((rowId: string): string => {
-    // If this input is focused, use ref value for immediate feedback
-    if (focusedInputRef.current === rowId && inputRefs.current[rowId] !== undefined) {
-      return inputRefs.current[rowId]
-    }
-    // Otherwise use state (which is debounced)
-    return localPrompts[rowId] ?? rowsMap.get(rowId)?.prompt ?? ''
-  }, [localPrompts, rowsMap])
+    return rowsMap.get(rowId)?.prompt ?? ''
+  }, [rowsMap])
 
-  // Handle prompt change (ref-based for immediate updates, debounced state updates)
-  // Optimized to avoid re-renders on every keystroke
-  const handlePromptChange = useCallback((rowId: string, value: string) => {
-    // Update ref immediately (no re-render, immediate visual feedback)
-    inputRefs.current[rowId] = value
-    
-    // Debounce state update (triggers re-render after typing pause)
-    debouncedUpdateLocalPrompt(rowId, value)
-  }, [debouncedUpdateLocalPrompt])
-  
-  // Handle prompt focus (track which input is active)
-  const handlePromptFocus = useCallback((rowId: string) => {
-    focusedInputRef.current = rowId
-    // Initialize ref with current value if not set
-    if (inputRefs.current[rowId] === undefined) {
-      const currentValue = localPrompts[rowId] ?? rowsMap.get(rowId)?.prompt ?? ''
-      inputRefs.current[rowId] = currentValue
-    }
-  }, [localPrompts, rowsMap])
-  
-  // Handle prompt blur (clear focus tracking)
-  const handlePromptBlurInternal = useCallback((rowId: string) => {
-    if (focusedInputRef.current === rowId) {
-      focusedInputRef.current = null
-    }
-  }, [])
-
-  // Handle prompt blur (save to API when user is done editing)
-  const handlePromptBlur = useCallback(async (rowId: string, value: string) => {
-    // Clear focus tracking
-    handlePromptBlurInternal(rowId)
-    
-    // Ensure ref value is synced (use ref value if available, otherwise use passed value)
-    const finalValue = inputRefs.current[rowId] ?? value
-    
-    // Sync ref value to state immediately (before save) to ensure consistency
-    // This ensures any pending debounced updates don't overwrite the blur value
-    setLocalPrompts(prev => ({ ...prev, [rowId]: finalValue }))
-    
-    // Check if already saving to prevent concurrent saves
-    if (savingPrompts.has(rowId)) {
-      return
-    }
-    
-    // Check if value actually changed (optimized with Map lookup)
+  // Save prompt to API
+  const savePrompt = useCallback(async (rowId: string, value: string) => {
     const row = rowsMap.get(rowId)
-    const currentSavedValue = row?.prompt ?? ''
-    if (finalValue === currentSavedValue) {
-      // No change, clear dirty flag only if it was dirty
+    if (!row) return
+
+    // Check if value actually changed
+    const currentSavedValue = row.prompt ?? ''
+    if (value === currentSavedValue) {
+      // No change, clear dirty flag
       setDirtyPrompts(prev => {
         if (!prev.has(rowId)) return prev
         const next = new Set(prev)
         next.delete(rowId)
         return next
       })
-      // Clear local prompt if it matches saved value
-      setLocalPrompts(prev => {
-        if (!(rowId in prev)) return prev
-        const next = { ...prev }
-        delete next[rowId]
-        return next
-      })
-      // Clear ref
-      delete inputRefs.current[rowId]
       return
     }
-    
+
+    // Check if already saving to prevent concurrent saves
+    if (savingPrompts.has(rowId)) {
+      return
+    }
+
     // Mark as saving
     setSavingPrompts(prev => new Set(prev).add(rowId))
-    
-    // Optimistic update: update rows state immediately
-    setRows(prev => prev.map(row => 
-      row.id === rowId 
-        ? { ...row, prompt: finalValue || null }
-        : row
-    ))
-    
+
+    // Store original value for rollback on error
+    const originalValue = currentSavedValue
+
     try {
       // Add cache-busting timestamp to prevent stale data
       const url = new URL(`/api/variants/rows/${rowId}`, window.location.origin)
@@ -1070,7 +941,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         },
         cache: 'no-store',
         body: JSON.stringify({
-          prompt: finalValue || undefined
+          prompt: value || undefined
         })
       })
       
@@ -1078,44 +949,39 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         throw new Error(`Failed to save prompt: ${response.status}`)
       }
       
-      const { row } = await response.json()
+      const { row: updatedRow } = await response.json()
       
-      // Update rows state with server response, but preserve existing images and dirty prompts
-      // (in case user typed something new while save was in progress)
+      // Update rows state with server response and check if we should clear dirty flag
+      let shouldClearDirty = false
       setRows(prev => prev.map(r => {
         if (r.id !== rowId) return r
-        const merged = { ...r, ...row }
-        if (dirtyPromptsRef.current.has(rowId)) {
-          merged.prompt = r.prompt
+        // Check if user typed something new while save was in progress
+        const currentValue = r.prompt ?? ''
+        if (currentValue !== value) {
+          // User typed something new, keep their new value
+          return r
         }
-        return merged
+        // Value matches what we saved, so we can clear dirty flag
+        shouldClearDirty = true
+        return { ...r, ...updatedRow }
       }))
       
-      // Clear dirty flag on success (but only if no new edits were made during save)
-      if (!dirtyPromptsRef.current.has(rowId)) {
+      // Clear dirty flag if value matches what we saved
+      if (shouldClearDirty) {
         setDirtyPrompts(prev => {
           if (!prev.has(rowId)) return prev
           const next = new Set(prev)
           next.delete(rowId)
           return next
         })
-        // Clear local prompt since it's now saved (only if it exists)
-        setLocalPrompts(prev => {
-          if (!(rowId in prev)) return prev
-          const next = { ...prev }
-          delete next[rowId]
-          return next
-        })
       }
     } catch (error) {
       console.error('[Variants] Failed to save prompt:', error)
       
-      // Revert rows state on error (optimized with Map lookup)
-      const row = rowsMap.get(rowId)
-      const savedValue = row?.prompt ?? ''
+      // Revert rows state on error
       setRows(prev => prev.map(r => 
         r.id === rowId 
-          ? { ...r, prompt: savedValue || null }
+          ? { ...r, prompt: originalValue || null }
           : r
       ))
       
@@ -1133,7 +999,78 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         return next
       })
     }
-  }, [rowsMap, savingPrompts, handlePromptBlurInternal, toast])
+  }, [rowsMap, savingPrompts, toast])
+
+  // Debounced save function - cancels previous timeout for same row
+  const debouncedSavePrompt = useCallback((rowId: string, value: string) => {
+    // Cancel any existing timeout for this row
+    const existingTimeout = saveTimeoutsRef.current.get(rowId)
+    if (existingTimeout) {
+      clearTimeout(existingTimeout)
+    }
+
+    // Create new timeout
+    const timeout = setTimeout(() => {
+      saveTimeoutsRef.current.delete(rowId)
+      savePrompt(rowId, value)
+    }, DEBOUNCE_TIMES.ROW_UPDATE)
+
+    saveTimeoutsRef.current.set(rowId, timeout)
+  }, [savePrompt])
+
+  // Immediate save (for blur event) - cancels debounce and saves now
+  const savePromptImmediate = useCallback((rowId: string, value: string) => {
+    // Cancel any pending debounced save
+    const existingTimeout = saveTimeoutsRef.current.get(rowId)
+    if (existingTimeout) {
+      clearTimeout(existingTimeout)
+      saveTimeoutsRef.current.delete(rowId)
+    }
+
+    // Save immediately
+    savePrompt(rowId, value)
+  }, [savePrompt])
+
+  // Handle prompt change - optimistic update with debounced save
+  const handlePromptChange = useCallback((rowId: string, value: string) => {
+    const row = rowsMap.get(rowId)
+    if (!row) return
+
+    // Optimistic update: update rows state immediately for instant UI feedback
+    setRows(prev => prev.map(r => 
+      r.id === rowId 
+        ? { ...r, prompt: value || null }
+        : r
+    ))
+
+    // Update dirty state based on whether value differs from saved value
+    const currentSavedValue = row.prompt ?? ''
+    const isDirty = value !== currentSavedValue
+
+    if (isDirty) {
+      setDirtyPrompts(prev => {
+        if (prev.has(rowId)) return prev
+        const next = new Set(prev)
+        next.add(rowId)
+        return next
+      })
+    } else {
+      setDirtyPrompts(prev => {
+        if (!prev.has(rowId)) return prev
+        const next = new Set(prev)
+        next.delete(rowId)
+        return next
+      })
+    }
+
+    // Debounce the save operation
+    debouncedSavePrompt(rowId, value)
+  }, [rowsMap, debouncedSavePrompt])
+
+  // Handle prompt blur - trigger immediate save
+  const handlePromptBlur = useCallback((rowId: string, value: string) => {
+    savePromptImmediate(rowId, value)
+  }, [savePromptImmediate])
 
   // Handle delete row
   const handleDeleteRow = useCallback(async (rowId: string) => {
@@ -1192,11 +1129,11 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
             delete next[rowId]
             return next
           })
-          // Clean up input refs for deleted row
-          delete inputRefs.current[rowId]
-          // Clear focus if this row was focused
-          if (focusedInputRef.current === rowId) {
-            focusedInputRef.current = null
+          // Clean up any pending save timeout for deleted row
+          const timeout = saveTimeoutsRef.current.get(rowId)
+          if (timeout) {
+            clearTimeout(timeout)
+            saveTimeoutsRef.current.delete(rowId)
           }
         }
         return filtered
@@ -2352,12 +2289,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         return r
       }))
       
-      // Update local prompts and clear dirty flag since this is a fresh enhanced prompt
-      setLocalPrompts(prev => {
-        const next = { ...prev }
-        delete next[rowId]
-        return next
-      })
+      // Clear dirty flag since this is a fresh enhanced prompt
       setDirtyPrompts(prev => {
         const next = new Set(prev)
         next.delete(rowId)
@@ -2449,12 +2381,7 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
         return r
       }))
       
-      // Update local prompts and clear dirty flag since this is a fresh improved prompt
-      setLocalPrompts(prev => {
-        const next = { ...prev }
-        delete next[rowId]
-        return next
-      })
+      // Clear dirty flag since this is a fresh improved prompt
       setDirtyPrompts(prev => {
         const next = new Set(prev)
         next.delete(rowId)
@@ -2979,11 +2906,11 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                 delete next[deletedRow.id]
                 return next
               })
-              // Clean up input refs for deleted row
-              delete inputRefs.current[deletedRow.id]
-              // Clear focus if this row was focused
-              if (focusedInputRef.current === deletedRow.id) {
-                focusedInputRef.current = null
+              // Clean up any pending save timeout for deleted row
+              const timeout = saveTimeoutsRef.current.get(deletedRow.id)
+              if (timeout) {
+                clearTimeout(timeout)
+                saveTimeoutsRef.current.delete(deletedRow.id)
               }
             }
             return filtered
@@ -3256,10 +3183,9 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       recentlyAddedTimeoutsRef.current.forEach(timeout => clearTimeout(timeout))
       recentlyAddedTimeoutsRef.current.clear()
       recentlyAddedRowIdsRef.current.clear()
-      // Clean up input refs on unmount
-      inputRefs.current = {}
-      focusedInputRef.current = null
-      // Note: debounced function cleanup is handled by debounce utility's internal timeout clearing
+      // Clean up save timeouts on unmount
+      saveTimeoutsRef.current.forEach(timeout => clearTimeout(timeout))
+      saveTimeoutsRef.current.clear()
       // Remove custom event listener
       window.removeEventListener('variants:rows-added', handleVariantsAdded as EventListener)
       
@@ -5134,7 +5060,6 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                             <Textarea
                               value={getCurrentPrompt(row.id)}
                               onChange={(e) => handlePromptChange(row.id, e.target.value)}
-                              onFocus={() => handlePromptFocus(row.id)}
                               onBlur={(e) => handlePromptBlur(row.id, e.target.value)}
                               placeholder="Type your variant prompt here, or click Sparkles to generate one from reference images..."
                               rows={isExpanded ? 8 : 4}
