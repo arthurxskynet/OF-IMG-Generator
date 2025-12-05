@@ -161,12 +161,23 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
   const router = useRouter()
   const [rows, setRows] = useState(initialRows)
   
-  // Prompt state management - simplified to single source of truth
+  // Prompt state management - use local state for typing performance
+  // Local prompts for active typing (doesn't trigger expensive rows array updates)
+  const [localPrompts, setLocalPrompts] = useState<Record<string, string>>({})
+  const localPromptsRef = useRef<Record<string, string>>({})
   const [dirtyPrompts, setDirtyPrompts] = useState<Set<string>>(new Set())
   const [savingPrompts, setSavingPrompts] = useState<Set<string>>(new Set())
   
   // Ref to store debounce timeouts for each row (allows cancellation)
   const saveTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map())
+  
+  // Ref to store textarea elements for cursor position preservation
+  const textareaRefs = useRef<Record<string, HTMLTextAreaElement>>({})
+  
+  // Keep localPromptsRef in sync with localPrompts state
+  useEffect(() => {
+    localPromptsRef.current = localPrompts
+  }, [localPrompts])
   
   // Keep rowsRef in sync with rows state (for realtime handlers to access current state)
   useEffect(() => {
@@ -894,10 +905,15 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     return map
   }, [rows])
 
-  // Get current prompt value for a row - single source of truth
+  // Get current prompt value for a row - local state takes precedence for performance
+  // Optimized: use direct property access instead of hasOwnProperty for better performance
   const getCurrentPrompt = useCallback((rowId: string): string => {
+    // Check local state first (for active typing), then fall back to rows
+    if (rowId in localPrompts) {
+      return localPrompts[rowId]
+    }
     return rowsMap.get(rowId)?.prompt ?? ''
-  }, [rowsMap])
+  }, [localPrompts, rowsMap])
 
   // Save prompt to API
   const savePrompt = useCallback(async (rowId: string, value: string) => {
@@ -907,7 +923,12 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     // Check if value actually changed
     const currentSavedValue = row.prompt ?? ''
     if (value === currentSavedValue) {
-      // No change, clear dirty flag
+      // No change, clear dirty flag and local prompt
+      setLocalPrompts(prev => {
+        const next = { ...prev }
+        delete next[rowId]
+        return next
+      })
       setDirtyPrompts(prev => {
         if (!prev.has(rowId)) return prev
         const next = new Set(prev)
@@ -952,22 +973,30 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       const { row: updatedRow } = await response.json()
       
       // Update rows state with server response and check if we should clear dirty flag
+      // Also sync local prompt state
+      const currentLocalValue = localPromptsRef.current[rowId]
+      const hasNewTyping = currentLocalValue !== undefined && currentLocalValue !== value
+      
       let shouldClearDirty = false
       setRows(prev => prev.map(r => {
         if (r.id !== rowId) return r
         // Check if user typed something new while save was in progress
-        const currentValue = r.prompt ?? ''
-        if (currentValue !== value) {
-          // User typed something new, keep their new value
-          return r
+        if (hasNewTyping) {
+          // User typed something new, keep their new value in rows
+          return { ...r, prompt: currentLocalValue || null }
         }
         // Value matches what we saved, so we can clear dirty flag
         shouldClearDirty = true
         return { ...r, ...updatedRow }
       }))
       
-      // Clear dirty flag if value matches what we saved
-      if (shouldClearDirty) {
+      // Clear local prompt state if save succeeded and no new typing
+      if (shouldClearDirty && !hasNewTyping) {
+        setLocalPrompts(prev => {
+          const next = { ...prev }
+          delete next[rowId]
+          return next
+        })
         setDirtyPrompts(prev => {
           if (!prev.has(rowId)) return prev
           const next = new Set(prev)
@@ -984,6 +1013,20 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
           ? { ...r, prompt: originalValue || null }
           : r
       ))
+      
+      // Revert local prompt state on error (keep user's typing if different)
+      const currentLocalValue = localPromptsRef.current[rowId]
+      if (currentLocalValue !== undefined && currentLocalValue !== originalValue) {
+        // User has typed something new, keep it
+        // Don't revert local state
+      } else {
+        // Revert to original
+        setLocalPrompts(prev => {
+          const next = { ...prev }
+          delete next[rowId]
+          return next
+        })
+      }
       
       // Keep dirty flag on error so user knows it didn't save
       toast({
@@ -1031,17 +1074,16 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
     savePrompt(rowId, value)
   }, [savePrompt])
 
-  // Handle prompt change - optimistic update with debounced save
+  // Handle prompt change - use local state for performance (avoids expensive rows array updates)
   const handlePromptChange = useCallback((rowId: string, value: string) => {
     const row = rowsMap.get(rowId)
     if (!row) return
 
-    // Optimistic update: update rows state immediately for instant UI feedback
-    setRows(prev => prev.map(r => 
-      r.id === rowId 
-        ? { ...r, prompt: value || null }
-        : r
-    ))
+    const textarea = textareaRefs.current[rowId]
+    const cursorPosition = textarea?.selectionStart ?? value.length
+
+    // Update local state only (fast, doesn't trigger expensive rows array updates)
+    setLocalPrompts(prev => ({ ...prev, [rowId]: value }))
 
     // Update dirty state based on whether value differs from saved value
     const currentSavedValue = row.prompt ?? ''
@@ -1063,8 +1105,15 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
       })
     }
 
-    // Debounce the save operation
+    // Debounce the save operation (this will update rows state when save happens)
     debouncedSavePrompt(rowId, value)
+
+    // Restore cursor position after state update
+    requestAnimationFrame(() => {
+      if (textarea) {
+        textarea.setSelectionRange(cursorPosition, cursorPosition)
+      }
+    })
   }, [rowsMap, debouncedSavePrompt])
 
   // Handle prompt blur - trigger immediate save
@@ -5057,32 +5106,41 @@ export function VariantsRowsWorkspace({ initialRows, modelId, onRowsChange, onAd
                               </div>
                             )}
                             
-                            <Textarea
-                              value={getCurrentPrompt(row.id)}
-                              onChange={(e) => handlePromptChange(row.id, e.target.value)}
-                              onBlur={(e) => handlePromptBlur(row.id, e.target.value)}
-                              placeholder="Type your variant prompt here, or click Sparkles to generate one from reference images..."
-                              rows={isExpanded ? 8 : 4}
-                              className={`resize-y text-[11px] font-mono w-[20rem] md:w-[24rem] lg:w-[28rem] xl:w-[32rem] shrink-0 border-2 transition-all duration-200 overflow-y-auto ${
-                                dirtyPrompts.has(row.id)
-                                  ? 'border-amber-400/50 bg-amber-50/30 dark:bg-amber-950/20 focus-visible:border-amber-500 focus-visible:ring-amber-500/20'
-                                  : savingPrompts.has(row.id)
-                                  ? 'border-blue-400/50 bg-blue-50/30 dark:bg-blue-950/20 focus-visible:border-blue-500 focus-visible:ring-blue-500/20'
-                                  : 'border-border/50 bg-background hover:border-border focus-visible:border-primary focus-visible:ring-primary/20'
-                              } shadow-sm hover:shadow-md focus-visible:shadow-lg ${
-                                !isExpanded ? 'max-h-[120px]' : 'max-h-[300px]'
-                              }`}
-                            />
-                            
                             {(() => {
-                              const prompt = getCurrentPrompt(row.id)
-                              const wordCount = prompt ? prompt.split(/\s+/).length : 0
-                              return prompt && wordCount >= 50 ? (
-                                <div className="flex items-center gap-1 text-xs text-green-600">
-                                  <span className="font-medium">✓ Seedream v4 ready</span>
-                                  <span className="text-muted-foreground">({wordCount} words)</span>
-                                </div>
-                              ) : null
+                              // Compute prompt once and reuse for both Textarea value and word count
+                              const currentPrompt = getCurrentPrompt(row.id)
+                              const wordCount = currentPrompt ? currentPrompt.split(/\s+/).length : 0
+                              
+                              return (
+                                <>
+                                  <Textarea
+                                    ref={(el) => {
+                                      if (el) textareaRefs.current[row.id] = el
+                                    }}
+                                    value={currentPrompt}
+                                    onChange={(e) => handlePromptChange(row.id, e.target.value)}
+                                    onBlur={(e) => handlePromptBlur(row.id, e.target.value)}
+                                    placeholder="Type your variant prompt here, or click Sparkles to generate one from reference images..."
+                                    rows={isExpanded ? 8 : 4}
+                                    className={`resize-y text-[11px] font-mono w-[20rem] md:w-[24rem] lg:w-[28rem] xl:w-[32rem] shrink-0 border-2 transition-all duration-200 overflow-y-auto ${
+                                      dirtyPrompts.has(row.id)
+                                        ? 'border-amber-400/50 bg-amber-50/30 dark:bg-amber-950/20 focus-visible:border-amber-500 focus-visible:ring-amber-500/20'
+                                        : savingPrompts.has(row.id)
+                                        ? 'border-blue-400/50 bg-blue-50/30 dark:bg-blue-950/20 focus-visible:border-blue-500 focus-visible:ring-blue-500/20'
+                                        : 'border-border/50 bg-background hover:border-border focus-visible:border-primary focus-visible:ring-primary/20'
+                                    } shadow-sm hover:shadow-md focus-visible:shadow-lg ${
+                                      !isExpanded ? 'max-h-[120px]' : 'max-h-[300px]'
+                                    }`}
+                                  />
+                                  
+                                  {currentPrompt && wordCount >= 50 && (
+                                    <div className="flex items-center gap-1 text-xs text-green-600">
+                                      <span className="font-medium">✓ Seedream v4 ready</span>
+                                      <span className="text-muted-foreground">({wordCount} words)</span>
+                                    </div>
+                                  )}
+                                </>
+                              )
                             })()}
                           </div>
                         </div>

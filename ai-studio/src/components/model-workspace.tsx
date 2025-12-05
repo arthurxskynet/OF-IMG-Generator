@@ -86,6 +86,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
   const [rowStates, setRowStates] = useState<Record<string, RowState>>({})
   const [, setDeletedRowIds] = useState<Set<string>>(new Set())
   const fileInputRefs = useRef<Record<string, HTMLInputElement>>({})
+  const textareaRefs = useRef<Record<string, HTMLTextAreaElement>>({})
   
   // Folder drop state
   const [isFolderDropActive, setIsFolderDropActive] = useState(false)
@@ -130,9 +131,6 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
     rowId: string | null;
     imageIndex: number;
   }>({ isOpen: false, rowId: null, imageIndex: 0 })
-  
-  // Local prompt state for each row to prevent re-renders on typing
-  const [localPrompts, setLocalPrompts] = useState<Record<string, string>>({})
   
   // Track which prompts have unsaved edits (dirty state)
   const [dirtyPrompts, setDirtyPrompts] = useState<Set<string>>(new Set())
@@ -182,40 +180,25 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
     }
   }, [rowId, sortedRows])
 
-  // Initialize local prompts from row data (preserve dirty prompts)
-  useEffect(() => {
-    const initialPrompts: Record<string, string> = {}
-    rows.forEach(row => {
-      // Only initialize if this prompt is not dirty (preserve unsaved edits)
-      if (!dirtyPrompts.has(row.id) && !savingPrompts.has(row.id)) {
-        const promptValue = row.prompt_override || model.default_prompt || ''
-        initialPrompts[row.id] = promptValue
-      }
-    })
-    // Merge only non-dirty prompts, preserving dirty ones
-    setLocalPrompts(prev => {
-      const merged = { ...prev }
-      Object.keys(initialPrompts).forEach(rowId => {
-        // Only update if not dirty and not currently saving
-        if (!dirtyPrompts.has(rowId) && !savingPrompts.has(rowId)) {
-          merged[rowId] = initialPrompts[rowId]
-        }
-      })
-      return merged
-    })
-  }, [rows, model.default_prompt, dirtyPrompts, savingPrompts])
-
-  // Get current prompt value for a row (local state takes precedence)
+  // Get current prompt value for a row (read directly from rows state)
   const getCurrentPrompt = useCallback((rowId: string): string => {
-    return localPrompts[rowId] ?? rows.find(r => r.id === rowId)?.prompt_override ?? model.default_prompt ?? ''
-  }, [localPrompts, rows, model.default_prompt])
+    return rows.find(r => r.id === rowId)?.prompt_override ?? model.default_prompt ?? ''
+  }, [rows, model.default_prompt])
 
-  // Handle prompt change (only local state update - no API calls)
+  // Handle prompt change (optimistic update with cursor position preservation)
   const handlePromptChange = useCallback((rowId: string, value: string) => {
+    const textarea = textareaRefs.current[rowId]
+    const cursorPosition = textarea?.selectionStart ?? value.length
+    
     const currentSavedValue = rows.find(r => r.id === rowId)?.prompt_override ?? model.default_prompt ?? ''
     const isDirty = value !== currentSavedValue
     
-    setLocalPrompts(prev => ({ ...prev, [rowId]: value }))
+    // Optimistic update: update rows state immediately for instant UI feedback
+    setRows(prev => prev.map(r => 
+      r.id === rowId 
+        ? { ...r, prompt_override: value || undefined }
+        : r
+    ))
     
     // Mark as dirty if different from saved value
     if (isDirty) {
@@ -228,6 +211,13 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
         return next
       })
     }
+    
+    // Restore cursor position after state update
+    requestAnimationFrame(() => {
+      if (textarea) {
+        textarea.setSelectionRange(cursorPosition, cursorPosition)
+      }
+    })
   }, [rows, model.default_prompt])
 
   // Handle prompt blur (save to API when user is done editing)
@@ -311,12 +301,6 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
           ? { ...row, prompt_override: savedValue || undefined }
           : row
       ))
-      
-      // Revert local prompt state on error
-      setLocalPrompts(prev => ({
-        ...prev,
-        [rowId]: savedValue
-      }))
     } finally {
       // Clear saving flag
       setSavingPrompts(prev => {
@@ -3430,6 +3414,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
                           <div className="flex flex-col gap-2">
                             <div className="relative">
                               <Textarea
+                                ref={(el) => {
+                                  if (el) textareaRefs.current[row.id] = el
+                                }}
                                 data-tour="workspace-prompt"
                                 value={getCurrentPrompt(row.id)}
                                 placeholder="Enter prompt... (Cmd/Ctrl+Enter to generate)"
@@ -3566,6 +3553,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
                             <div className="space-y-4">
                               <div className="relative">
                                 <Textarea
+                                  ref={(el) => {
+                                    if (el) textareaRefs.current[row.id] = el
+                                  }}
                                   value={getCurrentPrompt(row.id)}
                                   className={`min-h-[40vh] w-full resize-y border-2 transition-all duration-200 ${
                                     dirtyPrompts.has(row.id)
