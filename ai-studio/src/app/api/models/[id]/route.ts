@@ -26,7 +26,7 @@ export const revalidate = 0;
 const UpdateModelSchema = z.object({
   name: z.string().min(2).optional(),
   default_prompt: z.string().min(3).optional(),
-  default_ref_headshot_url: z.string().optional(),
+  default_ref_headshot_urls: z.array(z.string().min(1)).optional(),
   requests_default: z.number().int().min(1).max(50).optional(),
   size: z.string().optional(),
   output_width: z.number().int().min(1024).max(4096).optional(),
@@ -235,6 +235,7 @@ export async function DELETE(_: NextRequest, { params }: { params: Promise<{ id:
         name,
         owner_id,
         team_id,
+        default_ref_headshot_urls,
         default_ref_headshot_url,
         model_rows (
           id,
@@ -293,7 +294,11 @@ export async function DELETE(_: NextRequest, { params }: { params: Promise<{ id:
     // Collect all storage paths to delete
     const storagePaths: string[] = [];
     
-    // Add model default headshot
+    // Add model default headshots (array)
+    if (model.default_ref_headshot_urls && Array.isArray(model.default_ref_headshot_urls)) {
+      storagePaths.push(...model.default_ref_headshot_urls.filter(Boolean));
+    }
+    // Also check legacy single headshot for backward compatibility
     if (model.default_ref_headshot_url) {
       storagePaths.push(model.default_ref_headshot_url);
     }

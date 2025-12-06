@@ -76,7 +76,8 @@ export interface Model {
   team_id: string
   owner_id: string
   default_prompt?: string
-  default_ref_headshot_url?: string
+  default_ref_headshot_urls?: string[]
+  default_ref_headshot_url?: string // Legacy field for backward compatibility
   size: string
   output_width: number
   output_height: number

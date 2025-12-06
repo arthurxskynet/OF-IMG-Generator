@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
 
     // Get the model details
     const { data: model, error: er2 } = await supabase
-      .from('models').select('id, owner_id, team_id, default_prompt, default_ref_headshot_url, output_width, output_height').eq('id', row.model_id).single()
+      .from('models').select('id, owner_id, team_id, default_prompt, default_ref_headshot_urls, default_ref_headshot_url, output_width, output_height').eq('id', row.model_id).single()
     if (er2 || !model) return NextResponse.json({ error: 'Model not found' }, { status: 404 })
 
     // Check access to model before creating job
@@ -68,12 +68,14 @@ export async function POST(req: NextRequest) {
     
     // Build reference images array
     // If ref_image_urls is explicitly set (even if empty), use it
-    // If ref_image_urls is null/undefined, fallback to model default
+    // If ref_image_urls is null/undefined, fallback to model defaults
     const refImages = row.ref_image_urls !== null && row.ref_image_urls !== undefined
       ? row.ref_image_urls  // Use row's ref images (could be empty array if user removed all refs)
-      : model.default_ref_headshot_url 
-        ? [model.default_ref_headshot_url]  // Fallback to model default
-        : []  // No references at all
+      : model.default_ref_headshot_urls && model.default_ref_headshot_urls.length > 0
+        ? model.default_ref_headshot_urls  // Fallback to model default array
+        : model.default_ref_headshot_url 
+          ? [model.default_ref_headshot_url]  // Fallback to legacy single default (backward compatibility)
+          : []  // No references at all
     
     // Validate we have required images (only target image is required)
     if (!row.target_image_url) {
@@ -116,7 +118,8 @@ export async function POST(req: NextRequest) {
         
         console.log('[JobCreate] Reference images logic:', {
           rowRefImageUrls: row.ref_image_urls,
-          modelDefaultRef: model.default_ref_headshot_url,
+          modelDefaultRefs: model.default_ref_headshot_urls,
+          modelDefaultRefLegacy: model.default_ref_headshot_url,
           finalRefImages: refImages,
           refImagesLength: refImages.length,
           signedRefUrlsLength: refUrls.length,

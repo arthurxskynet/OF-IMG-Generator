@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { SortFilter } from "@/components/sort-filter";
 import { GeneratedImage } from "@/types/jobs";
 import { ModelTabsContent } from "@/components/model-tabs-content";
+import { ModelBulkRefUpload } from "@/components/model-bulk-ref-upload";
 import { VariantRow } from "@/types/variants";
 
 // Extended type for model rows with generated images
@@ -228,6 +229,11 @@ const Page = async ({ params, searchParams }: PageProps) => {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Bulk Reference Image Upload */}
+      <div className="pb-6">
+        <ModelBulkRefUpload model={model} />
       </div>
 
       {/* Main Content with Tabs */}

@@ -547,17 +547,24 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
               urlsToLoad.push({ path: refUrl, rowId })
             }
           })
-        } else if ((row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url) {
-          // Use model default ref if row doesn't have specific refs
-          const defaultRef = model.default_ref_headshot_url
-          // Validate path format before adding to load queue
-          if (defaultRef && 
-              defaultRef.trim() !== '' && 
-              /^(outputs|refs|targets|thumbnails)\/.+$/i.test(defaultRef) &&
-              !rowState.signedUrls?.[defaultRef] && 
-              !loadedRefTargetUrlsRef.current.has(defaultRef)) {
-            urlsToLoad.push({ path: defaultRef, rowId })
-          }
+        } else if ((row.ref_image_urls === null || row.ref_image_urls === undefined)) {
+          // Use model default refs if row doesn't have specific refs
+          const defaultRefs = model.default_ref_headshot_urls && model.default_ref_headshot_urls.length > 0
+            ? model.default_ref_headshot_urls
+            : model.default_ref_headshot_url
+              ? [model.default_ref_headshot_url]  // Legacy single default
+              : []
+          
+          defaultRefs.forEach(defaultRef => {
+            // Validate path format before adding to load queue
+            if (defaultRef && 
+                defaultRef.trim() !== '' && 
+                /^(outputs|refs|targets|thumbnails)\/.+$/i.test(defaultRef) &&
+                !rowState.signedUrls?.[defaultRef] && 
+                !loadedRefTargetUrlsRef.current.has(defaultRef)) {
+              urlsToLoad.push({ path: defaultRef, rowId })
+            }
+          })
         }
         
         // Collect target image URL
@@ -656,7 +663,7 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
       console.error('[ModelWorkspace] Error loading ref/target URLs:', error)
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentRowsKey, model.default_ref_headshot_url, rows])
+  }, [currentRowsKey, model.default_ref_headshot_urls, model.default_ref_headshot_url, rows])
   
   // Image preloading for smooth navigation
   useEffect(() => {
@@ -2087,12 +2094,14 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
     try {
       // Build reference images array using same logic as direct API route
       // If ref_image_urls is explicitly set (even if empty), use it
-      // If ref_image_urls is null/undefined, fallback to model default
+      // If ref_image_urls is null/undefined, fallback to model defaults
       const refImages = row.ref_image_urls !== null && row.ref_image_urls !== undefined
         ? row.ref_image_urls  // Use row's ref images (could be empty array if user removed all refs)
-        : model.default_ref_headshot_url 
-          ? [model.default_ref_headshot_url]  // Fallback to model default
-          : []  // No references at all
+        : model.default_ref_headshot_urls && model.default_ref_headshot_urls.length > 0
+          ? model.default_ref_headshot_urls  // Fallback to model default array
+          : model.default_ref_headshot_url 
+            ? [model.default_ref_headshot_url]  // Fallback to legacy single default (backward compatibility)
+            : []  // No references at all
 
       // Convert storage paths to signed URLs for Grok API access
       const refSignedUrls = await Promise.all(
@@ -2171,7 +2180,12 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
             next.delete(rowId)
             return next
           })
-          setLocalPrompts(prev => ({ ...prev, [rowId]: generatedPrompt }))
+          // Update the prompt in rows state
+          setRows(prev => prev.map(r => 
+            r.id === rowId 
+              ? { ...r, prompt_override: generatedPrompt }
+              : r
+          ))
           await handlePromptBlur(rowId, generatedPrompt)
           
           toast({
@@ -3113,46 +3127,59 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
                                   </div>
                                 </Dialog>
                               ))
-                            ) : (row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url ? (
-                          <Dialog>
-                                <div className="relative group">
-                                  <DialogTrigger asChild>
-                                    <div className="cursor-zoom-in">
-                                      <Thumb
-                                        src={model.default_ref_headshot_url ? (rowState.signedUrls[model.default_ref_headshot_url] || '') : ''}
-                                        alt="Default reference image"
-                                        size={64}
-                                        dataImagePath={model.default_ref_headshot_url || ''}
-                                        dataRowId={row.id}
-                                        className="transition-transform group-hover:scale-[1.02]"
-                                      />
+                            ) : (row.ref_image_urls === null || row.ref_image_urls === undefined) && (
+                              (model.default_ref_headshot_urls && model.default_ref_headshot_urls.length > 0) || model.default_ref_headshot_url
+                            ) ? (
+                              // Display multiple default reference images
+                              ((() => {
+                                const defaultRefs = model.default_ref_headshot_urls && model.default_ref_headshot_urls.length > 0
+                                  ? model.default_ref_headshot_urls
+                                  : model.default_ref_headshot_url
+                                    ? [model.default_ref_headshot_url]
+                                    : []
+                                
+                                return defaultRefs.map((defaultRef, index) => (
+                                  <Dialog key={defaultRef || index}>
+                                    <div className="relative group">
+                                      <DialogTrigger asChild>
+                                        <div className="cursor-zoom-in">
+                                          <Thumb
+                                            src={defaultRef ? (rowState.signedUrls[defaultRef] || '') : ''}
+                                            alt={`Default reference image ${index + 1}`}
+                                            size={64}
+                                            dataImagePath={defaultRef || ''}
+                                            dataRowId={row.id}
+                                            className="transition-transform group-hover:scale-[1.02]"
+                                          />
+                                        </div>
+                                      </DialogTrigger>
                                     </div>
-                                  </DialogTrigger>
-                                </div>
-                                <DialogContent className="max-w-4xl">
-                                  <DialogHeader>
-                                    <DialogTitle>Default Reference Image</DialogTitle>
-                                  </DialogHeader>
-                                  <div className="flex justify-center">
-                                    {model.default_ref_headshot_url && rowState.signedUrls[model.default_ref_headshot_url] ? (
-                                      <Image
-                                        src={rowState.signedUrls[model.default_ref_headshot_url]}
-                                        alt="Default reference image"
-                                        width={1600}
-                                        height={1600}
-                                        className="max-w-full max-h-[80vh] object-contain rounded-lg"
-                                        loading="lazy"
-                                        onError={handleImageError}
-                                        data-image-path={model.default_ref_headshot_url}
-                                      />
-                                    ) : (
-                                      <div className="flex items-center justify-center h-[80vh]">
-                                        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+                                    <DialogContent className="max-w-4xl">
+                                      <DialogHeader>
+                                        <DialogTitle>Default Reference Image {index + 1}</DialogTitle>
+                                      </DialogHeader>
+                                      <div className="flex justify-center">
+                                        {defaultRef && rowState.signedUrls[defaultRef] ? (
+                                          <Image
+                                            src={rowState.signedUrls[defaultRef]}
+                                            alt={`Default reference image ${index + 1}`}
+                                            width={1600}
+                                            height={1600}
+                                            className="max-w-full max-h-[80vh] object-contain rounded-lg"
+                                            loading="lazy"
+                                            onError={handleImageError}
+                                            data-image-path={defaultRef}
+                                          />
+                                        ) : (
+                                          <div className="flex items-center justify-center h-[80vh]">
+                                            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+                                          </div>
+                                        )}
                                       </div>
-                                    )}
-                                  </div>
-                                </DialogContent>
-                              </Dialog>
+                                    </DialogContent>
+                                  </Dialog>
+                                ))
+                              })())
                             ) : (
                               <div className={`w-16 h-16 border-2 border-dashed rounded-lg flex flex-col items-center justify-center text-xs transition-all duration-200 ${
                                 dragOverRefRowId === row.id
@@ -3214,7 +3241,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
                           </div>
                           
                           {/* Remove buttons for reference images */}
-                          {((row.ref_image_urls && row.ref_image_urls.length > 0) || (row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url) && (
+                          {((row.ref_image_urls && row.ref_image_urls.length > 0) || 
+                            ((row.ref_image_urls === null || row.ref_image_urls === undefined) && 
+                             ((model.default_ref_headshot_urls && model.default_ref_headshot_urls.length > 0) || model.default_ref_headshot_url))) && (
                             <div className="flex flex-wrap gap-1 mt-2">
                               {/* Remove buttons for row-specific reference images */}
                               {row.ref_image_urls && row.ref_image_urls.length > 0 && 
@@ -3241,8 +3270,9 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
                                 ))
                               }
                               
-                               {/* Remove button for default reference image (only show when ref_image_urls is null/undefined, not when it's explicitly empty []) */}
-                               {(row.ref_image_urls === null || row.ref_image_urls === undefined) && model.default_ref_headshot_url && (
+                               {/* Remove button for default reference images (only show when ref_image_urls is null/undefined, not when it's explicitly empty []) */}
+                               {(row.ref_image_urls === null || row.ref_image_urls === undefined) && 
+                                ((model.default_ref_headshot_urls && model.default_ref_headshot_urls.length > 0) || model.default_ref_headshot_url) && (
                                  <Button
                                    size="sm"
                                    variant="destructive"
@@ -3595,7 +3625,6 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
                           currentPrompt={getCurrentPrompt(row.id)}
                           swapMode={rowState.activePromptSwapMode || 'face-hair'}
                           onPromptUpdated={(newPrompt) => {
-                            setLocalPrompts(prev => ({ ...prev, [row.id]: newPrompt }))
                             setRows(prev => prev.map(r => r.id === row.id ? { ...r, prompt_override: newPrompt || undefined } : r))
                             setDirtyPrompts(prev => {
                               const next = new Set(prev)

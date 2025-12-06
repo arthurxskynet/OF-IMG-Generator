@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 const CreateModelSchema = z.object({
   name: z.string().min(2, "Name must be at least 2 characters"),
   default_prompt: z.string().min(3, "Default prompt must be at least 3 characters"),
-  default_ref_headshot_path: z.string().min(1, "Headshot image is required"),
+  default_ref_headshot_paths: z.array(z.string().min(1)).min(1, "At least one headshot image is required"),
   requests_default: z.number().int().min(1).max(50).default(6),
   size: z.string().default("2227*3183"),
   output_width: z.number().int().min(1024).max(4096).default(4096),
@@ -30,7 +30,7 @@ export async function GET() {
     // Fetch models accessible to the user (RLS handles permissions)
     const { data: models, error } = await supabase
       .from("models")
-      .select("id, name, default_prompt, default_ref_headshot_url, requests_default, size, output_width, output_height, created_at")
+      .select("id, name, default_prompt, default_ref_headshot_urls, default_ref_headshot_url, requests_default, size, output_width, output_height, created_at")
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -78,7 +78,7 @@ export async function POST(req: NextRequest) {
       .insert({
         name: validatedData.name,
         default_prompt: validatedData.default_prompt,
-        default_ref_headshot_url: validatedData.default_ref_headshot_path,
+        default_ref_headshot_urls: validatedData.default_ref_headshot_paths,
         requests_default: validatedData.requests_default,
         size: validatedData.size,
         output_width: validatedData.output_width,

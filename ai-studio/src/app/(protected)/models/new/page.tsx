@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { X } from "lucide-react";
 import { uploadImage, validateFile } from "@/lib/client-upload";
 import { useToast } from "@/hooks/use-toast";
 import { createClient } from "@/lib/supabase-browser";
@@ -27,8 +28,8 @@ type FormValues = z.infer<typeof schema>;
 
 const Page = () => {
   const [isLoading, setIsLoading] = useState(false);
-  const [uploadedHeadshot, setUploadedHeadshot] = useState<string | null>(null);
-  const [headshotPreview, setHeadshotPreview] = useState<string | null>(null);
+  const [uploadedHeadshots, setUploadedHeadshots] = useState<string[]>([]);
+  const [headshotPreviews, setHeadshotPreviews] = useState<string[]>([]);
   const [selectedPreset, setSelectedPreset] = useState<{width: number, height: number} | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
@@ -46,47 +47,87 @@ const Page = () => {
   });
 
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      toast({
+        title: "Authentication required",
+        description: "Please sign in to upload images",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    const fileArray = Array.from(files);
+    const newPreviews: string[] = [];
+    const uploadPromises: Promise<{ objectPath: string }>[] = [];
+
+    // Validate all files first
+    for (const file of fileArray) {
+      try {
+        validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 50);
+        const previewUrl = URL.createObjectURL(file);
+        newPreviews.push(previewUrl);
+        uploadPromises.push(uploadImage(file, 'refs', user.id));
+      } catch (error) {
+        toast({
+          title: "Invalid file",
+          description: error instanceof Error ? error.message : "One or more files are invalid",
+          variant: "destructive"
+        });
+        // Clean up previews on error
+        newPreviews.forEach(url => URL.revokeObjectURL(url));
+        return;
+      }
+    }
+
+    // Show all previews
+    setHeadshotPreviews(prev => [...prev, ...newPreviews]);
 
     try {
-      // Validate file
-      validateFile(file, ['image/jpeg', 'image/png', 'image/webp'], 50);
-      
-      // Show preview
-      const previewUrl = URL.createObjectURL(file);
-      setHeadshotPreview(previewUrl);
-
-      // Upload to Supabase Storage
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        throw new Error("Not authenticated");
-      }
-
-      const result = await uploadImage(file, 'refs', user.id);
-      setUploadedHeadshot(result.objectPath);
+      // Upload all files in parallel
+      const results = await Promise.all(uploadPromises);
+      const newPaths = results.map(r => r.objectPath);
+      setUploadedHeadshots(prev => [...prev, ...newPaths]);
       
       toast({
-        title: "Image uploaded",
-        description: "Headshot image uploaded successfully"
+        title: "Images uploaded",
+        description: `${fileArray.length} image${fileArray.length > 1 ? 's' : ''} uploaded successfully`
       });
     } catch (error) {
       console.error("Upload error:", error);
       toast({
         title: "Upload failed",
-        description: error instanceof Error ? error.message : "Failed to upload image",
+        description: error instanceof Error ? error.message : "Failed to upload images",
         variant: "destructive"
       });
-      setHeadshotPreview(null);
-      setUploadedHeadshot(null);
+      // Clean up previews on error
+      newPreviews.forEach(url => URL.revokeObjectURL(url));
+      setHeadshotPreviews(prev => prev.slice(0, prev.length - newPreviews.length));
+    }
+
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 
+  const removeHeadshot = (index: number) => {
+    setUploadedHeadshots(prev => prev.filter((_, i) => i !== index));
+    const previewToRevoke = headshotPreviews[index];
+    if (previewToRevoke) {
+      URL.revokeObjectURL(previewToRevoke);
+    }
+    setHeadshotPreviews(prev => prev.filter((_, i) => i !== index));
+  };
+
   const onSubmit = async (values: FormValues) => {
-    if (!uploadedHeadshot) {
+    if (uploadedHeadshots.length === 0) {
       toast({
-        title: "Missing headshot",
-        description: "Please upload a headshot image",
+        title: "Missing headshots",
+        description: "Please upload at least one headshot image",
         variant: "destructive"
       });
       return;
@@ -99,7 +140,7 @@ const Page = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...values,
-          default_ref_headshot_path: uploadedHeadshot
+          default_ref_headshot_paths: uploadedHeadshots
         })
       });
 
@@ -144,15 +185,32 @@ const Page = () => {
             </div>
 
             <div>
-              <Label htmlFor="headshot">Headshot Image (Required)</Label>
-              <div className="flex items-center space-x-4 mt-2">
-                <Avatar className="h-16 w-16">
-                  {headshotPreview ? (
-                    <AvatarImage src={headshotPreview} alt="Headshot preview" />
-                  ) : (
-                    <AvatarFallback>IMG</AvatarFallback>
-                  )}
-                </Avatar>
+              <Label htmlFor="headshot">Default Reference Images (Required)</Label>
+              <div className="mt-2 space-y-3">
+                {headshotPreviews.length > 0 && (
+                  <div className="grid grid-cols-4 gap-2">
+                    {headshotPreviews.map((preview, index) => (
+                      <div key={index} className="relative group">
+                        <div className="aspect-square rounded-lg overflow-hidden border border-border">
+                          <img 
+                            src={preview} 
+                            alt={`Reference ${index + 1}`}
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="icon"
+                          className="absolute top-1 right-1 h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                          onClick={() => removeHeadshot(index)}
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <div>
                   <Button
                     type="button"
@@ -160,10 +218,10 @@ const Page = () => {
                     onClick={() => fileInputRef.current?.click()}
                     data-tour="new-model-headshot"
                   >
-                    Choose Image
+                    {headshotPreviews.length === 0 ? 'Choose Images' : 'Add More Images'}
                   </Button>
                   <p className="text-xs text-muted-foreground mt-1">
-                    JPEG, PNG, WebP up to 50MB
+                    JPEG, PNG, WebP up to 50MB each. You can select multiple images.
                   </p>
                 </div>
               </div>
@@ -171,6 +229,7 @@ const Page = () => {
                 ref={fileInputRef}
                 type="file"
                 accept="image/jpeg,image/png,image/webp"
+                multiple
                 onChange={handleFileSelect}
                 className="hidden"
               />
@@ -275,7 +334,7 @@ const Page = () => {
               </div>
             </div>
 
-            <Button type="submit" disabled={isLoading || !uploadedHeadshot} data-tour="new-model-submit">
+            <Button type="submit" disabled={isLoading || uploadedHeadshots.length === 0} data-tour="new-model-submit">
               {isLoading ? "Creating..." : "Create Model"}
             </Button>
           </form>

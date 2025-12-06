@@ -39,9 +39,11 @@ export async function POST(req: NextRequest) {
     // Build reference images array (same logic as generate route)
     const refImages = row.ref_image_urls !== null && row.ref_image_urls !== undefined
       ? row.ref_image_urls
-      : model.default_ref_headshot_url 
-        ? [model.default_ref_headshot_url]
-        : []
+      : model.default_ref_headshot_urls && model.default_ref_headshot_urls.length > 0
+        ? model.default_ref_headshot_urls  // Fallback to model default array
+        : model.default_ref_headshot_url 
+          ? [model.default_ref_headshot_url]  // Fallback to legacy single default (backward compatibility)
+          : []
 
     if (!row.target_image_url) {
       return NextResponse.json({ 

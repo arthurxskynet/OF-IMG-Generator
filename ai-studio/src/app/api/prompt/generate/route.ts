@@ -45,16 +45,19 @@ export async function POST(req: NextRequest) {
 
     // Build reference images array
     // If ref_image_urls is explicitly set (even if empty), use it
-    // If ref_image_urls is null/undefined, fallback to model default
+    // If ref_image_urls is null/undefined, fallback to model defaults
     const refImages = row.ref_image_urls !== null && row.ref_image_urls !== undefined
       ? row.ref_image_urls  // Use row's ref images (could be empty array if user removed all refs)
-      : model.default_ref_headshot_url 
-        ? [model.default_ref_headshot_url]  // Fallback to model default
-        : []  // No references at all
+      : model.default_ref_headshot_urls && model.default_ref_headshot_urls.length > 0
+        ? model.default_ref_headshot_urls  // Fallback to model default array
+        : model.default_ref_headshot_url 
+          ? [model.default_ref_headshot_url]  // Fallback to legacy single default (backward compatibility)
+          : []  // No references at all
 
     console.log('[Prompt Generation] Reference images logic:', {
       rowRefImageUrls: row.ref_image_urls,
-      modelDefaultRef: model.default_ref_headshot_url,
+      modelDefaultRefs: model.default_ref_headshot_urls,
+      modelDefaultRefLegacy: model.default_ref_headshot_url,
       finalRefImages: refImages,
       refImagesLength: refImages.length
     })
