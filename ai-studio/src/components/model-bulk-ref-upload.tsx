@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
@@ -21,6 +22,7 @@ export function ModelBulkRefUpload({ model, onUpdate }: ModelBulkRefUploadProps)
   const [previews, setPreviews] = useState<string[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
   const { toast } = useToast()
+  const router = useRouter()
   const supabase = createClient()
 
   // Load existing default images as previews
@@ -128,6 +130,9 @@ export function ModelBulkRefUpload({ model, onUpdate }: ModelBulkRefUploadProps)
         description: `${fileArray.length} image${fileArray.length > 1 ? 's' : ''} added to default references`
       })
 
+      // Refresh the page to get updated model data
+      router.refresh()
+
       // Trigger refresh if callback provided
       if (onUpdate) {
         onUpdate()
@@ -178,6 +183,9 @@ export function ModelBulkRefUpload({ model, onUpdate }: ModelBulkRefUploadProps)
         title: 'Image removed',
         description: 'Default reference image removed'
       })
+
+      // Refresh the page to get updated model data
+      router.refresh()
 
       // Trigger refresh if callback provided
       if (onUpdate) {
