@@ -36,6 +36,17 @@ export async function uploadToBucket(
     throw new Error('No file provided')
   }
 
+  // Check authentication before upload
+  const { data: { user }, error: userError } = await supabase.auth.getUser()
+  if (userError || !user) {
+    throw new Error('Authentication required. Please sign in to upload files.')
+  }
+
+  const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+  if (sessionError || !session?.access_token) {
+    throw new Error('No valid session. Please refresh the page and try again.')
+  }
+
   // Generate unique key
   const timestamp = Date.now()
   const randomSuffix = Math.random().toString(36).slice(2, 8)
@@ -51,7 +62,31 @@ export async function uploadToBucket(
       })
 
     if (error) {
-      throw new Error(`Upload failed: ${error.message}`)
+      // Provide more detailed error messages
+      let errorMessage = error.message || 'Unknown error'
+      
+      // Handle specific error cases
+      if (error.message?.includes('Load failed') || error.message?.includes('Failed to fetch')) {
+        errorMessage = 'Network error. Please check your connection and try again.'
+      } else if (error.message?.includes('new row violates row-level security')) {
+        errorMessage = 'Permission denied. You may not have access to upload to this bucket.'
+      } else if (error.message?.includes('Bucket not found')) {
+        errorMessage = `Storage bucket '${bucket}' not found. Please contact support.`
+      } else if (error.message?.includes('The resource already exists')) {
+        errorMessage = 'A file with this name already exists. Please try again.'
+      }
+      
+      console.error('Upload error details:', {
+        message: error.message,
+        error: (error as any).error,
+        bucket,
+        objectKey,
+        fileSize: file.size,
+        fileType: file.type,
+        fullError: error
+      })
+      
+      throw new Error(`Upload failed: ${errorMessage}`)
     }
 
     if (!data?.path) {
@@ -65,7 +100,21 @@ export async function uploadToBucket(
     }
   } catch (error) {
     console.error('Upload error:', error)
-    throw error instanceof Error ? error : new Error('Upload failed')
+    
+    // Re-throw if it's already a formatted Error
+    if (error instanceof Error) {
+      throw error
+    }
+    
+    // Handle network errors
+    if (error && typeof error === 'object' && 'message' in error) {
+      const errorMsg = String(error.message)
+      if (errorMsg.includes('fetch') || errorMsg.includes('network') || errorMsg.includes('Load failed')) {
+        throw new Error('Network error. Please check your connection and try again.')
+      }
+    }
+    
+    throw new Error('Upload failed. Please try again.')
   }
 }
 
