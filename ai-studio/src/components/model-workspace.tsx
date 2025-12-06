@@ -865,9 +865,117 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
     }
   }
 
+  // Helper function to load signed URLs for reference images in a specific row
+  const loadRowReferenceUrls = useCallback(async (rowId: string, refImageUrls: string[] | null | undefined) => {
+    if (!refImageUrls || refImageUrls.length === 0) return
+
+    // Get current row state to check what URLs are already loaded
+    let currentRowState: RowState | undefined
+    setRowStates(prev => {
+      currentRowState = prev[rowId]
+      return prev // Don't change state, just read it
+    })
+
+    const existingUrls = currentRowState?.signedUrls || {}
+    
+    // Find URLs that need to be loaded
+    const urlsToLoad: Array<{ path: string }> = []
+    refImageUrls.forEach(refUrl => {
+      if (refUrl && 
+          refUrl.trim() !== '' && 
+          /^(outputs|refs|targets|thumbnails)\/.+$/i.test(refUrl) &&
+          !existingUrls[refUrl] && 
+          !loadedRefTargetUrlsRef.current.has(refUrl)) {
+        urlsToLoad.push({ path: refUrl })
+      }
+    })
+
+    if (urlsToLoad.length === 0) return
+
+    console.log('[ModelWorkspace] Loading new reference URLs for row:', { rowId, count: urlsToLoad.length, paths: urlsToLoad.map(u => u.path) })
+
+    // Load URLs with concurrency limit
+    const CONCURRENCY_LIMIT = 10
+    const results: Array<{ path: string; url: string }> = []
+
+    for (let i = 0; i < urlsToLoad.length; i += CONCURRENCY_LIMIT) {
+      const batch = urlsToLoad.slice(i, i + CONCURRENCY_LIMIT)
+      
+      const batchPromises = batch.map(async ({ path }) => {
+        try {
+          // Validate path before attempting to load
+          if (!path || path.trim() === '' || !/^(outputs|refs|targets|thumbnails)\/.+$/i.test(path)) {
+            console.warn('[ModelWorkspace] Invalid path format, skipping:', { path, rowId })
+            return { path, url: '' }
+          }
+          
+          // Mark as loading to prevent duplicates
+          loadedRefTargetUrlsRef.current.add(path)
+          
+          // Use getImageUrl which handles caching
+          const url = await getImageUrl(path, rowId)
+          
+          return { path, url }
+        } catch (error) {
+          // Log as warning for missing files
+          console.warn(`[ModelWorkspace] Failed to load URL for ${path}:`, error instanceof Error ? error.message : error)
+          // Remove from loaded set on failure so it can be retried
+          loadedRefTargetUrlsRef.current.delete(path)
+          return { path, url: '' }
+        }
+      })
+      
+      const batchResults = await Promise.all(batchPromises)
+      results.push(...batchResults)
+    }
+
+    // Update rowState with fetched URLs
+    if (results.length > 0) {
+      const successfulUrls = results.filter(r => r.url).length
+      console.log('[ModelWorkspace] Successfully loaded new reference URLs:', { 
+        rowId,
+        total: results.length, 
+        successful: successfulUrls,
+        failed: results.length - successfulUrls 
+      })
+      
+      setRowStates(prev => {
+        const currentState = prev[rowId] || {
+          id: rowId,
+          isGenerating: false,
+          isGeneratingPrompt: false,
+          activePromptSwapMode: undefined,
+          signedUrls: {},
+          isLoadingResults: false,
+          isUploadingTarget: false,
+          isTargetSaving: false
+        }
+        
+        const updatedSignedUrls = { ...currentState.signedUrls }
+        results.forEach(({ path, url }) => {
+          if (url) {
+            updatedSignedUrls[path] = url
+          }
+        })
+        
+        return {
+          ...prev,
+          [rowId]: {
+            ...currentState,
+            signedUrls: updatedSignedUrls
+          }
+        }
+      })
+    }
+  }, [getImageUrl])
+
   // Refresh a single row and prefetch its image URLs; clear loading flag (preserve dirty prompts)
   const       refreshSingleRow = async (rowId: string) => {
     try {
+      // Get old row state to compare ref_image_urls
+      const oldRow = rows.find(r => r.id === rowId)
+      const oldRefImageUrls = oldRow?.ref_image_urls
+
       // Add cache-busting timestamp
       const url = new URL(`/api/rows/${rowId}`, window.location.origin)
       url.searchParams.set('_t', Date.now().toString())
@@ -893,9 +1001,41 @@ export function ModelWorkspace({ model, rows: initialRows, sort, rowId }: ModelW
         }
         return r
       }))
+
+      // Check if ref_image_urls changed and load new URLs
+      const newRefImageUrls = row.ref_image_urls
+      const hasNewRefs = (
+        // Case 1: Row went from null/undefined to having refs
+        (!oldRefImageUrls || (Array.isArray(oldRefImageUrls) && oldRefImageUrls.length === 0)) &&
+        newRefImageUrls && Array.isArray(newRefImageUrls) && newRefImageUrls.length > 0
+      ) || (
+        // Case 2: Row had refs and now has more/different refs
+        oldRefImageUrls && Array.isArray(oldRefImageUrls) && oldRefImageUrls.length > 0 &&
+        newRefImageUrls && Array.isArray(newRefImageUrls) && newRefImageUrls.length > 0 &&
+        (newRefImageUrls.length > oldRefImageUrls.length || 
+         !newRefImageUrls.every((url: string, idx: number) => url === oldRefImageUrls[idx]))
+      )
+
+      if (hasNewRefs && newRefImageUrls && Array.isArray(newRefImageUrls)) {
+        // Load URLs for new reference images
+        await loadRowReferenceUrls(rowId, newRefImageUrls)
+      }
+
+      // Also load target image URL if it changed
+      if (row.target_image_url && 
+          row.target_image_url !== oldRow?.target_image_url &&
+          row.target_image_url.trim() !== '' &&
+          /^(outputs|refs|targets|thumbnails)\/.+$/i.test(row.target_image_url)) {
+        try {
+          await getImageUrl(row.target_image_url, rowId)
+        } catch (error) {
+          console.warn('[ModelWorkspace] Failed to load target URL:', error)
+        }
+      }
+
       // Thumbnails will be loaded automatically by the useThumbnailLoader hook
     } catch (e) {
-      // noop
+      console.error('[ModelWorkspace] Error refreshing row:', e)
     } finally {
       setRowStates(prev => {
         const current = prev[rowId] || {
