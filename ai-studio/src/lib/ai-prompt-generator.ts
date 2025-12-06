@@ -160,10 +160,12 @@ function estimateInstructionComplexity(instructions: string): 'low' | 'medium' |
 // Deterministic, single-sentence face-swap prompt builder (legacy fallback only)
 function buildFaceSwapPrompt(refCount: number, swapMode: SwapMode): string {
   const faceOnly = swapMode === 'face'
+  const refImageLabel = refCount === 1 ? 'reference image' : 'reference images'
+  
   if (faceOnly) {
-    return 'Swap only the face from the first image of reference person onto the second image of target person; keep the hair unchanged and leave everything else in the second image unchanged.'
+    return `Replace the face with the face from the ${refImageLabel} onto the target image, keeping the original hair unchanged and preserving everything else in the target image unchanged.`
   }
-  return 'Swap the face and hair from the first image of reference person onto the second image of target person; leave everything else in the second image unchanged.'
+  return `Replace the face and hair with the face and hairstyle from the ${refImageLabel} onto the target image, preserving everything else in the target image unchanged.`
 }
 
 // ============================================================================
@@ -195,32 +197,35 @@ CRITICAL COMPOSITION RULES:
 ✅ Keep background, body position, and clothing exactly as in target`
     : ''
 
+  const refImageLabel = refCount === 1 ? 'reference image' : 'reference images'
+  
   return `You are an expert at creating concise, image-specific Seedream v4 editing prompts.
 
 SEEDREAM v4 API CONTEXT:
 - Seedream v4 is an IMAGE EDITING API (not image generation)
-- It receives ${refCount} reference image(s) + 1 target image
+- Image order: The first ${refCount} image(s) are ${refImageLabel}, the last image is the target image
+- It receives ${refCount} ${refImageLabel} + 1 target image
 - Operation: ${isFaceOnly ? 'Face-only swap (keep target hair)' : 'Face and hair swap (use reference hair)'}
 - You MUST analyze the actual images and reference specific visual details
 
 CRITICAL REQUIREMENT:
 Your prompt must be SPECIFIC to these actual images. Describe what you SEE:
-- Reference image: ${isFaceOnly ? 'Face structure only' : 'Face + Hair (color, length, style)'}
-- Target image: Clothing, setting/environment, lighting quality, pose
+- Reference images (first ${refCount} image${refCount > 1 ? 's' : ''}): ${isFaceOnly ? 'Face structure only' : 'Face + Hair (color, length, style)'}
+- Target image (last image): Clothing, setting/environment, lighting quality, pose
 - Generic prompts will be REJECTED
 ${compositionGuidance}
 
 REQUIRED OUTPUT FORMAT (with image-specific details):
-"Replace the ${isFaceOnly ? 'face' : 'face and hair'} ${!isFaceOnly ? '([hair details from reference: e.g., "long blonde wavy hair"]) ' : ''}with the ${isFaceOnly ? 'reference face' : 'reference face and hairstyle'}, onto the person wearing [specific clothing from target] ${isFaceOnly ? 'with [specific hair from target] ' : ''}in [specific setting from target], ensuring natural facial proportions and maintaining the [specific lighting from target] that matches the original scene composition, preserving the target image's quality level and camera characteristics."
+"Replace the ${isFaceOnly ? 'face' : 'face and hair'} ${!isFaceOnly ? '([hair details from reference images: e.g., "long blonde wavy hair"]) ' : ''}with the ${isFaceOnly ? 'face from the reference images' : 'face and hairstyle from the reference images'}, onto the person in the target image wearing [specific clothing from target] ${isFaceOnly ? 'with [specific hair from target] ' : ''}in [specific setting from target], ensuring natural facial proportions and maintaining the [specific lighting from target] that matches the original scene composition, preserving the target image's quality level and camera characteristics."
 
 OPTIMAL LENGTH: 25-50 words (concise but image-specific)
 
 WHAT TO DESCRIBE:
-✅ Reference: ${isFaceOnly ? 'N/A (face only, no description needed)' : 'Hair color, length, style'}
-✅ Target clothing: "blue business suit", "casual denim jacket", "red evening dress"
-${isFaceOnly ? '✅ Target hair: "short dark hair", "long brown hair", "curly blonde hair"' : ''}
-✅ Target setting: "modern office", "outdoor park", "urban street", "home interior"
-✅ Target lighting: "natural window light", "soft afternoon sun", "studio lighting"
+✅ Reference images: ${isFaceOnly ? 'N/A (face only, no description needed)' : 'Hair color, length, style'}
+✅ Target image clothing: "blue business suit", "casual denim jacket", "red evening dress"
+${isFaceOnly ? '✅ Target image hair: "short dark hair", "long brown hair", "curly blonde hair"' : ''}
+✅ Target image setting: "modern office", "outdoor park", "urban street", "home interior"
+✅ Target image lighting: "natural window light", "soft afternoon sun", "studio lighting"
 
 CRITICAL PRESERVATION REQUIREMENTS:
 ✅ ALWAYS include: "ensuring natural/realistic facial proportions"
@@ -236,10 +241,10 @@ NEVER DESCRIBE:
 
 EXAMPLES:
 ${isFaceOnly
-  ? `✅ "Replace the face with the reference face, onto the person wearing a navy suit with short dark hair in a modern office, ensuring natural facial proportions and maintaining the natural window lighting that matches the original composition, preserving the target image's quality and camera style."
-✅ "Replace the face with the reference face, onto the person in casual jeans with long brown hair in an outdoor park, ensuring realistic proportions and maintaining the soft afternoon sunlight, preserving the original image quality and camera characteristics."`
-  : `✅ "Replace the face and hair (long blonde wavy hair) with the reference face and hairstyle, onto the person wearing casual denim in an outdoor park, ensuring natural proportions and maintaining the afternoon lighting that matches the original scene composition, preserving the target image's quality level and camera style."
-✅ "Replace the face and hair (short dark styled hair) with the reference, onto the person in a business suit in a modern office, ensuring realistic facial proportions and maintaining the natural window lighting, preserving the original image quality and camera characteristics."`
+  ? `✅ "Replace the face with the face from the reference images, onto the person in the target image wearing a navy suit with short dark hair in a modern office, ensuring natural facial proportions and maintaining the natural window lighting that matches the original composition, preserving the target image's quality and camera style."
+✅ "Replace the face with the face from the reference images, onto the person in the target image in casual jeans with long brown hair in an outdoor park, ensuring realistic proportions and maintaining the soft afternoon sunlight, preserving the original image quality and camera characteristics."`
+  : `✅ "Replace the face and hair (long blonde wavy hair) with the face and hairstyle from the reference images, onto the person in the target image wearing casual denim in an outdoor park, ensuring natural proportions and maintaining the afternoon lighting that matches the original scene composition, preserving the target image's quality level and camera style."
+✅ "Replace the face and hair (short dark styled hair) with the face and hairstyle from the reference images, onto the person in the target image in a business suit in a modern office, ensuring realistic facial proportions and maintaining the natural window lighting, preserving the original image quality and camera characteristics."`
 }
 
 OUTPUT: Image-specific editing instruction only. No markdown, no explanations.`
@@ -251,37 +256,43 @@ OUTPUT: Image-specific editing instruction only. No markdown, no explanations.`
  */
 function buildSeedreamFaceSwapUserText(refCount: number, swapMode: SwapMode, preserveComposition: boolean = true): string {
   const isFaceOnly = swapMode === 'face'
+  const refImageLabel = refCount === 1 ? 'reference image' : 'reference images'
   
   const compositionInstructions = preserveComposition 
     ? `
-- CRITICAL: Match the target's head pose/angle and face scale exactly; do not rotate, mirror, reframe, zoom, or crop
-- Preserve any occlusions (partial face coverage) and exact crop boundaries from the target`
+- CRITICAL: Match the target image's head pose/angle and face scale exactly; do not rotate, mirror, reframe, zoom, or crop
+- Preserve any occlusions (partial face coverage) and exact crop boundaries from the target image`
     : ''
 
   return `ANALYZE THE IMAGES CAREFULLY and create a concise Seedream v4 editing instruction (25-50 words) that references what you actually see.
 
+IMAGE IDENTIFICATION:
+- The first ${refCount} image${refCount > 1 ? 's are' : ' is'} the ${refImageLabel} (provides the face to swap)
+- The last image is the target image (the base that gets modified - put the reference face onto this)
+
 YOUR TASK:
-1. **Look at the reference image${refCount > 1 ? 's' : ''}**: Note the ${isFaceOnly ? 'face structure' : 'face and hairstyle (color, length, style)'}
-2. **Look at the target image**: Note the clothing, pose, setting/environment, lighting QUALITY/STYLE, camera characteristics (depth of field, angle), and image quality level
-3. **Create instruction**: Describe the swap operation WITH specific visual details, ensuring output matches target's quality/camera/lighting characteristics (not enhanced beyond original)${compositionInstructions}
+1. **Look at the ${refImageLabel} (the first ${refCount} image${refCount > 1 ? 's' : ''})**: Note the ${isFaceOnly ? 'face structure' : 'face and hairstyle (color, length, style)'}
+2. **Look at the target image (the last image)**: Note the clothing, pose, setting/environment, lighting QUALITY/STYLE, camera characteristics (depth of field, angle), and image quality level
+3. **Create instruction**: Describe putting the face from the ${refImageLabel} ONTO the target image WITH specific visual details, ensuring output matches target's quality/camera/lighting characteristics (not enhanced beyond original)${compositionInstructions}
 
 REQUIRED FORMAT:
-"Replace the ${isFaceOnly ? 'face' : 'face and hair'} ${!isFaceOnly ? '([describe reference hair: color/length/style]) ' : ''}with the ${isFaceOnly ? 'face from the reference' : 'face and hairstyle from the reference'}, onto the person wearing [describe target clothing briefly] ${isFaceOnly ? 'with [describe target hair briefly] ' : ''}in [describe target setting briefly], ensuring natural facial proportions and maintaining the [describe target lighting briefly] that matches the original scene composition, preserving the target image's quality level and camera characteristics."
+"Replace the ${isFaceOnly ? 'face' : 'face and hair'} ${!isFaceOnly ? '([describe reference images hair: color/length/style]) ' : ''}with the ${isFaceOnly ? 'face from the reference images' : 'face and hairstyle from the reference images'}, onto the person in the target image wearing [describe target clothing briefly] ${isFaceOnly ? 'with [describe target hair briefly] ' : ''}in [describe target setting briefly], ensuring natural facial proportions and maintaining the [describe target lighting briefly] that matches the original scene composition, preserving the target image's quality level and camera characteristics."
 
 EXAMPLES:
 ${isFaceOnly 
-  ? `✅ Good: "Replace the face with the reference face, onto the person wearing a blue business suit with short dark hair in a modern office, ensuring natural facial proportions and maintaining the natural window lighting that matches the original composition, preserving the target image's quality and camera style."
+  ? `✅ Good: "Replace the face with the face from the reference images, onto the person in the target image wearing a blue business suit with short dark hair in a modern office, ensuring natural facial proportions and maintaining the natural window lighting that matches the original composition, preserving the target image's quality and camera style."
 ❌ Bad: "Replace the face, keeping everything unchanged." (too generic, no image details, missing proportions/lighting/quality guidance)`
-  : `✅ Good: "Replace the face and hair (long blonde wavy hair) with the reference face and hairstyle, onto the person wearing casual denim in an outdoor park, ensuring natural proportions and maintaining the soft afternoon lighting that matches the original scene composition, preserving the target image's quality level and camera characteristics."
+  : `✅ Good: "Replace the face and hair (long blonde wavy hair) with the face and hairstyle from the reference images, onto the person in the target image wearing casual denim in an outdoor park, ensuring natural proportions and maintaining the soft afternoon lighting that matches the original scene composition, preserving the target image's quality level and camera characteristics."
 ❌ Bad: "Replace face and hair, keep body unchanged." (too generic, no image details, missing proportions/lighting/quality guidance)`
 }
 
 CRITICAL RULES:
-- MUST describe visible elements from BOTH images (reference ${isFaceOnly ? 'face' : '+ hair'}, target clothing/setting/lighting)
+- MUST describe visible elements from BOTH images (reference images ${isFaceOnly ? 'face' : '+ hair'}, target image clothing/setting/lighting)
 - MUST include "ensuring natural/realistic facial proportions"
 - MUST include "maintaining the [lighting] that matches the original scene composition"
 - MUST include "preserving the target image's quality level and camera characteristics"
-- Match target exactly: Same quality level, camera style, lighting intensity - DO NOT enhance beyond original
+- MUST use "from the reference images" and "onto the person in the target image" to be clear about the operation
+- Match target image exactly: Same quality level, camera style, lighting intensity - DO NOT enhance beyond original
 - Keep concise: 30-60 words (accommodates quality/camera preservation)
 - NEVER describe facial features, skin tone, ethnicity
 - Be SPECIFIC to these actual images
@@ -468,7 +479,7 @@ INSTRUCTIONS:
 EXAMPLES OF GOOD REFINEMENTS:
 - Original: "Replace face, keep everything unchanged"
   User wants: "make lighting more dramatic"
-  Refined: "Replace the face with the reference face, maintaining original hair and scene with enhanced dramatic lighting contrast and deeper shadows, preserving face detail"
+  Refined: "Replace the face with the face from the reference images, maintaining original hair and scene with enhanced dramatic lighting contrast and deeper shadows, preserving face detail"
 
 - Original: "Enhance image quality with professional sharpness"
   User wants: "add vintage film look"
@@ -476,7 +487,7 @@ EXAMPLES OF GOOD REFINEMENTS:
 
 - Original: "Replace face, keep everything unchanged"
   User wants: "improve lighting quality"
-  Refined: "Replace the face with the reference face, maintaining original hair and scene with balanced exposure and soft directional illumination, preserving facial detail"
+  Refined: "Replace the face with the face from the reference images, maintaining original hair and scene with balanced exposure and soft directional illumination, preserving facial detail"
 
 OUTPUT: Refined editing instruction only (20-60 words). No markdown or explanations.`
 }
@@ -935,7 +946,7 @@ async function generatePromptWithModel(
     }
   ]
 
-  // Add reference images (0..n-2)
+  // Add reference images first (the first refCount images)
   refUrls.forEach((url) => {
     userContent.push({
       type: 'image_url',
@@ -943,7 +954,7 @@ async function generatePromptWithModel(
     })
   })
 
-  // Add target image last (n-1)
+  // Add target image last (the final image)
   userContent.push({
     type: 'image_url',
     image_url: { url: targetUrl }
@@ -1083,12 +1094,14 @@ async function generatePromptWithModel(
  */
 function generateFallbackPrompt(refUrls: string[], swapMode: SwapMode = 'face-hair'): string {
   const isFaceOnly = swapMode === 'face'
+  const refCount = refUrls.length
+  const refImageLabel = refCount === 1 ? 'reference image' : 'reference images'
   
   // Seedream v4 concise editing instruction fallback
   if (isFaceOnly) {
-    return 'Replace the face with the face from the reference image, keeping the original hair, body, clothing, pose, scene, and lighting unchanged. Maintain professional image quality.'
+    return `Replace the face with the face from the ${refImageLabel} onto the target image, keeping the original hair, body, clothing, pose, scene, and lighting unchanged. Maintain professional image quality.`
   } else {
-    return 'Replace the face and hair with the face and hairstyle from the reference image, keeping the body, clothing, pose, scene, and lighting unchanged. Maintain professional image quality.'
+    return `Replace the face and hair with the face and hairstyle from the ${refImageLabel} onto the target image, keeping the body, clothing, pose, scene, and lighting unchanged. Maintain professional image quality.`
   }
 }
 

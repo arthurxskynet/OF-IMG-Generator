@@ -28,7 +28,12 @@ export function ModelBulkRefUpload({ model, onUpdate }: ModelBulkRefUploadProps)
   // Load existing default images as previews
   useEffect(() => {
     const loadExistingImages = async () => {
-      const defaultRefs = model.default_ref_headshot_urls && model.default_ref_headshot_urls.length > 0
+      // Reset state first
+      setPreviews([])
+      setUploadedImages([])
+
+      // Get default refs - prioritize array, fallback to legacy single
+      const defaultRefs = model.default_ref_headshot_urls && Array.isArray(model.default_ref_headshot_urls) && model.default_ref_headshot_urls.length > 0
         ? model.default_ref_headshot_urls
         : model.default_ref_headshot_url
           ? [model.default_ref_headshot_url]
@@ -38,29 +43,49 @@ export function ModelBulkRefUpload({ model, onUpdate }: ModelBulkRefUploadProps)
         return
       }
 
+      console.log('[ModelBulkRefUpload] Loading existing defaults:', {
+        defaultRefs,
+        arrayLength: model.default_ref_headshot_urls?.length,
+        hasLegacy: !!model.default_ref_headshot_url
+      })
+
       try {
         // Get signed URLs for existing images
         const signedUrls = await Promise.all(
           defaultRefs.map(async (path) => {
+            if (!path || typeof path !== 'string') {
+              return ''
+            }
             try {
               const { data } = await supabase.storage
                 .from('refs')
                 .createSignedUrl(path, 3600)
               return data?.signedUrl || ''
-            } catch {
+            } catch (error) {
+              console.warn('[ModelBulkRefUpload] Failed to sign URL for path:', path, error)
               return ''
             }
           })
         )
 
-        setPreviews(signedUrls.filter(Boolean))
-        setUploadedImages(defaultRefs.filter(Boolean))
+        const validPreviews = signedUrls.filter(Boolean)
+        const validPaths = defaultRefs.filter(Boolean)
+
+        console.log('[ModelBulkRefUpload] Loaded previews:', {
+          validPreviews: validPreviews.length,
+          validPaths: validPaths.length,
+          totalRefs: defaultRefs.length
+        })
+
+        setPreviews(validPreviews)
+        setUploadedImages(validPaths)
       } catch (error) {
-        console.error('Failed to load existing images:', error)
+        console.error('[ModelBulkRefUpload] Failed to load existing images:', error)
       }
     }
 
     loadExistingImages()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model.default_ref_headshot_urls, model.default_ref_headshot_url])
 
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {

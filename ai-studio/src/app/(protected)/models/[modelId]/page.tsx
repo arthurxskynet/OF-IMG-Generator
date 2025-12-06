@@ -43,6 +43,8 @@ const Page = async ({ params, searchParams }: PageProps) => {
     .from("models")
     .select(`
       *,
+      default_ref_headshot_urls,
+      default_ref_headshot_url,
       model_rows (
         id,
         ref_image_urls,

@@ -49,3 +49,4 @@ WHERE error IS NOT NULL
   AND error_category IS NULL
   AND status = 'failed';
 
+

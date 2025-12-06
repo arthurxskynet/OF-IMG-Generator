@@ -16,3 +16,4 @@ COMMENT ON COLUMN public.model_rows.generation_model IS
 COMMENT ON COLUMN public.variant_rows.generation_model IS 
   'WaveSpeed API model to use for image generation. Options: seedream-v4-edit (default), nano-banana-pro-edit';
 
+
