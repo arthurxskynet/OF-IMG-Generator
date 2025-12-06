@@ -50,6 +50,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       .from("models")
       .select(`
         *,
+        default_ref_headshot_urls,
+        default_ref_headshot_url,
         model_rows (
           id,
           ref_image_urls,
